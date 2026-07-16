@@ -1,0 +1,26 @@
+# Build artifacts
+ccode
+ccode-cli
+.build/
+*.o
+
+# Test binaries
+tests/test_json
+tests/test_agent
+tests/test_permissions
+tests/test_tui
+test-sandbox/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
