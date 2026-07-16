@@ -49,8 +49,9 @@ main.c                 CLI 到代理的连接
 config.c/h             CLI 和环境配置门控
 http.c/h               URL 验证、socket/TLS/HTTP/SSE 传输
 json.c/h               流式提供商响应解析
+markdown.c/h           行式 markdown->ANSI 流式渲染器（含控制字符/双向覆盖消毒）
 agent/message.c/h      对话所有权和请求序列化
-agent/agent.c/h        代理循环、工具验证、本地执行、工作区
+agent/agent.c/h        代理循环、工具验证、本地执行、工作区、markdown 渲染门控
 tools/tools.c/h        按启用模式的上游函数模式
 permissions/*          安全终端渲染和用户审批
 vendor/jsmn/*          供应商解析器；避免随意更改
@@ -90,6 +91,7 @@ tests/*                本地回归套件和提供商/TTY 夹具
 - 对每个模型可见的字符串进行 JSON 转义，包括工具结果、任务状态、变更摘要、路径、命令输出和错误。
 - 保留显式的错误和截断状态。有界结果永远不能看起来是详尽的。
 - 通过 `ccode_fprint_safe()` 或同等审计的例程渲染模型/提供商/工具派生的终端字符串。转义控制字符、C1、双向覆盖和格式错误的 UTF-8。
+- `markdown.c` 是 `ccode_fprint_safe()` 的同等审计例程：所有经 markdown 渲染器输出的文本 run（含代码块内容）必须经过 `emit_text()` 消毒，不得因解析 markdown 结构而放行控制字符或双向覆盖符。
 - 永远不要使用模型文本作为格式字符串。
 
 ## 权限规则

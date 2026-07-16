@@ -322,6 +322,7 @@ Week 3+: 扩展功能
 | 会话管理 | P1 | 增强 | 列表/删除/重命名/导出/自动保存/元数据 |
 | WebFetch | P1 | 已完成 | HTTP/HTTPS 抓取、HTML 转文本、大小限制 |
 | 模型管理 | P1 | 已完成 | API 模型列表/搜索/详情/切换/默认模型 |
+| Markdown 渲染 | P2 | 已完成 | 标题/加粗/斜体/行内代码/代码围栏/列表/引用/链接，行式流式 |
 | MCP | P2 | 未开始 | 扩展工具 |
 | AgentTool | P2 | 未开始 | 并行任务 |
 | 技能系统 | P2 | 未开始 | 最佳实践 |
@@ -344,6 +345,9 @@ Week 3+: 扩展功能
 - ✅ 模型管理（`/models` API 列表、`/models search` 搜索、`/models info` 详情、`/model` 显示当前、`/model default` 设置默认）
 - ✅ TUI 基础交互修复（多行消息边界、长输入水平滚动、常见编辑键、可恢复的大消息协议缓冲、权限响应和 resize 滚动保持）
 - ✅ TUI assistant 流式输出（SSE delta 经 JSON Lines 增量协议实时追加，工具/状态摘要保留）
+- ✅ ccode-cli 端到端流式输出（普通 CLI 与 JSON Lines/TUI 后端均在每个 SSE delta 到达时立即输出）
+- ✅ Markdown 渲染（行式流式 markdown→ANSI：标题/加粗/斜体/行内代码/代码围栏/无序有序列表/引用/水平线/OSC 8 超链接；粗体使用 ANSI bold + 舒适的真彩色 RGB 绿色 `80,200,120` 兜底；控制字符与双向覆盖符消毒；`--no-markdown` / `CCODE_MARKDOWN=0` 禁用回退裸输出）
+- ✅ Coding Agent prompt（任务理解、先读后改、专用工具选择、最小变更、风险审批、验证闭环和诚实报告约束）
 
 ## 完成标准
 
@@ -351,7 +355,7 @@ Week 3+: 扩展功能
 
 1. CLI 模式下能用
 2. 有基本测试
-3. 通过现有测试套件（当前 114 个 agent 测试 + 33 json + 27 http + 5 tty + 20 e2e 全通过）
+3. 通过现有测试套件（当前 115 个 agent 测试 + 34 json + 27 http + 8 tui + 21 markdown + 20 e2e 全通过）
 
 ## 暂时不管的事
 
