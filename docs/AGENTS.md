@@ -171,8 +171,11 @@ CCODE_TEST_HTTPS=1 bash ./tests/run.sh
 ```
 
 你拥有一个临时的key,项目完成后会被删除:
-sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx(已在平台上删除)
+
 API(OpenAI兼容):https://api.deepseek.com
+
 模型:deepseek-v4-flash
 
 ## 完成标准
