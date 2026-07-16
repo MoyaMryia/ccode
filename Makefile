@@ -7,17 +7,20 @@ override CPPFLAGS += -D_POSIX_C_SOURCE=200112L
 override CFLAGS += -m64 -march=x86-64 -mtune=generic
 override LDFLAGS += -m64
 
-SRC = src/main.c src/config.c src/tui/tui.c src/tui/term.c src/tui/render.c src/tui/input.c src/tui/messages.c src/tui/status.c src/tui/theme.c src/tui/protocol.c
+SRC = src/main.c src/config.c src/tui/tui.c src/tui/term.c src/tui/render.c src/tui/input.c src/tui/messages.c src/tui/status.c src/tui/theme.c src/tui/protocol.c src/markdown.c
 TEST_JSON_SRC = tests/test_json.c src/json.c vendor/jsmn/jsmn.c
-TEST_AGENT_SRC = tests/test_agent.c src/agent/agent.c src/agent/message.c src/json.c src/http.c src/webfetch.c src/models.c src/tools/tools.c src/permissions/permissions.c vendor/jsmn/jsmn.c
+TEST_AGENT_SRC = tests/test_agent.c src/agent/agent.c src/agent/message.c src/json.c src/http.c src/webfetch.c src/models.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c
 TEST_PERMISSIONS_SRC = $(wildcard tests/test_permissions.c)
 TEST_TUI_SRC = tests/test_tui.c
+TEST_MD_SRC = tests/test_markdown.c src/markdown.c
 TTY_TEST := $(shell python3 -c "import pty" 2>/dev/null && echo 1)
 TEST_TARGETS = test-json test-agent test-http
 TEST_TARGETS += test-tui
+TEST_TARGETS += test-markdown
 ifneq ($(TTY_TEST),)
 TEST_TARGETS += test-tty
 TEST_TARGETS += test-e2e
+TEST_TARGETS += test-streaming
 endif
 
 ifeq ($(HTTP_ONLY),1)
@@ -39,7 +42,7 @@ OBJDIR = .build/$(BUILD_MODE)
 OBJ = $(addprefix $(OBJDIR)/,$(SRC:.c=.o))
 MODE_BIN = $(OBJDIR)/ccode
 CLI_BIN = $(OBJDIR)/ccode-cli
-CLI_SRC = src/cli/main.c src/config.c src/http.c src/json.c src/webfetch.c src/models.c src/agent/message.c src/agent/agent.c src/tools/tools.c src/permissions/permissions.c vendor/jsmn/jsmn.c
+CLI_SRC = src/cli/main.c src/config.c src/http.c src/json.c src/webfetch.c src/models.c src/agent/message.c src/agent/agent.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c
 
 ccode: $(MODE_BIN)
 	@tmp=$@.$$$$; cp $< $$tmp && mv -f $$tmp $@
@@ -94,26 +97,35 @@ tests/test_permissions: tests/test_permissions.c src/permissions/permissions.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 endif
 
-test-http: ccode
+test-http: ccode-cli
 	bash ./tests/run.sh
 
 test-tui: tests/test_tui
 	./tests/test_tui
 
-tests/test_tui: $(TEST_TUI_SRC) src/tui/input.c src/tui/messages.c src/tui/render.c src/tui/protocol.c
+tests/test_tui: $(TEST_TUI_SRC) src/tui/input.c src/tui/messages.c src/tui/render.c src/tui/protocol.c src/markdown.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 
-test-tty: ccode
+test-markdown: tests/test_markdown
+	./tests/test_markdown
+
+tests/test_markdown: $(TEST_MD_SRC)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
+
+test-tty: ccode-cli
 	python3 ./tests/test_tty_agent.py
 
-test-e2e: ccode
+test-e2e: ccode-cli
 	python3 ./tests/test_e2e_fixture.py
+
+test-streaming: ccode-cli
+	python3 ./tests/test_streaming.py
 
 test: $(TEST_TARGETS)
 
 clean:
 	rm -rf .build
-	rm -f ccode ccode-cli tests/test_json tests/test_agent tests/test_permissions tests/test_tui
+	rm -f ccode ccode-cli tests/test_json tests/test_agent tests/test_permissions tests/test_tui tests/test_markdown
 	rm -rf test-sandbox
 
 # ASan + UBSan build (for debugging/fuzzing). Override CFLAGS to remove
@@ -126,4 +138,4 @@ asan: clean
 repro: clean
 	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic -m64 -march=x86-64 -mtune=generic -ffile-prefix-map=$(PWD)=."
 
-.PHONY: ccode ccode-cli check-mbedtls clean test test-json test-agent test-http test-permissions test-tui test-tty test-e2e asan repro test-sandbox
+.PHONY: ccode ccode-cli check-mbedtls clean test test-json test-agent test-http test-permissions test-tui test-markdown test-tty test-e2e test-streaming asan repro test-sandbox

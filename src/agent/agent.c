@@ -10,6 +10,7 @@
 #include "../models.h"
 #include "../tools/tools.h"
 #include "../permissions/permissions.h"
+#include "../markdown.h"
 #include "../../vendor/jsmn/jsmn.h"
 
 #include <stdio.h>
@@ -3670,38 +3671,95 @@ static char *exec_tool(const char *workspace, const char *name,
 }
 #endif
 
-static void print_content_delta(const char *content) {
-    const unsigned char *p = (const unsigned char *)content;
-    size_t remaining;
+/* Process-wide streaming markdown renderer for human-facing output.
+ * Initialised lazily on first use; ccode_md_render_raw is used while the
+ * markdown feature is disabled so legacy behaviour is preserved exactly. */
+static struct ccode_md_renderer g_md_renderer;
+static int g_md_initialised = 0;
+static int g_md_enabled = 1;
 
-    if (!p) return;
-    remaining = strlen(content);
-    while (remaining > 0) {
-        if (*p == '\n' || *p == '\t') {
-            fputc(*p++, stdout); remaining--;
-        } else if (*p < 0x20U || *p == 0x7fU) {
-            fprintf(stdout, "\\x%02X", (unsigned int)*p++); remaining--;
-        } else if (remaining >= 2 && p[0] == 0xc2U &&
-                   p[1] >= 0x80U && p[1] <= 0x9fU) {
-            fprintf(stdout, "\\u%04X", (unsigned int)p[1]);
-            p += 2; remaining -= 2;
-        } else if (remaining >= 2 && p[0] == 0xd8U && p[1] == 0x9cU) {
-            fputs("\\u061C", stdout);
-            p += 2; remaining -= 2;
-        } else if (remaining >= 3 && p[0] == 0xe2U && p[1] == 0x80U &&
-                   (p[2] == 0x8eU || p[2] == 0x8fU ||
-                    (p[2] >= 0xaaU && p[2] <= 0xaeU))) {
-            fprintf(stdout, "\\u%04X", 0x2000U | (unsigned int)(p[2] & 0x3fU));
-            p += 3; remaining -= 3;
-        } else if (remaining >= 3 && p[0] == 0xe2U && p[1] == 0x81U &&
-                   p[2] >= 0xa6U && p[2] <= 0xa9U) {
-            fprintf(stdout, "\\u%04X", 0x2040U | (unsigned int)(p[2] & 0x3fU));
-            p += 3; remaining -= 3;
-        } else {
-            fputc(*p++, stdout); remaining--;
-        }
+static void ensure_md_renderer(void) {
+    if (!g_md_initialised) {
+        ccode_md_init(&g_md_renderer, stdout);
+        g_md_renderer.enabled = g_md_enabled ? 1 : 0;
+        g_md_initialised = 1;
     }
-    fflush(stdout);
+}
+
+void ccode_print_content_set_markdown(int enabled) {
+    g_md_enabled = enabled ? 1 : 0;
+    if (g_md_initialised) g_md_renderer.enabled = g_md_enabled;
+}
+
+void ccode_print_content_flush(void) {
+    if (!g_md_initialised || !g_md_enabled) return;
+    ccode_md_flush(&g_md_renderer);
+}
+
+void ccode_print_content_reset(void) {
+    if (!g_md_initialised || !g_md_enabled) return;
+    ccode_md_reset(&g_md_renderer);
+}
+
+void ccode_print_content_delta(const char *content) {
+    if (!content) return;
+    ensure_md_renderer();
+    if (!g_md_enabled) {
+        ccode_md_render_raw(stdout, content);
+        return;
+    }
+    ccode_md_render(&g_md_renderer, content);
+}
+
+const char *ccode_coding_agent_system_prompt(void) {
+    return
+        "You are ccode, a careful terminal coding agent working in the user's "
+        "current workspace. Help with software engineering tasks: inspect, "
+        "explain, debug, edit, and verify code.\n\n"
+        "## Understand the task\n"
+        "- Treat requests in the context of the current workspace and existing code.\n"
+        "- If the request is ambiguous, inspect the relevant code first and ask only "
+        "when a decision cannot be inferred safely.\n"
+        "- Do not claim that a change is complete until the relevant verification has "
+        "actually run.\n\n"
+        "## Inspect before changing\n"
+        "- Read the relevant files, tests, and project instructions before editing.\n"
+        "- Search for callers and related behavior before changing an API or shared "
+        "function.\n"
+        "- Prefer the smallest change that directly satisfies the request. Preserve "
+        "unrelated user work and existing conventions.\n\n"
+        "## Use tools deliberately\n"
+        "- Use read_file to inspect files, glob to find paths, and grep to search "
+        "content.\n"
+        "- Use edit_file for targeted modifications; use write_file only for genuinely "
+        "new files or complete generated content.\n"
+        "- Use git_status and git_diff to understand and review changes.\n"
+        "- Use run_command or bash only for commands that require execution. Keep "
+        "commands focused, bounded, and relevant to the task.\n"
+        "- Never treat a tool result as successful if it was denied, failed, or "
+        "truncated. Adjust the plan instead of blindly retrying.\n\n"
+        "## Make changes safely\n"
+        "- Do not add speculative features, broad refactors, compatibility shims, or "
+        "new abstractions without a concrete need.\n"
+        "- Preserve public behavior unless the user asks to change it. Keep security "
+        "boundaries, workspace restrictions, and error handling intact.\n"
+        "- Ask for approval before side effects. Treat deletion, destructive commands, "
+        "network changes, and changes outside the workspace as risky.\n"
+        "- Do not expose credentials, secrets, or unnecessary absolute host paths in "
+        "responses.\n\n"
+        "## Verify and report\n"
+        "- After editing, run focused tests or checks that exercise the changed path.\n"
+        "- If a check fails, diagnose the failure and continue the repair loop when it "
+        "is within scope.\n"
+        "- Before finishing, review the focused diff and confirm no unintended files "
+        "changed.\n"
+        "- Report what changed, what was verified, and any remaining limitation "
+        "accurately. Never invent test results.\n\n"
+        "## Response style\n"
+        "- Communicate progress and decisions concisely. Use GitHub-flavored Markdown "
+        "for headings, lists, code spans, and fenced code when useful.\n"
+        "- Keep explanations tied to the user's task. Do not dump large tool results "
+        "or repeat information that is already clear from the diff.";
 }
 
 static int is_readonly_tool(const char *name) {
@@ -3761,6 +3819,10 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
                     "by user interrupt\n");
             return 130;
         }
+        /* Start each turn with clean markdown block state so an unclosed
+         * code fence from a previous (possibly cancelled) turn does not
+         * bleed into the next assistant message. */
+        ccode_print_content_reset();
         if ((cfg->tools_enabled || cfg->read_only_tools) && turn > 0) {
             if (change_count > 0) {
                 const char *ch = change_log_serialize();
@@ -3838,7 +3900,13 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
             break;
         }
 
-        if (!cfg->on_content) print_content_delta(acc.content);
+        if (!cfg->on_content) ccode_print_content_delta(acc.content);
+
+        /* The assistant message is fully received: emit any trailing
+         * partial line that was buffered during streaming, then reset
+         * block state for the next message. */
+        ccode_print_content_flush();
+        ccode_print_content_reset();
 
         {
             const char *assistant_content = acc.content ? acc.content : "";
@@ -4069,11 +4137,7 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
     }
 
     if (cfg->read_only_tools || cfg->tools_enabled) {
-        const char *sys = "You are a terminal coding assistant with access to local tools. "
-            "Inspect files before editing. Prefer edit_file over whole-file replacement. "
-            "Request approval before side effects. Run a focused verification command after "
-            "edits. Do not claim success after a denied, failed, or truncated tool result. "
-            "Use task_create/task_update/task_list to track your work plan.";
+        const char *sys = ccode_coding_agent_system_prompt();
         if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
             fprintf(stderr, "Out of memory.\n");
             ccode_conversation_destroy(&conv);
@@ -4245,11 +4309,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
     }
 
     if (cfg->read_only_tools || cfg->tools_enabled) {
-        const char *sys = "You are a terminal coding assistant with access to local tools. "
-            "Inspect files before editing. Prefer edit_file over whole-file replacement. "
-            "Request approval before side effects. Run a focused verification command after "
-            "edits. Do not claim success after a denied, failed, or truncated tool result. "
-            "Use task_create/task_update/task_list to track your work plan.";
+        const char *sys = ccode_coding_agent_system_prompt();
         if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
             fprintf(stderr, "Out of memory.\n");
             goto cleanup;
@@ -4439,11 +4499,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                     goto cleanup;
                 }
                 if (cfg->read_only_tools || cfg->tools_enabled) {
-                    const char *sys = "You are a terminal coding assistant with access to local tools. "
-                        "Inspect files before editing. Prefer edit_file over whole-file replacement. "
-                        "Request approval before side effects. Run a focused verification command after "
-                        "edits. Do not claim success after a denied, failed, or truncated tool result. "
-                        "Use task_create/task_update/task_list to track your work plan.";
+                    const char *sys = ccode_coding_agent_system_prompt();
                     if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
                         fprintf(stderr, "Out of memory.\n");
                         goto cleanup;

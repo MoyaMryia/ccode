@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <errno.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -54,49 +56,96 @@ static int field(const char *line, const char *name, char *out, size_t cap) {
     return 0;
 }
 
-static void json_print(const char *type, const char *text) {
+static int json_write_all(int fd, const char *data, size_t length) {
+    while (length > 0) {
+        ssize_t written = write(fd, data, length);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) return -1;
+        data += written;
+        length -= (size_t)written;
+    }
+    return 0;
+}
+
+static int json_build_event(const char *type, const char *text,
+                            char **event_out, size_t *event_length_out) {
     size_t i;
     int in_escape = 0;
-    fputs("{\"type\":\"", stdout);
-    fputs(type, stdout);
-    fputs("\",\"text\":\"", stdout);
+    size_t type_length = strlen(type);
+    size_t text_length = text ? strlen(text) : 0;
+    size_t capacity;
+    char *event;
+    size_t pos = 0;
+
+    if (type_length > SIZE_MAX - 32 ||
+        text_length > (SIZE_MAX - type_length - 32) / 6) return -1;
+    capacity = type_length + text_length * 6 + 32;
+    event = malloc(capacity);
+    if (!event) return -1;
+    pos += (size_t)snprintf(event + pos, capacity - pos,
+                            "{\"type\":\"%s\",\"text\":\"", type);
     for (i = 0; text && text[i]; i++) {
         if (in_escape) {
             if ((text[i] >= 'a' && text[i] <= 'z') ||
                 (text[i] >= 'A' && text[i] <= 'Z'))
-                in_escape = 0;
+            in_escape = 0;
             continue;
         }
         if ((unsigned char)text[i] == 0x1b) {
             in_escape = 1;
             continue;
         }
-        if (text[i] == '"' || text[i] == '\\') fputc('\\', stdout);
-        if (text[i] == '\n') fputs("\\n", stdout);
-        else if (text[i] == '\r') fputs("\\r", stdout);
+        if (text[i] == '"' || text[i] == '\\') event[pos++] = '\\';
+        if (text[i] == '\n') { event[pos++] = '\\'; event[pos++] = 'n'; }
+        else if (text[i] == '\r') { event[pos++] = '\\'; event[pos++] = 'r'; }
         else if ((unsigned char)text[i] < 0x20) {
-            fprintf(stdout, "\\u%04x", (unsigned int)(unsigned char)text[i]);
+            int written = snprintf(event + pos, capacity - pos, "\\u%04x",
+                                   (unsigned int)(unsigned char)text[i]);
+            if (written < 0 || (size_t)written >= capacity - pos) {
+                free(event);
+                return -1;
+            }
+            pos += (size_t)written;
         }
-        else fputc((unsigned char)text[i], stdout);
+        else event[pos++] = text[i];
     }
-    fputs("\"}\n", stdout);
-    fflush(stdout);
+    if (pos + 3 >= capacity) {
+        free(event);
+        return -1;
+    }
+    memcpy(event + pos, "\"}\n", 3);
+    pos += 3;
+    event[pos] = '\0';
+    *event_out = event;
+    *event_length_out = pos;
+    return 0;
+}
+
+static void json_print(const char *type, const char *text) {
+    char *event;
+    size_t event_length;
+    if (json_build_event(type, text, &event, &event_length) == 0) {
+        (void)json_write_all(STDOUT_FILENO, event, event_length);
+        free(event);
+    }
 }
 
 static void json_print_fd(int fd, const char *type, const char *text) {
-    int saved = dup(STDOUT_FILENO);
-    if (saved < 0 || dup2(fd, STDOUT_FILENO) < 0) {
-        if (saved >= 0) close(saved);
-        return;
-    }
-    json_print(type, text);
-    dup2(saved, STDOUT_FILENO);
-    close(saved);
+    char *event;
+    size_t event_length;
+    if (json_build_event(type, text, &event, &event_length) != 0) return;
+    (void)json_write_all(fd, event, event_length);
+    free(event);
 }
 
 static void json_stream_content(const char *content, void *context) {
     struct json_permission_context *stream = context;
     json_print_fd(stream->output_fd, "message_delta", content);
+}
+
+static void plain_stream_content(const char *content, void *context) {
+    (void)context;
+    ccode_print_content_delta(content);
 }
 
 static int json_permission_ask(struct ccode_permission_request *request,
@@ -333,7 +382,14 @@ int main(int argc, char **argv) {
     struct ccode_agent_config agent;
     int result = ccode_parse_args(argc, argv, &config);
     if (result != 0) return result < 0 ? 2 : 0;
-    if (config.json) return run_json_mode(&config);
+    /* The JSON Lines backend is a machine protocol: emit raw text and let
+     * the consuming TUI decide how to render.  Only human-facing paths
+     * (direct / interactive) apply markdown rendering. */
+    if (config.json) {
+        ccode_print_content_set_markdown(0);
+        return run_json_mode(&config);
+    }
+    ccode_print_content_set_markdown(config.markdown);
 
     memset(&agent, 0, sizeof(agent));
     agent.api_base = config.api_base;
@@ -348,6 +404,7 @@ int main(int argc, char **argv) {
     agent.resume_session = config.resume_session;
     agent.workspace = getenv("CCODE_WORKSPACE");
     if (!agent.workspace) agent.workspace = ".";
+    agent.on_content = plain_stream_content;
 
     if (config.interactive) return ccode_agent_run_interactive(&agent);
     return ccode_agent_run(&agent);

@@ -24,6 +24,16 @@ struct ccode_agent_config {
 
 int ccode_agent_run(struct ccode_agent_config *cfg);
 int ccode_agent_run_interactive(struct ccode_agent_config *cfg);
+void ccode_print_content_delta(const char *content);
+
+/* Markdown rendering control for human-facing output.  When disabled,
+ * ccode_print_content_delta falls back to raw sanitised passthrough. */
+void ccode_print_content_set_markdown(int enabled);
+void ccode_print_content_flush(void);
+void ccode_print_content_reset(void);
+
+/* Default behavior contract injected when local tools are enabled. */
+const char *ccode_coding_agent_system_prompt(void);
 
 /* Cancellation: installed by agent_run via sigaction. SIGINT sets an atomic
  * cancel flag and terminates any active child process group. The next loop

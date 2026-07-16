@@ -19,6 +19,7 @@ struct ccode_config {
     int session_auto_save;
     long session_max_size;
     int session_keep_count;
+    int markdown;
 };
 
 int ccode_parse_args(int argc, char **argv, struct ccode_config *config);

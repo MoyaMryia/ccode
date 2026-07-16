@@ -1,6 +1,7 @@
 #include "messages.h"
 #include "render.h"
 #include "theme.h"
+#include "../markdown.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,16 +91,39 @@ void tui_messages_render(const struct tui_messages *messages, int row, int rows,
         {
             const char *text = messages->items[i].text;
             int first = 1;
+            struct ccode_md_renderer markdown;
+            int use_markdown = messages->items[i].type == TUI_MSG_ASSISTANT;
+            FILE *discard = NULL;
+            if (use_markdown) {
+                ccode_md_init(&markdown, stdout);
+                markdown.max_cols = cols > 2 ? cols - 2 : 0;
+                discard = tmpfile();
+            }
             while (text && *text && line < rows) {
                 const char *end = strchr(text, '\n');
-                if (skipped < scroll_offset) skipped++;
-                else {
+                int skip_line = skipped < scroll_offset;
+                if (skip_line) {
+                    skipped++;
+                    if (use_markdown) {
+                        markdown.out = discard ? discard : stdout;
+                        ccode_md_render_line(&markdown, text,
+                            end ? (size_t)(end - text) : strlen(text));
+                    }
+                } else {
                     tui_render_move(row + line, 0);
                     tui_render_clear_line();
                     int prefix_cols = 2;
                     printf("%s%s%s", color, first ? prefix : "  ", TUI_RESET);
-                    tui_render_text_n(text, end ? (size_t)(end - text) : strlen(text),
-                                      cols - prefix_cols);
+                    if (use_markdown) {
+                        markdown.out = stdout;
+                        ccode_md_render_line(&markdown, text,
+                            end ? (size_t)(end - text) : strlen(text));
+                        fputs(TUI_RESET, stdout);
+                    } else {
+                        tui_render_text_n(text,
+                            end ? (size_t)(end - text) : strlen(text),
+                            cols - prefix_cols);
+                    }
                     line++;
                 }
                 first = 0;
@@ -115,6 +139,8 @@ void tui_messages_render(const struct tui_messages *messages, int row, int rows,
                     line++;
                 }
             }
+            if (discard) fclose(discard);
+            if (use_markdown) ccode_md_destroy(&markdown);
         }
     }
     while (line < rows) {
