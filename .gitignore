@@ -11,6 +11,9 @@ tests/test_permissions
 tests/test_tui
 test-sandbox/
 
+# Test fixtures (nested git repos)
+fixtures/
+
 # Editor / IDE
 .vscode/
 .idea/
