@@ -6,6 +6,7 @@
 #define TUI_DIM "\033[2m"
 #define TUI_ORANGE "\033[38;2;232;133;89m"
 #define TUI_CYAN "\033[36m"
+#define TUI_PURPLE "\033[38;2;189;147;249m"
 #define TUI_YELLOW "\033[33m"
 #define TUI_RED "\033[31m"
 

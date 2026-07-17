@@ -13,6 +13,8 @@ struct ccode_config {
     int json;
     const char *backend;
     int auto_approve;
+    int thinking_enabled;
+    const char *thinking_effort;
     const char *save_session;
     const char *resume_session;
     const char *session_dir;

@@ -21,8 +21,10 @@ struct ccode_md_renderer {
     char   fence_char;     /* '`' or '~' */
     int    fence_len;      /* number of fence chars in the opening marker */
     int    enabled;        /* 1 => render markdown; 0 => raw passthrough */
-    int    max_cols;       /* >0 => truncate visible output at this column count */
+    int    max_cols;       /* >0 => wrap visible output at this column count */
     int    cols_written;   /* visible columns emitted for the current line */
+    int    visual_line;    /* wrapped line currently being rendered */
+    int    output_line;    /* >=0 => emit only this wrapped line */
     FILE  *out;            /* destination stream (stdout for live use) */
 };
 
@@ -41,6 +43,10 @@ void ccode_md_render(struct ccode_md_renderer *r, const char *fragment);
  * across calls, while resetting the visible-column counter for each line. */
 void ccode_md_render_line(struct ccode_md_renderer *r, const char *line,
                           size_t len);
+
+/* Render one wrapped visual line without emitting content newlines. */
+void ccode_md_render_line_part(struct ccode_md_renderer *r, const char *line,
+                               size_t len, int visual_line);
 
 /* Emit any buffered partial line.  Call at end of a message so trailing
  * text without a newline is not lost. */

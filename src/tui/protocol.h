@@ -16,7 +16,11 @@ struct tui_protocol {
 
 int tui_protocol_start(struct tui_protocol *protocol, const char *path,
                        const char *model, const char *workspace,
+                       int thinking_enabled, const char *thinking_effort,
                        int argc, char **argv);
+int tui_protocol_send_hello(struct tui_protocol *protocol, const char *model,
+                            const char *workspace, int thinking_enabled,
+                            const char *thinking_effort);
 int tui_protocol_send_input(struct tui_protocol *protocol, const char *text);
 int tui_protocol_send_command(struct tui_protocol *protocol, const char *text);
 int tui_protocol_send_permission_response(struct tui_protocol *protocol, int allow);

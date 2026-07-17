@@ -21,7 +21,10 @@ struct backend_options {
     int read_only_tools;
     int tools_enabled;
     int auto_approve;
+    int thinking_enabled;
+    const char *thinking_effort;
     char model_name[256];
+    char thinking_effort_buf[16];
     const char *save_session;
     const char *resume_session;
 };
@@ -54,6 +57,29 @@ static int field(const char *line, const char *name, char *out, size_t cap) {
         out[target] = '\0';
     }
     return 0;
+}
+
+static int boolean_field(const char *line, const char *name, int *value) {
+    char needle[64];
+    const char *start;
+    if (!line || !name || !value) return -1;
+    snprintf(needle, sizeof(needle), "\"%s\":", name);
+    start = strstr(line, needle);
+    if (!start) return -1;
+    start += strlen(needle);
+    if (strncmp(start, "true", 4) == 0) *value = 1;
+    else if (strncmp(start, "false", 5) == 0) *value = 0;
+    else return -1;
+    return 0;
+}
+
+static const char *normalize_thinking_effort(const char *effort) {
+    if (strcmp(effort, "low") == 0) return "low";
+    if (strcmp(effort, "medium") == 0) return "medium";
+    if (strcmp(effort, "high") == 0) return "high";
+    if (strcmp(effort, "xhigh") == 0) return "xhigh";
+    if (strcmp(effort, "max") == 0) return "max";
+    return NULL;
 }
 
 static int json_write_all(int fd, const char *data, size_t length) {
@@ -143,6 +169,11 @@ static void json_stream_content(const char *content, void *context) {
     json_print_fd(stream->output_fd, "message_delta", content);
 }
 
+static void json_stream_reasoning(const char *content, void *context) {
+    struct json_permission_context *stream = context;
+    json_print_fd(stream->output_fd, "reasoning_delta", content);
+}
+
 static void plain_stream_content(const char *content, void *context) {
     (void)context;
     ccode_print_content_delta(content);
@@ -210,11 +241,15 @@ static int run_agent_prompt(const struct backend_options *options,
     config.tools_enabled = options->tools_enabled || (write_tools && write_tools[0] == '1');
     config.read_only_tools = options->read_only_tools || (read_only && read_only[0] == '1');
     config.auto_approve = options->auto_approve || (auto_approve && auto_approve[0] == '1');
+    config.thinking_enabled = options->thinking_enabled;
+    config.thinking_effort = options->thinking_effort;
     config.workspace = workspace && workspace[0] ? workspace : ".";
     config.save_session = options->save_session;
     config.resume_session = options->resume_session;
     config.on_content = json_stream_content;
     config.on_content_context = &permission;
+    config.on_reasoning = json_stream_reasoning;
+    config.on_reasoning_context = &permission;
     permission.output_fd = saved_stdout;
     ccode_permission_set_handler(json_permission_ask, &permission);
     result = ccode_agent_run(&config);
@@ -242,7 +277,7 @@ static int run_agent_prompt(const struct backend_options *options,
 
 static void backend_command(struct json_session_state *state, const char *command) {
     if (strcmp(command, "/help") == 0) {
-        json_print("message", "Slash commands:\n  /help\n  /exit\n  /clear\n  /compact\n  /model [NAME]\n  /model default NAME\n  /models\n  /models search KEYWORD\n  /models info NAME\n  /history\n  /sessions\n  /sessions delete NAME\n  /sessions rename OLD NEW\n  /sessions export NAME FORMAT\n  /resume [NAME]");
+        json_print("message", "Slash commands:\n  /help\n  /exit\n  /clear\n  /compact\n  /model [NAME]\n  /model default NAME\n  /models\n  /models search KEYWORD\n  /models info NAME\n  /thinking\n  /thinking on|off\n  /thinking effort low|medium|high|xhigh|max\n  /history\n  /sessions\n  /sessions delete NAME\n  /sessions rename OLD NEW\n  /sessions export NAME FORMAT\n  /resume [NAME]");
     } else if (strcmp(command, "/clear") == 0) {
         state->history_count = 0;
         if (state->options.save_session) unlink(state->options.save_session);
@@ -260,6 +295,37 @@ static void backend_command(struct json_session_state *state, const char *comman
         snprintf(state->options.model_name, sizeof(state->options.model_name), "%s", command + 7);
         state->options.model = state->options.model_name;
         json_print("message", "Model switched.");
+    } else if (strcmp(command, "/thinking") == 0) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Thinking: %s (effort: %s)",
+                 state->options.thinking_enabled ? "on" : "off",
+                 state->options.thinking_effort ? state->options.thinking_effort : "medium");
+        json_print("message", msg);
+    } else if (strcmp(command, "/thinking on") == 0) {
+        state->options.thinking_enabled = 1;
+        json_print("message", "Thinking enabled.");
+    } else if (strcmp(command, "/thinking off") == 0) {
+        state->options.thinking_enabled = 0;
+        json_print("message", "Thinking disabled.");
+    } else if (strncmp(command, "/thinking effort ", 17) == 0) {
+        const char *eff = normalize_thinking_effort(command + 17);
+        if (eff) {
+            char msg[64];
+            snprintf(state->options.thinking_effort_buf,
+                     sizeof(state->options.thinking_effort_buf), "%s", eff);
+            state->options.thinking_effort = state->options.thinking_effort_buf;
+            if (!state->options.thinking_enabled) {
+                state->options.thinking_enabled = 1;
+                snprintf(msg, sizeof(msg),
+                         "Thinking enabled, effort set to: %s.", eff);
+            } else {
+                snprintf(msg, sizeof(msg),
+                         "Thinking effort set to: %s.", eff);
+            }
+            json_print("message", msg);
+        } else {
+            json_print("error", "Usage: /thinking effort low|medium|high|xhigh|max");
+        }
     } else if (strcmp(command, "/history") == 0) {
         char output[65536];
         size_t pos = 0;
@@ -345,6 +411,13 @@ static int run_json_mode(const struct ccode_config *config) {
     state.options.read_only_tools = config->read_only_tools;
     state.options.tools_enabled = config->tools_enabled;
     state.options.auto_approve = config->auto_approve;
+    state.options.thinking_enabled = config->thinking_enabled;
+    if (config->thinking_effort) {
+        snprintf(state.options.thinking_effort_buf,
+                 sizeof(state.options.thinking_effort_buf), "%s",
+                 config->thinking_effort);
+        state.options.thinking_effort = state.options.thinking_effort_buf;
+    }
     state.options.save_session = config->save_session;
     state.options.resume_session = config->resume_session;
     snprintf(state.options.model_name, sizeof(state.options.model_name), "%s",
@@ -354,8 +427,21 @@ static int run_json_mode(const struct ccode_config *config) {
 
     while (fgets(line, sizeof(line), stdin)) {
         if (strstr(line, "\"type\":\"hello\"")) {
+            char hello_effort[16];
+            const char *effort;
             if (!state.options.model) field(line, "model", model, sizeof(model));
             field(line, "workspace", workspace, sizeof(workspace));
+            (void)boolean_field(line, "thinking",
+                                &state.options.thinking_enabled);
+            if (field(line, "thinking_effort",
+                      hello_effort, sizeof(hello_effort)) == 0 &&
+                (effort = normalize_thinking_effort(hello_effort)) != NULL) {
+                snprintf(state.options.thinking_effort_buf,
+                         sizeof(state.options.thinking_effort_buf), "%s",
+                         effort);
+                state.options.thinking_effort =
+                    state.options.thinking_effort_buf;
+            }
             json_print("ready", "backend connected");
         } else if (strstr(line, "\"type\":\"input\"") &&
                    field(line, "text", text, sizeof(text)) == 0) {
@@ -400,6 +486,8 @@ int main(int argc, char **argv) {
     agent.read_only_tools = config.read_only_tools;
     agent.interactive = config.interactive;
     agent.auto_approve = config.auto_approve;
+    agent.thinking_enabled = config.thinking_enabled;
+    agent.thinking_effort = config.thinking_effort;
     agent.save_session = config.save_session;
     agent.resume_session = config.resume_session;
     agent.workspace = getenv("CCODE_WORKSPACE");

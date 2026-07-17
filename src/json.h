@@ -16,6 +16,7 @@ struct ccode_sse_tool_call {
 
 struct ccode_sse_delta {
     char *content;
+    char *reasoning_content;
     char *finish_reason;
     struct ccode_sse_tool_call tool_calls[CCODE_MAX_SSE_TOOL_CALLS];
     size_t tool_call_count;
@@ -25,6 +26,9 @@ struct ccode_sse_accumulator {
     char *content;
     size_t content_cap;
     size_t content_len;
+    char *reasoning_content;
+    size_t reasoning_cap;
+    size_t reasoning_len;
     struct ccode_sse_tool_call tool_calls[CCODE_MAX_SSE_TOOL_CALLS];
     size_t tool_call_count;
     char *finish_reason;
@@ -32,6 +36,8 @@ struct ccode_sse_accumulator {
     int has_error;
     void (*on_content)(const char *content, void *context);
     void *on_content_context;
+    void (*on_reasoning)(const char *content, void *context);
+    void *on_reasoning_context;
 };
 
 char *ccode_build_chat_request(const char *model, const char *prompt);

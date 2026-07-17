@@ -745,6 +745,7 @@ static int is_workspace_relative_path(const char *path, int allow_dot) {
     char *next;
 
     if (!path || path[0] == '\0' || path[0] == '/' || path[0] == '-' ||
+        path[0] == '~' ||
         strlen(path) >= sizeof(copy))
         return 0;
     if (allow_dot && strcmp(path, ".") == 0) return 1;
@@ -759,6 +760,10 @@ static int is_workspace_relative_path(const char *path, int allow_dot) {
         if (!next) return 1;
         component = next + 1;
     }
+}
+
+static int is_home_relative_path(const char *path) {
+    return path && path[0] == '~' && (path[1] == '/' || path[1] == '\0');
 }
 
 /* Returns NULL on failure (not committed), "ok" on full success, or
@@ -1283,6 +1288,29 @@ static const char *normalize_glob(const char *pattern) {
     return p;
 }
 
+static int glob_match_path(const char *pattern, const char *path) {
+    const char *globstar;
+    const char *candidate;
+    size_t prefix_len;
+
+    if (!pattern || !path) return 0;
+    if (fnmatch(pattern, path, 0) == 0) return 1;
+    globstar = strstr(pattern, "**/");
+    if (!globstar) return 0;
+
+    prefix_len = (size_t)(globstar - pattern);
+    if (strncmp(pattern, path, prefix_len) != 0) return 0;
+    candidate = path + prefix_len;
+    pattern = globstar + 3;
+    while (*candidate) {
+        if (fnmatch(pattern, candidate, 0) == 0) return 1;
+        candidate = strchr(candidate, '/');
+        if (!candidate) break;
+        candidate++;
+    }
+    return 0;
+}
+
 struct scan_budget {
     size_t files;
     size_t bytes;
@@ -1525,10 +1553,11 @@ static void glob_recursive(int parent_fd, const char *rel_dir,
             const char *normalized = normalize_glob(pattern);
             int match_ok = 0;
             if (S_ISREG(st.st_mode)) {
+                const char *match_subject = strchr(normalized, '/') ? rel_path : d_name;
                 if (gregex_ok)
-                    match_ok = (regexec(&gregex, d_name, 0, NULL, 0) == 0);
+                    match_ok = (regexec(&gregex, match_subject, 0, NULL, 0) == 0);
                 else
-                    match_ok = (fnmatch(normalized, d_name, 0) == 0);
+                    match_ok = glob_match_path(normalized, match_subject);
             }
             if (match_ok) {
                 if (!*first) {
@@ -2307,6 +2336,18 @@ static int is_shell_string_invocation(char * const *argv, size_t argc) {
     return 0;
 }
 
+static int contains_home_path(const char *text) {
+    const char *p = text;
+    if (!text) return 0;
+    while ((p = strstr(p, "~/")) != NULL) {
+        if (p == text || p == text + 1 || p[-1] == ' ' || p[-1] == '=' ||
+            p[-1] == ':' || p[-1] == '(' || p[-1] == ',')
+            return 1;
+        p += 2;
+    }
+    return 0;
+}
+
 enum prepared_tool_kind {
     PREPARED_READ_FILE,
     PREPARED_WRITE_FILE,
@@ -2400,6 +2441,8 @@ static const char *prepare_tool(const char *name, const char *arguments,
         }
         if (!have_path || !have_old || !have_new)
             return "{\"error\":\"Invalid edit_file arguments\"}";
+        if (is_home_relative_path(prepared->value))
+            return "{\"error\":\"Home-relative paths are not allowed\"}";
         if (strlen(prepared->old_string) == 0)
             return "{\"error\":\"old_string must not be empty\"}";
         prepared->kind = PREPARED_EDIT_FILE;
@@ -2440,6 +2483,9 @@ static const char *prepare_tool(const char *name, const char *arguments,
                         if (copy_string_token(arguments, &tokens[elem_idx],
                             prepared->argv[j], sizeof(prepared->argv[j])) != 0)
                             return "{\"error\":\"Invalid argv element\"}";
+                        if (prepared->argv[j][0] == '~' &&
+                            (prepared->argv[j][1] == '/' || prepared->argv[j][1] == '\0'))
+                            return "{\"error\":\"Home-relative paths are not allowed\"}";
                         if (prepared->argv[j][0] == '\0')
                             return "{\"error\":\"Empty argv element\"}";
                         elem_idx++;
@@ -2629,6 +2675,8 @@ static const char *prepare_tool(const char *name, const char *arguments,
             copy_string_token(arguments, &tokens[2], prepared->value,
                               sizeof(prepared->value)) != 0)
             return "{\"error\":\"Invalid read_file arguments\"}";
+        if (is_home_relative_path(prepared->value))
+            return "{\"error\":\"Home-relative paths are not allowed\"}";
         prepared->kind = PREPARED_READ_FILE;
         snprintf(prepared->display, sizeof(prepared->display),
                  "file_path=%s", prepared->value);
@@ -2662,6 +2710,8 @@ static const char *prepare_tool(const char *name, const char *arguments,
         }
         if (!have_path || !have_content)
             return "{\"error\":\"Invalid write_file arguments\"}";
+        if (is_home_relative_path(prepared->value))
+            return "{\"error\":\"Home-relative paths are not allowed\"}";
         prepared->kind = PREPARED_WRITE_FILE;
         snprintf(prepared->display, sizeof(prepared->display),
                  "file_path=%s bytes=%lu", prepared->value,
@@ -2705,6 +2755,8 @@ static const char *prepare_tool(const char *name, const char *arguments,
         }
         if (prepared->value[0] == '\0')
             return "{\"error\":\"Invalid glob arguments\"}";
+        if (is_home_relative_path(prepared->value))
+            return "{\"error\":\"Home-relative paths are not allowed\"}";
         if (have_path) {
             if (!is_workspace_relative_path(prepared->tool_path, 0))
                 return "{\"error\":\"Invalid glob path\"}";
@@ -2879,6 +2931,8 @@ static const char *prepare_tool(const char *name, const char *arguments,
             copy_string_token(arguments, &tokens[2], prepared->value,
                               sizeof(prepared->value)) != 0)
             return "{\"error\":\"Invalid bash arguments\"}";
+        if (contains_home_path(prepared->value))
+            return "{\"error\":\"Home-relative paths are not allowed\"}";
         prepared->kind = PREPARED_BASH;
         snprintf(prepared->display, sizeof(prepared->display),
                  "bash command=%s", prepared->value);
@@ -3711,6 +3765,30 @@ void ccode_print_content_delta(const char *content) {
     ccode_md_render(&g_md_renderer, content);
 }
 
+static int g_reasoning_active = 0;
+
+void ccode_print_reasoning_delta(const char *content) {
+    if (!content) return;
+    if (!g_reasoning_active) {
+        fputs("\n\033[2m", stdout);
+        g_reasoning_active = 1;
+    }
+    ccode_fprint_safe(stdout, content, "");
+    fflush(stdout);
+}
+
+void ccode_print_reasoning_end(void) {
+    if (g_reasoning_active) {
+        fputs("\033[0m\n\n", stdout);
+        g_reasoning_active = 0;
+    }
+}
+
+static void default_stream_reasoning(const char *content, void *context) {
+    (void)context;
+    ccode_print_reasoning_delta(content);
+}
+
 const char *ccode_coding_agent_system_prompt(void) {
     return
         "You are ccode, a careful terminal coding agent working in the user's "
@@ -3882,7 +3960,9 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
             ccode_conversation_compact(conv, ch, tk);
         }
 
-        body = ccode_conversation_build_request(conv, cfg->model, tools_json);
+        body = ccode_conversation_build_request(conv, cfg->model, tools_json,
+                                                 cfg->thinking_enabled,
+                                                 cfg->thinking_effort);
         free(tools_json);
         if (!body) {
             fprintf(stderr, "Out of memory while building request.\n");
@@ -3892,13 +3972,20 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
         ccode_sse_accumulator_init(&acc);
         acc.on_content = cfg->on_content;
         acc.on_content_context = cfg->on_content_context;
+        acc.on_reasoning = cfg->on_reasoning ? cfg->on_reasoning
+                                             : default_stream_reasoning;
+        acc.on_reasoning_context = cfg->on_reasoning_context;
         result = ccode_stream_chat(cfg->api_base, cfg->api_key, body, &acc);
         free(body);
 
         if (result < 0) {
+            ccode_print_reasoning_end();
             ccode_sse_accumulator_destroy(&acc);
             break;
         }
+
+        /* Close the reasoning block before printing the regular answer. */
+        ccode_print_reasoning_end();
 
         if (!cfg->on_content) ccode_print_content_delta(acc.content);
 
@@ -4249,6 +4336,9 @@ static void print_repl_help(void) {
         "    /models            List available models from API\n"
         "    /models search K   Search models by keyword\n"
         "    /models info NAME  Show model details\n"
+        "    /thinking          Toggle thinking/reasoning mode\n"
+        "    /thinking on|off   Enable or disable thinking\n"
+        "    /thinking effort L Set thinking effort: low, medium, high, xhigh, max\n"
         "    /history           Show prompts entered this session\n"
         "    /sessions          List all saved sessions\n"
         "    /sessions delete N Delete a session file\n"
@@ -4259,6 +4349,7 @@ static void print_repl_help(void) {
 
 int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
     char current_model[256];
+    char current_effort[16];
     char history[CCODE_HISTORY_MAX][CCODE_INPUT_LINE_MAX];
     int history_count = 0;
 
@@ -4269,6 +4360,14 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
         current_model[ml] = '\0';
     } else {
         current_model[0] = '\0';
+    }
+    {
+        const char *eff = cfg->thinking_effort ? cfg->thinking_effort : "medium";
+        size_t el = strlen(eff);
+        if (el >= sizeof(current_effort)) el = sizeof(current_effort) - 1;
+        memcpy(current_effort, eff, el);
+        current_effort[el] = '\0';
+        cfg->thinking_effort = current_effort;
     }
     int exit_code = 0;
     struct ccode_conversation conv;
@@ -4490,6 +4589,56 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                 fputs("  Unknown command: ", stderr);
                 ccode_fprint_safe(stderr, line, "");
                 fputs(" (try /help)\n", stderr);
+                continue;
+            } else if (strncmp(line, "/thinking", 9) == 0) {
+                if (strcmp(line, "/thinking") == 0) {
+                    fprintf(stderr, "  Thinking: %s (effort: %s)\n",
+                            cfg->thinking_enabled ? "on" : "off",
+                            current_effort);
+                    continue;
+                }
+                if (strcmp(line, "/thinking on") == 0) {
+                    cfg->thinking_enabled = 1;
+                    fprintf(stderr, "  Thinking enabled (effort: %s).\n",
+                            current_effort);
+                    continue;
+                }
+                if (strcmp(line, "/thinking off") == 0) {
+                    cfg->thinking_enabled = 0;
+                    fputs("  Thinking disabled.\n", stderr);
+                    continue;
+                }
+                if (strncmp(line, "/thinking effort ", 17) == 0) {
+                    const char *eff = line + 17;
+                    if (strcmp(eff, "low") == 0 ||
+                        strcmp(eff, "medium") == 0 ||
+                        strcmp(eff, "high") == 0 ||
+                        strcmp(eff, "xhigh") == 0 ||
+                        strcmp(eff, "max") == 0) {
+                        size_t el = strlen(eff);
+                        if (el >= sizeof(current_effort))
+                            el = sizeof(current_effort) - 1;
+                        memcpy(current_effort, eff, el);
+                        current_effort[el] = '\0';
+                        cfg->thinking_effort = current_effort;
+                        if (!cfg->thinking_enabled) {
+                            cfg->thinking_enabled = 1;
+                            fprintf(stderr,
+                                "  Thinking enabled, effort set to: %s.\n",
+                                current_effort);
+                        } else {
+                            fprintf(stderr,
+                                "  Thinking effort set to: %s.\n",
+                                current_effort);
+                        }
+                    } else {
+                        fputs("  Usage: /thinking effort low|medium|high|xhigh|max\n",
+                              stderr);
+                    }
+                    continue;
+                }
+                fputs("  Usage: /thinking [on|off|effort low|medium|high|xhigh|max]\n",
+                      stderr);
                 continue;
             } else if (strcmp(line, "/clear") == 0) {
                 history_count = 0;

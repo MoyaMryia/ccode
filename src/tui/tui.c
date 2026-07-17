@@ -46,7 +46,9 @@ static const char *tui_find_backend(const char *requested) {
 static void tui_process_backend(struct tui_protocol *protocol,
                                 struct tui_messages *messages, int *changed,
                                 int *permission_pending, char *permission_text,
-                                size_t permission_text_cap, int *streaming) {
+                                size_t permission_text_cap, int *streaming,
+                                int *thinking_enabled, char *thinking_effort,
+                                size_t thinking_effort_cap) {
     char line[TUI_PROTOCOL_EVENT_MAX];
     char type[32];
     char text[102401];
@@ -71,6 +73,12 @@ static void tui_process_backend(struct tui_protocol *protocol,
                 *streaming = 1;
                 *changed = 1;
             }
+        } else if (strcmp(type, "reasoning_delta") == 0) {
+            if (tui_protocol_field(line, "text", text, sizeof(text)) == 0) {
+                if (tui_messages_append_last(messages, TUI_MSG_REASONING, text) != 0)
+                    tui_messages_add(messages, TUI_MSG_REASONING, text);
+                *changed = 1;
+            }
         } else if (strcmp(type, "message_end") == 0) {
             *streaming = 0;
             *changed = 1;
@@ -79,8 +87,32 @@ static void tui_process_backend(struct tui_protocol *protocol,
             if (tui_protocol_field(line, "text", text, sizeof(text)) == 0)
                 if (tui_messages_add(messages, TUI_MSG_SYSTEM, text) == 0) *changed = 1;
         } else if (strcmp(type, "message") == 0) {
-            if (tui_protocol_field(line, "text", text, sizeof(text)) == 0)
-                if (tui_messages_add(messages, TUI_MSG_ASSISTANT, text) == 0) *changed = 1;
+            if (tui_protocol_field(line, "text", text, sizeof(text)) == 0) {
+                if (tui_messages_add(messages, TUI_MSG_ASSISTANT, text) == 0)
+                    *changed = 1;
+                if (strstr(text, "Thinking enabled") != NULL) {
+                    *thinking_enabled = 1;
+                    const char *eff = strstr(text, "effort set to: ");
+                    if (eff) {
+                        eff += 15;
+                        size_t i;
+                        for (i = 0; i < thinking_effort_cap - 1 && eff[i] && eff[i] != '.' && eff[i] != '\n'; i++)
+                            thinking_effort[i] = eff[i];
+                        thinking_effort[i] = '\0';
+                    }
+                } else if (strstr(text, "Thinking disabled") != NULL) {
+                    *thinking_enabled = 0;
+                } else {
+                    const char *eff_label = strstr(text, "Thinking effort set to: ");
+                    if (eff_label) {
+                        eff_label += 24;
+                        size_t i;
+                        for (i = 0; i < thinking_effort_cap - 1 && eff_label[i] && eff_label[i] != '.' && eff_label[i] != '\n'; i++)
+                            thinking_effort[i] = eff_label[i];
+                        thinking_effort[i] = '\0';
+                    }
+                }
+            }
         } else if (strcmp(type, "permission_request") == 0) {
             if (tui_protocol_field(line, "text", permission_text,
                                    permission_text_cap) == 0) {
@@ -101,10 +133,12 @@ static void tui_process_backend(struct tui_protocol *protocol,
 static void tui_draw(struct tui_term *term, struct tui_messages *messages,
                      struct tui_input *input, const char *model, const char *workspace,
                      int permission_pending,
+                     int thinking_enabled, const char *thinking_effort,
                      int scroll_offset) {
     int message_rows = term->rows - 4;
     if (message_rows < 1) message_rows = 1;
-    tui_status_render(term->cols, model, workspace);
+    tui_status_render(term->cols, model, workspace,
+                      thinking_enabled, thinking_effort);
     tui_render_move(1, 0); tui_render_clear_line();
     printf(TUI_DIM "Messages" TUI_RESET);
     tui_messages_render(messages, 2, message_rows - 1, term->cols, scroll_offset);
@@ -124,7 +158,7 @@ static void tui_draw(struct tui_term *term, struct tui_messages *messages,
         tui_render_cursor(1);
     }
     tui_render_move(term->rows - 1, 0); tui_render_clear_line();
-    printf(TUI_DIM "/help  /clear  /exit  · Enter submit · Ctrl-C exit" TUI_RESET);
+    printf(TUI_DIM "/help /thinking /clear /exit · Enter submit · Ctrl-C exit" TUI_RESET);
     {
         size_t view_start = permission_pending ? 0 : tui_input_view_start(input, term->cols - 3);
         int cursor_col = 2 + (view_start > 0 ? 1 : 0) +
@@ -154,12 +188,18 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
     int scroll_offset = 0;
     int follow_bottom = 1;
     int streaming = 0;
+    int thinking_enabled = config->thinking_enabled;
+    char thinking_effort[16] = "medium";
     char permission_text[4096] = "";
     const char *workspace = config->workspace ? config->workspace : ".";
     const char *backend = tui_find_backend(backend_path);
 
     tui_stop = 0;
     tui_resize_pending = 0;
+    if (config->thinking_effort) {
+        snprintf(thinking_effort, sizeof(thinking_effort), "%s",
+                 config->thinking_effort);
+    }
     memset(&term, 0, sizeof(term));
     if (tui_term_init(&term) != 0) {
         fprintf(stderr, "--tui requires an interactive terminal\n");
@@ -179,7 +219,7 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
     action.sa_handler = SIG_IGN;
     sigaction(SIGPIPE, &action, &old_pipe);
     if (tui_protocol_start(&protocol, backend, config->model, workspace,
-                           argc, argv) != 0) {
+                           thinking_enabled, thinking_effort, argc, argv) != 0) {
         sigaction(SIGINT, &old_int, NULL);
         sigaction(SIGTERM, &old_term, NULL);
         sigaction(SIGHUP, &old_hup, NULL);
@@ -194,7 +234,7 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
     action.sa_handler = tui_handle_signal;
     sigaction(SIGWINCH, &action, NULL);
     tui_draw(&term, &messages, &input, config->model, workspace,
-             permission_pending, scroll_offset);
+             permission_pending, thinking_enabled, thinking_effort, scroll_offset);
 
     while (!tui_stop) {
         if (tui_resize_pending) {
@@ -202,22 +242,24 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
             tui_term_size(&term);
             tui_protocol_send_resize(&protocol, term.cols, term.rows);
             if (follow_bottom)
-                scroll_offset = tui_messages_max_scroll(&messages, term.rows - 5);
-            else if (scroll_offset > tui_messages_max_scroll(&messages, term.rows - 5))
-                scroll_offset = tui_messages_max_scroll(&messages, term.rows - 5);
+                scroll_offset = tui_messages_max_scroll(&messages, term.rows - 5, term.cols);
+            else if (scroll_offset > tui_messages_max_scroll(&messages, term.rows - 5, term.cols))
+                scroll_offset = tui_messages_max_scroll(&messages, term.rows - 5, term.cols);
             dirty = 1;
         }
         tui_process_backend(&protocol, &messages, &dirty, &permission_pending,
-                            permission_text, sizeof(permission_text), &streaming);
+                            permission_text, sizeof(permission_text), &streaming,
+                            &thinking_enabled, thinking_effort,
+                            sizeof(thinking_effort));
         if (permission_pending) {
             follow_bottom = 1;
-            scroll_offset = tui_messages_max_scroll(&messages, term.rows - 5);
+            scroll_offset = tui_messages_max_scroll(&messages, term.rows - 5, term.cols);
         }
         if (dirty && follow_bottom)
-            scroll_offset = tui_messages_max_scroll(&messages, term.rows - 5);
+            scroll_offset = tui_messages_max_scroll(&messages, term.rows - 5, term.cols);
         if (dirty) {
             tui_draw(&term, &messages, &input, config->model, workspace,
-                     permission_pending, scroll_offset);
+                     permission_pending, thinking_enabled, thinking_effort, scroll_offset);
             dirty = 0;
         }
         key = tui_term_read_key(16);
@@ -230,9 +272,9 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
             if (key == TUI_KEY_UP || key == TUI_KEY_PAGE_UP) scroll_offset -= step;
             else scroll_offset += step;
             if (scroll_offset < 0) scroll_offset = 0;
-            if (scroll_offset > tui_messages_max_scroll(&messages, viewport))
-                scroll_offset = tui_messages_max_scroll(&messages, viewport);
-            follow_bottom = scroll_offset >= tui_messages_max_scroll(&messages, viewport);
+            if (scroll_offset > tui_messages_max_scroll(&messages, viewport, term.cols))
+                scroll_offset = tui_messages_max_scroll(&messages, viewport, term.cols);
+            follow_bottom = scroll_offset >= tui_messages_max_scroll(&messages, viewport, term.cols);
             dirty = 1;
             continue;
         }
@@ -277,7 +319,7 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
             if (input.len == 0) break;
             if (tui_input_delete(&input)) {
                 tui_draw(&term, &messages, &input, config->model, workspace,
-                         permission_pending, scroll_offset);
+                         permission_pending, thinking_enabled, thinking_effort, scroll_offset);
                 dirty = 0;
             }
             continue;
@@ -285,14 +327,14 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
         if (key == 12) {
             fputs("\033[2J\033[H", stdout);
             tui_draw(&term, &messages, &input, config->model, workspace,
-                     permission_pending, scroll_offset);
+                     permission_pending, thinking_enabled, thinking_effort, scroll_offset);
             dirty = 0;
             continue;
         }
         if (key == TUI_KEY_DELETE) {
             if (tui_input_delete(&input)) {
                 tui_draw(&term, &messages, &input, config->model, workspace,
-                         permission_pending, scroll_offset);
+                         permission_pending, thinking_enabled, thinking_effort, scroll_offset);
                 dirty = 0;
             }
             continue;
@@ -314,16 +356,16 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
             }
             tui_input_clear(&input);
             follow_bottom = 1;
-            scroll_offset = tui_messages_max_scroll(&messages, term.rows - 5);
+            scroll_offset = tui_messages_max_scroll(&messages, term.rows - 5, term.cols);
             tui_draw(&term, &messages, &input, config->model, workspace,
-                     permission_pending, scroll_offset);
+                     permission_pending, thinking_enabled, thinking_effort, scroll_offset);
             dirty = 0;
             continue;
         }
         if (key == 3) break;
         if (tui_input_key(&input, key)) {
             tui_draw(&term, &messages, &input, config->model, workspace,
-                     permission_pending, scroll_offset);
+                     permission_pending, thinking_enabled, thinking_effort, scroll_offset);
             dirty = 0;
         }
     }

@@ -593,6 +593,65 @@ static int test_accumulator_rejects_size_t_wrap(void) {
     return 1;
 }
 
+static int test_parse_reasoning_content_delta(void) {
+    const char *json = "{\"id\":\"x\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"let me think\"},\"finish_reason\":null}]}";
+    struct ccode_sse_delta delta;
+    int r = ccode_parse_sse_delta(json, strlen(json), &delta);
+    ASSERT(r == 0);
+    ASSERT(delta.reasoning_content != NULL);
+    ASSERT(strcmp(delta.reasoning_content, "let me think") == 0);
+    ASSERT(delta.content == NULL);
+    ASSERT(delta.finish_reason == NULL);
+    ccode_free_sse_delta(&delta);
+    return 1;
+}
+
+static int test_reasoning_and_content_separate(void) {
+    struct ccode_sse_delta delta;
+    int r;
+    const char *r1 = "{\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}";
+    r = ccode_parse_sse_delta(r1, strlen(r1), &delta);
+    ASSERT(r == 0);
+    ASSERT(delta.reasoning_content != NULL);
+    ASSERT(delta.content == NULL);
+    ccode_free_sse_delta(&delta);
+
+    const char *r2 = "{\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}";
+    r = ccode_parse_sse_delta(r2, strlen(r2), &delta);
+    ASSERT(r == 0);
+    ASSERT(delta.content != NULL);
+    ASSERT(delta.reasoning_content == NULL);
+    ccode_free_sse_delta(&delta);
+    return 1;
+}
+
+static int test_accumulator_reasoning_callback(void) {
+    struct ccode_sse_accumulator acc;
+    struct content_capture reasoning_cap;
+    struct content_capture content_cap;
+    memset(&reasoning_cap, 0, sizeof(reasoning_cap));
+    memset(&content_cap, 0, sizeof(content_cap));
+    ccode_sse_accumulator_init(&acc);
+    acc.on_reasoning = capture_content;
+    acc.on_reasoning_context = &reasoning_cap;
+    acc.on_content = capture_content;
+    acc.on_content_context = &content_cap;
+
+    ASSERT(TEST_PROCESS(&acc,
+        "{\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}") == 0);
+    ASSERT(TEST_PROCESS(&acc,
+        "{\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}") == 0);
+
+    ASSERT(strcmp(reasoning_cap.text, "thinking") == 0);
+    ASSERT(strcmp(content_cap.text, "answer") == 0);
+    ASSERT(acc.reasoning_content != NULL);
+    ASSERT(strcmp(acc.reasoning_content, "thinking") == 0);
+    ASSERT(acc.content != NULL);
+    ASSERT(strcmp(acc.content, "answer") == 0);
+    ccode_sse_accumulator_destroy(&acc);
+    return 1;
+}
+
 int main(void) {
     fprintf(stderr, "=== JSON Unit Tests ===\n");
 
@@ -630,6 +689,9 @@ int main(void) {
     TEST(content_accumulator_hard_limit);
     TEST(tool_arguments_accumulator_hard_limit);
     TEST(accumulator_rejects_size_t_wrap);
+    TEST(parse_reasoning_content_delta);
+    TEST(reasoning_and_content_separate);
+    TEST(accumulator_reasoning_callback);
 
     fprintf(stderr, "\n=== Results: %d tests, %d failed ===\n",
             tests_run, tests_failed);

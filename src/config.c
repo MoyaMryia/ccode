@@ -29,6 +29,8 @@ void ccode_print_usage(const char *program) {
         "      --read-only        Enable read-only tools (read, glob, grep)\n"
         "      --write            Enable read and write_file tools with confirmation\n"
         "      --auto-approve     Auto-approve all tool requests\n"
+        "      --thinking         Enable thinking/reasoning mode\n"
+        "      --thinking-effort L  Thinking effort: low, medium, high, xhigh, or max (default: medium)\n"
         "      --no-markdown      Disable markdown rendering (raw output)\n"
         "      --session-dir DIR  Session storage directory\n"
         "  -h, --help             Show this help\n"
@@ -39,6 +41,8 @@ void ccode_print_usage(const char *program) {
         "  CCODE_SESSION_MAX_SIZE     Max session file size (default: 10M)\n"
         "  CCODE_SESSION_KEEP_COUNT   Max sessions to keep (default: 10)\n"
         "  CCODE_MARKDOWN             Enable markdown rendering (default: 1, set 0 to disable)\n"
+        "  CCODE_THINKING             Enable thinking/reasoning mode (set 1 to enable)\n"
+        "  CCODE_THINKING_EFFORT      Thinking effort: low, medium, high, xhigh, or max (default: medium)\n"
         "\n"
         "REPL slash commands (interactive mode):\n"
         "  /help        Show available slash commands\n"
@@ -117,6 +121,14 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
         const char *md = getenv("CCODE_MARKDOWN");
         config->markdown = (!md || md[0] != '0') ? 1 : 0;
     }
+    {
+        const char *tk = getenv("CCODE_THINKING");
+        config->thinking_enabled = (tk && tk[0] == '1') ? 1 : 0;
+    }
+    {
+        const char *te = getenv("CCODE_THINKING_EFFORT");
+        config->thinking_effort = te;
+    }
     config->session_dir = getenv("CCODE_SESSION_DIR");
 
     for (i = 1; i < argc; i++) {
@@ -168,6 +180,24 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
         }
         if (strcmp(argv[i], "--auto-approve") == 0) {
             config->auto_approve = 1;
+            continue;
+        }
+        if (strcmp(argv[i], "--thinking") == 0) {
+            config->thinking_enabled = 1;
+            continue;
+        }
+        if (strcmp(argv[i], "--thinking-effort") == 0 && i + 1 < argc) {
+            const char *effort = argv[++i];
+            if (strcmp(effort, "low") != 0 &&
+                strcmp(effort, "medium") != 0 &&
+                strcmp(effort, "high") != 0 &&
+                strcmp(effort, "xhigh") != 0 &&
+                strcmp(effort, "max") != 0) {
+                fprintf(stderr, "Invalid thinking effort: %s (expected: low, medium, high, xhigh, max)\n", effort);
+                return -1;
+            }
+            config->thinking_effort = effort;
+            config->thinking_enabled = 1;
             continue;
         }
         if (strcmp(argv[i], "--no-markdown") == 0) {
