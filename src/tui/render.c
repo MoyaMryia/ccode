@@ -21,25 +21,42 @@ void tui_render_clear_screen(void) {
     fputs("\033[2J\033[H", stdout);
 }
 
-void tui_render_text(const char *text, int max_cols) {
-    tui_render_text_n(text, strlen(text ? text : ""), max_cols);
+int tui_render_text(const char *text, int max_cols) {
+    return tui_render_text_n(text, strlen(text ? text : ""), max_cols);
 }
 
-void tui_render_text_n(const char *text, size_t length, int max_cols) {
+int tui_render_text_n(const char *text, size_t length, int max_cols) {
     int written = 0;
+    int vlines = 1;
     const unsigned char *p = (const unsigned char *)(text ? text : "");
     size_t offset = 0;
-    if (max_cols <= 0) return;
-    while (offset < length && p[offset] && written < max_cols) {
+    if (max_cols <= 0) return 1;
+    while (offset < length && p[offset]) {
         unsigned char c = p[offset++];
-        if (c == '\033' || c == '\r' || c == '\n' || c == '\t' ||
-            c < 0x20U || c == 0x7fU) {
+        if (c == '\n') {
+            fputc('\n', stdout);
+            written = 0;
+            vlines++;
+        } else if (c == '\033' || c == '\r' || c == '\t' ||
+                   c < 0x20U || c == 0x7fU) {
+            if (written >= max_cols) {
+                fputc('\n', stdout);
+                written = 0;
+                vlines++;
+            }
             fputc('?', stdout);
+            written++;
         } else {
+            if (written >= max_cols) {
+                fputc('\n', stdout);
+                written = 0;
+                vlines++;
+            }
             fputc(c, stdout);
+            written++;
         }
-        written++;
     }
+    return vlines;
 }
 
 void tui_render_cursor(int visible) {

@@ -458,6 +458,24 @@ static int test_glob_normalize(void) {
     return 1;
 }
 
+static int test_home_relative_paths_are_rejected(void) {
+    char display[2048];
+
+    ASSERT(test_prepare_tool_display("read_file",
+        "{\"file_path\":\"~/secret.txt\"}",
+        display, sizeof(display)) != 0);
+    ASSERT(test_prepare_tool_display("glob",
+        "{\"pattern\":\"*.c\",\"path\":\"~/src\"}",
+        display, sizeof(display)) != 0);
+    ASSERT(test_prepare_tool_display("run_command",
+        "{\"argv\":[\"cat\",\"~/secret.txt\"]}",
+        display, sizeof(display)) != 0);
+    ASSERT(test_prepare_tool_display("bash",
+        "{\"command\":\"cat ~/secret.txt\"}",
+        display, sizeof(display)) != 0);
+    return 1;
+}
+
 static int test_small_text_passes(void) {
     char *r;
 
@@ -515,6 +533,22 @@ static int test_glob_starstar_recurses(void) {
         ASSERT(strstr(r, "deep/d1/d2/x.h") != NULL);
         free(r);
     }
+    return 1;
+}
+
+static int test_glob_nested_pattern_matches_relative_path(void) {
+    char *r;
+    mkdir_p("fixtures/glob_nested/src/lib");
+    write_file("fixtures/glob_nested/src/lib/nested.c", "int n;\n", 7);
+    test_reset_workspace();
+    r = test_exec_glob("fixtures/glob_nested", "src/**/*.c");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "src/lib/nested.c") != NULL);
+    free(r);
+    unlink("fixtures/glob_nested/src/lib/nested.c");
+    rmdir("fixtures/glob_nested/src/lib");
+    rmdir("fixtures/glob_nested/src");
+    rmdir("fixtures/glob_nested");
     return 1;
 }
 
@@ -2573,6 +2607,64 @@ static int test_coding_agent_prompt_contract(void) {
     return 1;
 }
 
+static int test_build_request_no_thinking(void) {
+    struct ccode_conversation conv;
+    char *req;
+    ASSERT(ccode_conversation_init(&conv, 4) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hello") == 0);
+    req = ccode_conversation_build_request(&conv, "test-model", NULL,
+                                           0, NULL);
+    ASSERT(req != NULL);
+    ASSERT(strstr(req, "\"model\":\"test-model\"") != NULL);
+    ASSERT(strstr(req, "\"stream\":true") != NULL);
+    ASSERT(strstr(req, "reasoning_effort") == NULL);
+    free(req);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
+static int test_build_request_thinking_medium(void) {
+    struct ccode_conversation conv;
+    char *req;
+    ASSERT(ccode_conversation_init(&conv, 4) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hello") == 0);
+    req = ccode_conversation_build_request(&conv, "test-model", NULL,
+                                           1, "medium");
+    ASSERT(req != NULL);
+    ASSERT(strstr(req, "\"reasoning_effort\":\"medium\"") != NULL);
+    ASSERT(strstr(req, "\"stream\":true") != NULL);
+    free(req);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
+static int test_build_request_thinking_high(void) {
+    struct ccode_conversation conv;
+    char *req;
+    ASSERT(ccode_conversation_init(&conv, 4) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hello") == 0);
+    req = ccode_conversation_build_request(&conv, "test-model", NULL,
+                                           1, "high");
+    ASSERT(req != NULL);
+    ASSERT(strstr(req, "\"reasoning_effort\":\"high\"") != NULL);
+    free(req);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
+static int test_build_request_thinking_default_effort(void) {
+    struct ccode_conversation conv;
+    char *req;
+    ASSERT(ccode_conversation_init(&conv, 4) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hi") == 0);
+    req = ccode_conversation_build_request(&conv, "m", NULL, 1, NULL);
+    ASSERT(req != NULL);
+    ASSERT(strstr(req, "\"reasoning_effort\":\"medium\"") != NULL);
+    free(req);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
 int main(void) {
     int repo_ok;
 
@@ -2590,9 +2682,11 @@ int main(void) {
     TEST(read_rejects_fifo);
     TEST(workspace_root_replacement_uses_fixed_fd);
     TEST(glob_normalize);
+    TEST(home_relative_paths_are_rejected);
     TEST(small_text_passes);
     TEST(glob_emits_relative_paths);
     TEST(glob_starstar_recurses);
+    TEST(glob_nested_pattern_matches_relative_path);
     TEST(glob_truncates_after_max_results);
     TEST(glob_path_scope_restricts_results);
     TEST(glob_rejects_symlink);
@@ -2720,6 +2814,12 @@ int main(void) {
     TEST(models_fetch_invalid);
     TEST(models_fetch_bad_url);
     TEST(coding_agent_prompt_contract);
+
+    /* Phase 8: Thinking/reasoning request building tests */
+    TEST(build_request_no_thinking);
+    TEST(build_request_thinking_medium);
+    TEST(build_request_thinking_high);
+    TEST(build_request_thinking_default_effort);
 
     fprintf(stderr, "\n=== Results: %d tests, %d failed ===\n",
             tests_run, tests_failed);

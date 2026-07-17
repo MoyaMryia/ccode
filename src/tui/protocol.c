@@ -49,16 +49,35 @@ static int send_string_event(struct tui_protocol *protocol, const char *type,
     return write_all(protocol->input_fd, line, strlen(line));
 }
 
+int tui_protocol_send_hello(struct tui_protocol *protocol, const char *model,
+                            const char *workspace, int thinking_enabled,
+                            const char *thinking_effort) {
+    char escaped_model[1024], escaped_workspace[4096], escaped_effort[64];
+    char line[6000];
+    if (!protocol) return -1;
+    if (json_escape(model ? model : "", escaped_model, sizeof(escaped_model)) != 0 ||
+        json_escape(workspace ? workspace : ".", escaped_workspace,
+                    sizeof(escaped_workspace)) != 0 ||
+        json_escape(thinking_effort ? thinking_effort : "medium", escaped_effort,
+                    sizeof(escaped_effort)) != 0)
+        return -1;
+    snprintf(line, sizeof(line),
+             "{\"type\":\"hello\",\"model\":\"%s\",\"workspace\":\"%s\","
+             "\"thinking\":%s,\"thinking_effort\":\"%s\"}\n",
+             escaped_model, escaped_workspace,
+             thinking_enabled ? "true" : "false", escaped_effort);
+    return write_all(protocol->input_fd, line, strlen(line));
+}
+
 int tui_protocol_start(struct tui_protocol *protocol, const char *path,
                        const char *model, const char *workspace,
+                       int thinking_enabled, const char *thinking_effort,
                        int argc, char **argv) {
     int to_child[2], from_child[2];
     pid_t pid;
     char *child_argv[64];
     int child_argc = 0;
     int i;
-    char escaped_model[1024], escaped_workspace[4096];
-    char line[6000];
     if (!protocol || !path || argc < 1 || !argv) return -1;
     child_argv[child_argc++] = (char *)path;
     child_argv[child_argc++] = "--json";
@@ -95,12 +114,8 @@ int tui_protocol_start(struct tui_protocol *protocol, const char *path,
     protocol->output_fd = from_child[0];
     protocol->pid = (int)pid;
     fcntl(protocol->output_fd, F_SETFL, fcntl(protocol->output_fd, F_GETFL) | O_NONBLOCK);
-    if (json_escape(model ? model : "", escaped_model, sizeof(escaped_model)) != 0 ||
-        json_escape(workspace ? workspace : ".", escaped_workspace, sizeof(escaped_workspace)) != 0)
-        return -1;
-    snprintf(line, sizeof(line), "{\"type\":\"hello\",\"model\":\"%s\",\"workspace\":\"%s\"}\n",
-             escaped_model, escaped_workspace);
-    return write_all(protocol->input_fd, line, strlen(line));
+    return tui_protocol_send_hello(protocol, model, workspace, thinking_enabled,
+                                   thinking_effort);
 }
 
 int tui_protocol_send_input(struct tui_protocol *protocol, const char *text) {

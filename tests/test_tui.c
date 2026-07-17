@@ -59,8 +59,8 @@ static int test_multiline_message_count(void) {
     struct tui_messages messages;
     tui_messages_init(&messages);
     ASSERT(tui_messages_add(&messages, TUI_MSG_ASSISTANT, "one\ntwo\nthree") == 0);
-    ASSERT(tui_messages_total_lines(&messages) == 3);
-    ASSERT(tui_messages_max_scroll(&messages, 2) == 1);
+    ASSERT(tui_messages_total_lines(&messages, 80) == 3);
+    ASSERT(tui_messages_max_scroll(&messages, 2, 80) == 1);
     tui_messages_clear(&messages);
     return 1;
 }
@@ -170,6 +170,66 @@ static int test_assistant_markdown_respects_width(void) {
     return 1;
 }
 
+static int test_assistant_markdown_wraps_long_line(void) {
+    struct tui_messages messages;
+    FILE *capture;
+    int saved_stdout;
+    char output[2048];
+    size_t length;
+
+    tui_messages_init(&messages);
+    ASSERT(tui_messages_add(&messages, TUI_MSG_ASSISTANT, "abcdefghij") == 0);
+    ASSERT(tui_messages_total_lines(&messages, 7) == 2);
+    capture = tmpfile();
+    ASSERT(capture != NULL);
+    fflush(stdout);
+    saved_stdout = dup(STDOUT_FILENO);
+    ASSERT(saved_stdout >= 0);
+    ASSERT(dup2(fileno(capture), STDOUT_FILENO) >= 0);
+    tui_messages_render(&messages, 0, 2, 7, 0);
+    fflush(stdout);
+    ASSERT(dup2(saved_stdout, STDOUT_FILENO) >= 0);
+    close(saved_stdout);
+    ASSERT(fseek(capture, 0, SEEK_SET) == 0);
+    length = fread(output, 1, sizeof(output) - 1, capture);
+    output[length] = '\0';
+    ASSERT(strstr(output, "abcde") != NULL);
+    ASSERT(strstr(output, "fghij") != NULL);
+    ASSERT(strstr(output, "\xe2\x97\x8f fghij") == NULL);
+    fclose(capture);
+    tui_messages_clear(&messages);
+    return 1;
+}
+
+static int test_assistant_markdown_scrolls_wrapped_line(void) {
+    struct tui_messages messages;
+    FILE *capture;
+    int saved_stdout;
+    char output[1024];
+    size_t length;
+
+    tui_messages_init(&messages);
+    ASSERT(tui_messages_add(&messages, TUI_MSG_ASSISTANT, "abcdefghij") == 0);
+    capture = tmpfile();
+    ASSERT(capture != NULL);
+    fflush(stdout);
+    saved_stdout = dup(STDOUT_FILENO);
+    ASSERT(saved_stdout >= 0);
+    ASSERT(dup2(fileno(capture), STDOUT_FILENO) >= 0);
+    tui_messages_render(&messages, 0, 1, 7, 1);
+    fflush(stdout);
+    ASSERT(dup2(saved_stdout, STDOUT_FILENO) >= 0);
+    close(saved_stdout);
+    ASSERT(fseek(capture, 0, SEEK_SET) == 0);
+    length = fread(output, 1, sizeof(output) - 1, capture);
+    output[length] = '\0';
+    ASSERT(strstr(output, "abcde") == NULL);
+    ASSERT(strstr(output, "fghij") != NULL);
+    fclose(capture);
+    tui_messages_clear(&messages);
+    return 1;
+}
+
 static int test_protocol_recovers_after_oversized_line(void) {
     struct tui_protocol protocol;
     int pipefd[2];
@@ -189,6 +249,48 @@ static int test_protocol_recovers_after_oversized_line(void) {
     return 1;
 }
 
+static int test_protocol_hello_includes_thinking_state(void) {
+    struct tui_protocol protocol;
+    int pipefd[2];
+    char line[512];
+    ssize_t length;
+
+    ASSERT(pipe(pipefd) == 0);
+    memset(&protocol, 0, sizeof(protocol));
+    protocol.input_fd = pipefd[1];
+    ASSERT(tui_protocol_send_hello(&protocol, "test-model", "/tmp/work",
+                                   1, "high") == 0);
+    close(pipefd[1]);
+    length = read(pipefd[0], line, sizeof(line) - 1);
+    ASSERT(length > 0);
+    line[length] = '\0';
+    ASSERT(strstr(line, "\"thinking\":true") != NULL);
+    ASSERT(strstr(line, "\"thinking_effort\":\"high\"") != NULL);
+    close(pipefd[0]);
+    return 1;
+}
+
+static int test_protocol_hello_can_disable_thinking(void) {
+    struct tui_protocol protocol;
+    int pipefd[2];
+    char line[512];
+    ssize_t length;
+
+    ASSERT(pipe(pipefd) == 0);
+    memset(&protocol, 0, sizeof(protocol));
+    protocol.input_fd = pipefd[1];
+    ASSERT(tui_protocol_send_hello(&protocol, "test-model", ".",
+                                   0, NULL) == 0);
+    close(pipefd[1]);
+    length = read(pipefd[0], line, sizeof(line) - 1);
+    ASSERT(length > 0);
+    line[length] = '\0';
+    ASSERT(strstr(line, "\"thinking\":false") != NULL);
+    ASSERT(strstr(line, "\"thinking_effort\":\"medium\"") != NULL);
+    close(pipefd[0]);
+    return 1;
+}
+
 int main(void) {
     TEST(input_editing_controls);
     TEST(input_horizontal_view);
@@ -197,7 +299,11 @@ int main(void) {
     TEST(multiline_render_does_not_emit_content_newlines);
     TEST(assistant_markdown_rendering);
     TEST(assistant_markdown_respects_width);
+    TEST(assistant_markdown_wraps_long_line);
+    TEST(assistant_markdown_scrolls_wrapped_line);
     TEST(protocol_recovers_after_oversized_line);
+    TEST(protocol_hello_includes_thinking_state);
+    TEST(protocol_hello_can_disable_thinking);
     fprintf(stderr, "TUI tests: %d run, %d failed\n", tests_run, tests_failed);
     return tests_failed != 0;
 }

@@ -247,7 +247,9 @@ static int append_cstr(char **buf, size_t *pos, size_t *cap, const char *s) {
 
 char *ccode_conversation_build_request(struct ccode_conversation *conv,
                                        const char *model,
-                                       const char *tools_json) {
+                                       const char *tools_json,
+                                       int thinking_enabled,
+                                       const char *thinking_effort) {
     size_t cap = estimate_request_size(conv, model);
     size_t pos = 0;
     char *buf = malloc(cap);
@@ -323,6 +325,14 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
     if (tools_json && tools_json[0] != '\0') {
         if (append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
         if (append_cstr(&buf, &pos, &cap, tools_json) != 0) goto fail;
+    }
+
+    if (thinking_enabled) {
+        const char *effort = thinking_effort ? thinking_effort : "medium";
+        if (append_cstr(&buf, &pos, &cap, ",\"reasoning_effort\":\"") != 0)
+            goto fail;
+        if (append_cstr(&buf, &pos, &cap, effort) != 0) goto fail;
+        if (append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
     }
 
     if (append_cstr(&buf, &pos, &cap, ",\"stream\":true}") != 0) goto fail;

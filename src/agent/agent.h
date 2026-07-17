@@ -15,16 +15,25 @@ struct ccode_agent_config {
     int read_only_tools;
     int interactive;
     int auto_approve;
+    int thinking_enabled;
+    const char *thinking_effort;
     const char *save_session;
     const char *resume_session;
     const char *workspace;
     ccode_content_callback on_content;
     void *on_content_context;
+    ccode_content_callback on_reasoning;
+    void *on_reasoning_context;
 };
 
 int ccode_agent_run(struct ccode_agent_config *cfg);
 int ccode_agent_run_interactive(struct ccode_agent_config *cfg);
 void ccode_print_content_delta(const char *content);
+
+/* Reasoning content display: prints thinking output in dimmed ANSI style.
+ * Used when thinking mode is enabled and the model streams reasoning_content. */
+void ccode_print_reasoning_delta(const char *content);
+void ccode_print_reasoning_end(void);
 
 /* Markdown rendering control for human-facing output.  When disabled,
  * ccode_print_content_delta falls back to raw sanitised passthrough. */

@@ -521,6 +521,13 @@ int ccode_parse_sse_delta(const char *data, size_t length,
         if (!delta->content) goto malformed;
     }
 
+    tok = navigate(tokens, num_tokens, data, "choices[0].delta.reasoning_content");
+    if (tok && tok->type == CCODE_JSMN_STRING) {
+        delta->reasoning_content = unescape_json_string(data, tok->start, tok->end,
+                                               CCODE_MAX_SSE_CONTENT_LEN);
+        if (!delta->reasoning_content) goto malformed;
+    }
+
     tok = navigate(tokens, num_tokens, data, "choices[0].finish_reason");
     if (tok && tok->type == CCODE_JSMN_STRING) {
         delta->finish_reason = unescape_json_string(data, tok->start, tok->end,
@@ -549,6 +556,7 @@ malformed:
 void ccode_free_sse_delta(struct ccode_sse_delta *delta) {
     size_t i;
     free(delta->content);
+    free(delta->reasoning_content);
     free(delta->finish_reason);
     for (i = 0; i < delta->tool_call_count; i++) {
         free(delta->tool_calls[i].id);
@@ -556,6 +564,7 @@ void ccode_free_sse_delta(struct ccode_sse_delta *delta) {
         free(delta->tool_calls[i].arguments);
     }
     delta->content = NULL;
+    delta->reasoning_content = NULL;
     delta->finish_reason = NULL;
     delta->tool_call_count = 0;
 }
@@ -632,6 +641,7 @@ void ccode_sse_accumulator_init(struct ccode_sse_accumulator *acc) {
 void ccode_sse_accumulator_destroy(struct ccode_sse_accumulator *acc) {
     size_t i;
     free(acc->content);
+    free(acc->reasoning_content);
     free(acc->finish_reason);
     for (i = 0; i < acc->tool_call_count; i++) {
         free(acc->tool_calls[i].id);
@@ -669,6 +679,37 @@ static int accumulator_append_content(struct ccode_sse_accumulator *acc,
     }
     memcpy(acc->content + acc->content_len, content, len + 1);
     acc->content_len += len;
+    return 0;
+}
+
+static int accumulator_append_reasoning(struct ccode_sse_accumulator *acc,
+                                        const char *content) {
+    size_t len = strlen(content);
+    size_t needed;
+    if (acc->reasoning_len > CCODE_MAX_SSE_CONTENT_LEN ||
+        len > CCODE_MAX_SSE_CONTENT_LEN - acc->reasoning_len)
+        return -1;
+    if (acc->reasoning_len > SIZE_MAX - len - 1) return -1;
+    needed = acc->reasoning_len + len + 1;
+    if (needed > acc->reasoning_cap) {
+        size_t new_cap;
+        if (!acc->reasoning_cap) new_cap = 256;
+        else if (acc->reasoning_cap > SIZE_MAX / 2) new_cap = needed;
+        else new_cap = acc->reasoning_cap * 2;
+        while (new_cap < needed) {
+            if (new_cap > (CCODE_MAX_SSE_CONTENT_LEN + 1U) / 2U) {
+                new_cap = CCODE_MAX_SSE_CONTENT_LEN + 1U;
+                break;
+            }
+            new_cap *= 2;
+        }
+        char *tmp = realloc(acc->reasoning_content, new_cap);
+        if (!tmp) return -1;
+        acc->reasoning_content = tmp;
+        acc->reasoning_cap = new_cap;
+    }
+    memcpy(acc->reasoning_content + acc->reasoning_len, content, len + 1);
+    acc->reasoning_len += len;
     return 0;
 }
 
@@ -739,6 +780,15 @@ int ccode_sse_accumulator_process(struct ccode_sse_accumulator *acc,
         }
         if (acc->on_content)
             acc->on_content(delta.content, acc->on_content_context);
+    }
+
+    if (delta.reasoning_content) {
+        if (accumulator_append_reasoning(acc, delta.reasoning_content) != 0) {
+            ccode_free_sse_delta(&delta);
+            return -1;
+        }
+        if (acc->on_reasoning)
+            acc->on_reasoning(delta.reasoning_content, acc->on_reasoning_context);
     }
 
     if (delta.finish_reason) {

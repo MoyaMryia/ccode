@@ -83,30 +83,40 @@ static void emit_text(struct ccode_md_renderer *r, const char *data, size_t len)
 
         if (offset + length > len) break;
 
-        if (r->max_cols > 0 && r->cols_written >= r->max_cols) return;
+        if (r->max_cols > 0 && r->cols_written >= r->max_cols) {
+            if (r->output_line < 0) fputc('\n', out);
+            r->cols_written = 0;
+            r->visual_line++;
+        }
 
         if (length == 1 && cp < 0x20U) {
             if (cp == '\t') {
-                fputc('\t', out);
+                if (r->output_line < 0 || r->visual_line == r->output_line)
+                    fputc('\t', out);
                 r->cols_written++;
             } else {
-                fprintf(out, "\\x%02X", cp);
+                if (r->output_line < 0 || r->visual_line == r->output_line)
+                    fprintf(out, "\\x%02X", cp);
                 r->cols_written += 4;
             }
         } else if ((length == 1 && cp >= 0x7fU) ||
                    (cp >= 0x80U && cp <= 0x9fU)) {
             if (length == 1) {
-                fprintf(out, "\\x%02X", cp);
+                if (r->output_line < 0 || r->visual_line == r->output_line)
+                    fprintf(out, "\\x%02X", cp);
                 r->cols_written += 4;
             } else {
-                fprintf(out, "\\u%04X", cp);
+                if (r->output_line < 0 || r->visual_line == r->output_line)
+                    fprintf(out, "\\u%04X", cp);
                 r->cols_written += 6;
             }
         } else if (md_is_bidi_control(cp)) {
-            fprintf(out, "\\u%04X", cp);
+            if (r->output_line < 0 || r->visual_line == r->output_line)
+                fprintf(out, "\\u%04X", cp);
             r->cols_written += 6;
         } else {
-            fwrite(s + offset, 1, length, out);
+            if (r->output_line < 0 || r->visual_line == r->output_line)
+                fwrite(s + offset, 1, length, out);
             r->cols_written += (int)length;
         }
         offset += length;
@@ -521,7 +531,16 @@ void ccode_md_render_line(struct ccode_md_renderer *r, const char *line,
                           size_t len) {
     if (!r || !line) return;
     r->cols_written = 0;
+    r->visual_line = 0;
     render_line(r, line, len);
+}
+
+void ccode_md_render_line_part(struct ccode_md_renderer *r, const char *line,
+                               size_t len, int visual_line) {
+    if (!r || !line || visual_line < 0) return;
+    r->output_line = visual_line;
+    ccode_md_render_line(r, line, len);
+    r->output_line = -1;
 }
 
 void ccode_md_init(struct ccode_md_renderer *r, FILE *out) {
@@ -530,6 +549,7 @@ void ccode_md_init(struct ccode_md_renderer *r, FILE *out) {
     r->enabled = 1;
     r->max_cols = 0;
     r->cols_written = 0;
+    r->output_line = -1;
 }
 
 void ccode_md_destroy(struct ccode_md_renderer *r) {

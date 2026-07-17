@@ -22,6 +22,8 @@ int main(int argc, char **argv) {
     agent_cfg.read_only_tools = config.read_only_tools;
     agent_cfg.interactive = config.interactive;
     agent_cfg.auto_approve = config.auto_approve;
+    agent_cfg.thinking_enabled = config.thinking_enabled;
+    agent_cfg.thinking_effort = config.thinking_effort;
     agent_cfg.save_session = config.save_session;
     agent_cfg.resume_session = config.resume_session;
     agent_cfg.workspace = getenv("CCODE_WORKSPACE");
