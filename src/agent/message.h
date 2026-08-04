@@ -100,6 +100,9 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
 /* Session directory helpers. Returns a pointer to a static buffer. */
 const char *ccode_session_dir(void);
 
+/* Ensure the session directory exists. Returns 0 on success. */
+int ccode_session_ensure_dir(void);
+
 /* List sessions in the session directory. Returns a newly allocated JSON
  * array string (caller must free), or NULL if the directory cannot be
  * opened. Each element: {"name":"...","size":...,"mtime":...,"messages":...,
@@ -122,5 +125,10 @@ char *ccode_session_export(const char *name, const char *format);
  * name filled, or -1 if no sessions exist.
  * name must be at least CCODE_SESSION_NAME_MAX bytes. */
 int ccode_session_most_recent(char *name, size_t name_size);
+
+/* Enforce CCODE_SESSION_KEEP_COUNT: when set to a positive N, delete the
+ * oldest session files until at most N remain. Returns 0 on success or
+ * when pruning is disabled. */
+int ccode_session_prune(void);
 
 #endif

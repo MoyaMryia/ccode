@@ -277,7 +277,7 @@ static int run_agent_prompt(const struct backend_options *options,
 
 static void backend_command(struct json_session_state *state, const char *command) {
     if (strcmp(command, "/help") == 0) {
-        json_print("message", "Slash commands:\n  /help\n  /exit\n  /clear\n  /compact\n  /model [NAME]\n  /model default NAME\n  /models\n  /models search KEYWORD\n  /models info NAME\n  /thinking\n  /thinking on|off\n  /thinking effort low|medium|high|xhigh|max\n  /history\n  /sessions\n  /sessions delete NAME\n  /sessions rename OLD NEW\n  /sessions export NAME FORMAT\n  /resume [NAME]");
+        json_print("message", "Slash commands:\n  /help\n  /exit\n  /clear\n  /compact\n  /model [NAME]\n  /model default NAME\n  /models\n  /models search KEYWORD\n  /models info NAME\n  /thinking\n  /thinking on|off\n  /thinking effort low|medium|high|xhigh|max\n  /history\n  /sessions\n  /sessions delete NAME\n  /sessions rename OLD NEW\n  /sessions export NAME FORMAT\n  /resume [NAME]\n  /resume --list\n  /session new [NAME]\n  /session switch NAME\n  /session list");
     } else if (strcmp(command, "/clear") == 0) {
         state->history_count = 0;
         if (state->options.save_session) unlink(state->options.save_session);
@@ -371,7 +371,11 @@ static void backend_command(struct json_session_state *state, const char *comman
         char name[256];
         const char *session_name = command[7] == ' ' ? command + 8 : "";
         const char *dir = ccode_session_dir();
-        if (!dir) json_print("error", "Session directory not available.");
+        if (strcmp(session_name, "--list") == 0) {
+            char *sessions = ccode_session_list();
+            if (!sessions) json_print("error", "Could not list sessions.");
+            else { json_print("message", sessions); free(sessions); }
+        } else if (!dir) json_print("error", "Session directory not available.");
         else {
             if (!session_name[0]) {
                 if (ccode_session_most_recent(name, sizeof(name)) != 0)
@@ -390,6 +394,57 @@ static void backend_command(struct json_session_state *state, const char *comman
                     json_print("message", "Session resumed.");
                 }
             }
+        }
+    } else if (strncmp(command, "/session", 8) == 0) {
+        const char *arg = command[8] == ' ' ? command + 9 : "";
+        const char *dir = ccode_session_dir();
+        if (strcmp(arg, "list") == 0) {
+            char *sessions = ccode_session_list();
+            if (!sessions) json_print("error", "Could not list sessions.");
+            else { json_print("message", sessions); free(sessions); }
+        } else if (strncmp(arg, "new", 3) == 0 &&
+                   (arg[3] == '\0' || arg[3] == ' ')) {
+            const char *name = arg[3] == ' ' ? arg + 4 : "";
+            size_t nl = strlen(name);
+            if (name[0] == '\0') {
+                state->options.resume_session = NULL;
+                state->options.save_session = NULL;
+                json_print("message", "New unnamed session started.");
+            } else if (!dir || strchr(name, '/') ||
+                       nl < 6 || strcmp(name + nl - 5, ".json") != 0) {
+                json_print("error", "Invalid session name.");
+            } else {
+                static char session_path[4096];
+                if (snprintf(session_path, sizeof(session_path), "%s/%s", dir,
+                             name) >= (int)sizeof(session_path))
+                    json_print("error", "Session path too long.");
+                else {
+                    state->options.resume_session = NULL;
+                    state->options.save_session = session_path;
+                    json_print("message", "New session started.");
+                }
+            }
+        } else if (strncmp(arg, "switch", 6) == 0 && arg[6] == ' ') {
+            const char *name = arg + 7;
+            size_t nl = strlen(name);
+            if (!dir || strchr(name, '/') ||
+                nl < 6 || strcmp(name + nl - 5, ".json") != 0)
+                json_print("error", "Invalid session name.");
+            else {
+                static char session_path[4096];
+                if (snprintf(session_path, sizeof(session_path), "%s/%s", dir,
+                             name) >= (int)sizeof(session_path))
+                    json_print("error", "Session path too long.");
+                else {
+                    state->options.resume_session = session_path;
+                    state->options.save_session = session_path;
+                    json_print("message", "Session switched.");
+                }
+            }
+        } else {
+            json_print("error",
+                       "Usage: /session new [name] | /session switch NAME | "
+                       "/session list");
         }
     } else if (strcmp(command, "/exit") == 0 || strcmp(command, "/quit") == 0) {
         json_print("status", "exit requested");

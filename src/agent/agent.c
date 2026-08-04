@@ -7,6 +7,8 @@
 #include "../http.h"
 #include "../json.h"
 #include "../webfetch.h"
+#include "../websearch.h"
+#include "../sandbox.h"
 #include "../models.h"
 #include "../tools/tools.h"
 #include "../permissions/permissions.h"
@@ -23,6 +25,7 @@
 #include <unistd.h>
 #include <fnmatch.h>
 #include <errno.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <time.h>
@@ -2365,6 +2368,8 @@ enum prepared_tool_kind {
     PREPARED_DELETE_FILE,
     PREPARED_MOVE_FILE,
     PREPARED_WEB_FETCH,
+    PREPARED_AGENT_TOOL,
+    PREPARED_WEB_SEARCH,
 
 };
 
@@ -2386,6 +2391,7 @@ struct prepared_tool {
     int timeout_ms;
     int web_timeout_sec;
     size_t web_max_size;
+    int read_only_subagent;
 };
 
 static const char *prepare_tool(const char *name, const char *arguments,
@@ -3047,6 +3053,76 @@ static const char *prepare_tool(const char *name, const char *arguments,
         return NULL;
     }
 
+    if (strcmp(name, "agent_tool") == 0) {
+        int have_task = 0;
+        int have_read_only = 0;
+        int i;
+        prepared->kind = PREPARED_AGENT_TOOL;
+        prepared->read_only_subagent = 1;
+        prepared->value[0] = '\0';
+
+        for (i = 1; i < num_tokens; i += 2) {
+            if (tokens[i].type != CCODE_JSMN_STRING)
+                return "{\"error\":\"Invalid agent_tool arguments\"}";
+            if (ccode_jsmn_token_streq(arguments, &tokens[i], "task")) {
+                if (have_task || copy_string_token(arguments, &tokens[i + 1],
+                    prepared->value, sizeof(prepared->value)) != 0)
+                    return "{\"error\":\"Invalid agent_tool task\"}";
+                have_task = 1;
+            } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
+                                              "read_only")) {
+                if (have_read_only ||
+                    copy_string_token(arguments, &tokens[i + 1],
+                        prepared->content, sizeof(prepared->content)) != 0)
+                    return "{\"error\":\"Invalid agent_tool read_only\"}";
+                have_read_only = 1;
+                if (strcmp(prepared->content, "false") == 0 ||
+                    strcmp(prepared->content, "0") == 0) {
+                    prepared->read_only_subagent = 0;
+                } else if (strcmp(prepared->content, "true") == 0 ||
+                           strcmp(prepared->content, "1") == 0) {
+                    prepared->read_only_subagent = 1;
+                } else {
+                    return "{\"error\":\"Invalid agent_tool read_only\"}";
+                }
+            } else {
+                return "{\"error\":\"Invalid agent_tool arguments\"}";
+            }
+        }
+        if (!have_task || prepared->value[0] == '\0')
+            return "{\"error\":\"Invalid agent_tool arguments\"}";
+        snprintf(prepared->display, sizeof(prepared->display),
+                 "agent_tool%s task=%.120s",
+                 prepared->read_only_subagent ? " (read-only)" : "",
+                 prepared->value);
+        return NULL;
+    }
+
+    if (strcmp(name, "web_search") == 0) {
+        int have_query = 0;
+        int i;
+        prepared->kind = PREPARED_WEB_SEARCH;
+        prepared->value[0] = '\0';
+
+        for (i = 1; i < num_tokens; i += 2) {
+            if (tokens[i].type != CCODE_JSMN_STRING)
+                return "{\"error\":\"Invalid web_search arguments\"}";
+            if (ccode_jsmn_token_streq(arguments, &tokens[i], "query")) {
+                if (have_query || copy_string_token(arguments, &tokens[i + 1],
+                    prepared->value, sizeof(prepared->value)) != 0)
+                    return "{\"error\":\"Invalid web_search query\"}";
+                have_query = 1;
+            } else {
+                return "{\"error\":\"Invalid web_search arguments\"}";
+            }
+        }
+        if (!have_query || prepared->value[0] == '\0')
+            return "{\"error\":\"Invalid web_search arguments\"}";
+        snprintf(prepared->display, sizeof(prepared->display),
+                 "query=%.120s", prepared->value);
+        return NULL;
+    }
+
     return "{\"error\":\"Unknown tool\"}";
 }
 
@@ -3270,6 +3346,14 @@ static char *exec_run_command_ex(const char *workspace,
         return ccode_strdup("{\"error\":\"No command specified\"}");
     if (!allow_shell && is_shell_string_invocation(argv, argc))
         return ccode_strdup("{\"error\":\"Shell string execution is not allowed\"}");
+    for (i = 0; i < argc; i++) {
+        if (ccode_command_is_sensitive(argv[i]))
+            return ccode_strdup(
+                "{\"error\":\"Command may access sensitive paths\"}");
+        if (ccode_command_mentions_destructive(argv[i]))
+            return ccode_strdup(
+                "{\"error\":\"Destructive command is not allowed\"}");
+    }
     if (init_workspace(workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
 
@@ -3332,6 +3416,10 @@ static char *exec_run_command_ex(const char *workspace,
         if (setpgid(0, 0) != 0 || ccode_run_fchdir(workspace_dir_fd) != 0 ||
             resolve_command_path(argv[0], executable, sizeof(executable)) != 0)
             _exit(127);
+        /* Enforce the write sandbox before exec. When Landlock is
+         * unavailable this is a no-op and the command filter above remains
+         * the only path protection. */
+        (void)ccode_landlock_apply(workspace_root);
         for (i = 0; i < argc; i++) exec_argv[i] = argv[i];
         exec_argv[argc] = NULL;
         execve(executable, exec_argv, exec_env);
@@ -3597,12 +3685,31 @@ static char *exec_git_command(const char *workspace,
  * all Git configuration behavior.
  * After execution, this wrapper checks whether the command failed because the
  * working directory is not a git repository, and returns a structured
- * {"error":"Not a git repository"} when that is the case. */
+ * {"error":"Not a git repository"} when that is the case. The detection is
+ * case-insensitive because `git status` reports "not a git repository" in
+ * lowercase while `git diff`/`git diff --stat` report "Not a git repository"
+ * with a capital N. */
+static int contains_ci(const char *haystack, const char *needle) {
+    size_t hl = strlen(haystack);
+    size_t nl = strlen(needle);
+    size_t i, j;
+    if (nl == 0 || nl > hl) return 0;
+    for (i = 0; i + nl <= hl; i++) {
+        for (j = 0; j < nl; j++) {
+            if (tolower((unsigned char)haystack[i + j]) !=
+                tolower((unsigned char)needle[j]))
+                break;
+        }
+        if (j == nl) return 1;
+    }
+    return 0;
+}
+
 static char *exec_git_command_wrapper(const char *workspace,
                                        char * const *argv, size_t argc,
                                        int timeout_ms) {
     char *result = exec_git_command(workspace, argv, argc, timeout_ms);
-    if (result && strstr(result, "not a git repository") != NULL) {
+    if (result && contains_ci(result, "not a git repository")) {
         free(result);
         return ccode_strdup("{\"error\":\"Not a git repository\"}");
     }
@@ -3665,7 +3772,108 @@ static char *exec_git_stat(const char *workspace, const char *path,
     return exec_git_command_wrapper(workspace, argv, argc, 30000);
 }
 
-static char *execute_prepared_tool(const char *workspace,
+/* ── Sub-agent (agent_tool) ── */
+
+#define MAX_SUBAGENT_DEPTH 3
+#define SUBAGENT_RESULT_MAX (1024 * 100)
+
+static int subagent_depth = 0;
+
+static const char *subagent_system_prompt(void) {
+    return
+        "You are a delegate sub-agent of ccode, the terminal coding agent. "
+        "You are given a single focused task inside the current workspace. "
+        "Inspect the relevant files first, then answer the task directly and "
+        "concisely. Prefer read-only tools (read_file, glob, grep, git_*) to "
+        "gather information. Never claim something was verified unless a "
+        "check actually ran. If a tool result was denied or failed, say so "
+        "instead of assuming success. Your final message is the only thing "
+        "returned to the calling agent, so make it self-contained.";
+}
+
+struct subagent_collector {
+    char *buf;
+    size_t cap;
+    size_t len;
+};
+
+static void subagent_collect(const char *content, void *context) {
+    struct subagent_collector *col = context;
+    size_t add = content ? strlen(content) : 0;
+    size_t needed;
+    if (add == 0) return;
+    if (col->len > SUBAGENT_RESULT_MAX ||
+        add > SUBAGENT_RESULT_MAX - col->len)
+        return;
+    needed = col->len + add + 1;
+    if (needed > col->cap) {
+        size_t new_cap = col->cap ? col->cap : 512;
+        char *tmp;
+        while (new_cap < needed && new_cap < SUBAGENT_RESULT_MAX * 2)
+            new_cap *= 2;
+        if (new_cap < needed) new_cap = needed;
+        tmp = realloc(col->buf, new_cap);
+        if (!tmp) return;
+        col->buf = tmp;
+        col->cap = new_cap;
+    }
+    memcpy(col->buf + col->len, content, add + 1);
+    col->len += add;
+}
+
+static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
+                                         struct ccode_conversation *conv);
+
+static char *run_subagent(const struct ccode_agent_config *cfg,
+                          const char *task, int read_only) {
+    struct ccode_conversation sub;
+    struct ccode_agent_config sub_cfg;
+    struct subagent_collector col;
+    int rc;
+
+    if (subagent_depth >= MAX_SUBAGENT_DEPTH)
+        return ccode_strdup("{\"error\":\"Sub-agent depth limit reached\"}");
+
+    subagent_depth++;
+    memset(&col, 0, sizeof(col));
+    if (ccode_conversation_init(&sub, CCODE_MAX_MESSAGES) != 0) {
+        subagent_depth--;
+        return ccode_strdup("{\"error\":\"Out of memory\"}");
+    }
+    if (ccode_conversation_add(&sub, CCODE_ROLE_SYSTEM,
+                               subagent_system_prompt()) != 0 ||
+        ccode_conversation_add(&sub, CCODE_ROLE_USER, task) != 0) {
+        ccode_conversation_destroy(&sub);
+        subagent_depth--;
+        return ccode_strdup("{\"error\":\"Out of memory\"}");
+    }
+
+    sub_cfg = *cfg;
+    sub_cfg.on_content = subagent_collect;
+    sub_cfg.on_content_context = &col;
+    if (read_only) {
+        sub_cfg.read_only_tools = 1;
+        sub_cfg.tools_enabled = 0;
+    }
+
+    rc = ccode_agent_process_turn_loop(&sub_cfg, &sub);
+    ccode_conversation_destroy(&sub);
+    subagent_depth--;
+
+    if (rc != 0) {
+        free(col.buf);
+        return ccode_strdup("{\"error\":\"Sub-agent failed\"}");
+    }
+    if (!col.buf || col.len == 0) {
+        free(col.buf);
+        return ccode_strdup("{\"error\":\"Sub-agent returned no answer\"}");
+    }
+    if (col.len > SUBAGENT_RESULT_MAX) col.buf[SUBAGENT_RESULT_MAX] = '\0';
+    return col.buf;
+}
+
+static char *execute_prepared_tool(const struct ccode_agent_config *cfg,
+                                   const char *workspace,
                                    const struct prepared_tool *prepared) {
     if (prepared->kind == PREPARED_READ_FILE)
         return exec_read_file(workspace, prepared->value);
@@ -3712,6 +3920,14 @@ static char *execute_prepared_tool(const char *workspace,
         return exec_move_file(workspace, prepared->value, prepared->destination);
     if (prepared->kind == PREPARED_WEB_FETCH)
         return exec_web_fetch(prepared);
+    if (prepared->kind == PREPARED_AGENT_TOOL) {
+        if (!cfg)
+            return ccode_strdup("{\"error\":\"Sub-agent not available\"}");
+        return run_subagent(cfg, prepared->value,
+                            prepared->read_only_subagent);
+    }
+    if (prepared->kind == PREPARED_WEB_SEARCH)
+        return ccode_web_search(prepared->value);
     return ccode_strdup("{\"error\":\"Unknown tool type\"}");
 }
 
@@ -3721,7 +3937,7 @@ static char *exec_tool(const char *workspace, const char *name,
     struct prepared_tool prepared;
     const char *error = prepare_tool(name, arguments, &prepared);
     if (error) return ccode_strdup(error);
-    return execute_prepared_tool(workspace, &prepared);
+    return execute_prepared_tool(NULL, workspace, &prepared);
 }
 #endif
 
@@ -3859,6 +4075,8 @@ static int is_enabled_tool(const char *name, int write_enabled) {
               strcmp(name, "delete_file") == 0 ||
               strcmp(name, "move_file") == 0 ||
               strcmp(name, "web_fetch") == 0 ||
+              strcmp(name, "web_search") == 0 ||
+              strcmp(name, "agent_tool") == 0 ||
               strcmp(name, "task_create") == 0 ||
               strcmp(name, "task_update") == 0 ||
               strcmp(name, "task_list") == 0));
@@ -3873,6 +4091,52 @@ static int append_tool_error(struct ccode_conversation *conv, const char *id,
     status = ccode_conversation_add_tool_result(conv, id, result);
     free(result);
     return status;
+}
+
+/* Cache of the last change-log / task summaries appended to the conversation.
+ * The summaries are only appended when their content changed since the last
+ * turn, keeping the request prefix byte-stable for upstream context caching
+ * (DeepSeek and OpenAI cache the request prefix and discount cached tokens). */
+static char *last_change_summary = NULL;
+static char *last_task_summary = NULL;
+
+static int append_summary_if_changed(struct ccode_conversation *conv,
+                                     const char *summary,
+                                     char **last_summary) {
+    if (summary && summary[0] != '\0') {
+        if (*last_summary && strcmp(*last_summary, summary) == 0) return 0;
+        if (ccode_conversation_add(conv, CCODE_ROLE_SYSTEM, summary) != 0)
+            return -1;
+        free(*last_summary);
+        *last_summary = ccode_strdup(summary);
+        return *last_summary ? 0 : -1;
+    }
+    free(*last_summary);
+    *last_summary = NULL;
+    return 0;
+}
+
+void ccode_agent_summary_cache_reset(void) {
+    free(last_change_summary);
+    last_change_summary = NULL;
+    free(last_task_summary);
+    last_task_summary = NULL;
+}
+
+/* Guard against a model re-using a tool_call_id that already produced a tool
+ * result: re-executing the same id would repeat side effects. Returns 1 when
+ * the id already has a tool result in the conversation. */
+static int conversation_has_tool_result(const struct ccode_conversation *conv,
+                                        const char *tool_call_id) {
+    size_t i;
+    if (!tool_call_id || tool_call_id[0] == '\0') return 0;
+    for (i = 0; i < conv->count; i++) {
+        if (conv->messages[i].role == CCODE_ROLE_TOOL &&
+            conv->messages[i].tool_call_id &&
+            strcmp(conv->messages[i].tool_call_id, tool_call_id) == 0)
+            return 1;
+    }
+    return 0;
 }
 
 /* Run the turn-processing loop on an initialized conversation.
@@ -3902,19 +4166,13 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
          * bleed into the next assistant message. */
         ccode_print_content_reset();
         if ((cfg->tools_enabled || cfg->read_only_tools) && turn > 0) {
-            if (change_count > 0) {
-                const char *ch = change_log_serialize();
-                if (ccode_conversation_add(conv, CCODE_ROLE_SYSTEM, ch) != 0) {
-                    fprintf(stderr, "Out of memory.\n");
-                    return 1;
-                }
-            }
-            if (cfg->tools_enabled && task_count > 0) {
-                const char *tasks = task_list_serialize();
-                if (ccode_conversation_add(conv, CCODE_ROLE_SYSTEM, tasks) != 0) {
-                    fprintf(stderr, "Out of memory.\n");
-                    return 1;
-                }
+            const char *ch = change_count > 0 ? change_log_serialize() : NULL;
+            const char *tasks = (cfg->tools_enabled && task_count > 0)
+                                ? task_list_serialize() : NULL;
+            if (append_summary_if_changed(conv, ch, &last_change_summary) != 0 ||
+                append_summary_if_changed(conv, tasks, &last_task_summary) != 0) {
+                fprintf(stderr, "Out of memory.\n");
+                return 1;
             }
         }
 
@@ -4070,6 +4328,23 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
                         continue;
                     }
 
+                    if (conversation_has_tool_result(conv,
+                                                     acc.tool_calls[i].id)) {
+                        fputs("  \033[33m[refused]\033[0m  duplicate tool_call_id: ",
+                              stderr);
+                        ccode_fprint_safe(stderr, acc.tool_calls[i].id,
+                                          "(unknown)");
+                        fputc('\n', stderr);
+                        if (append_tool_error(conv, acc.tool_calls[i].id,
+                                "{\"error\":\"Duplicate tool call id\"}") != 0) {
+                            ccode_sse_accumulator_destroy(&acc);
+                            fprintf(stderr, "Out of memory.\n");
+                            result = -1;
+                            break;
+                        }
+                        continue;
+                    }
+
                     if (!cfg->read_only_tools && !cfg->tools_enabled) {
                         fputs("  \033[33m[denied]\033[0m  ", stderr);
                         ccode_fprint_safe(stderr, acc.tool_calls[i].name,
@@ -4102,9 +4377,22 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
                         continue;
                     }
 
-                    prepare_error = prepare_tool(acc.tool_calls[i].name,
-                                                 acc.tool_calls[i].arguments,
-                                                 &prepared);
+                    prepare_error = NULL;
+                    if (acc.tool_calls[i].arguments) {
+                        char *decoded = ccode_unescape_json_string(
+                                            acc.tool_calls[i].arguments);
+                        if (!decoded) {
+                            prepare_error =
+                                "{\"error\":\"Malformed tool arguments\"}";
+                        } else {
+                            prepare_error = prepare_tool(
+                                acc.tool_calls[i].name, decoded, &prepared);
+                            free(decoded);
+                        }
+                    } else {
+                        prepare_error = prepare_tool(
+                            acc.tool_calls[i].name, NULL, &prepared);
+                    }
                     if (prepare_error) {
                         fputs("  \033[33m[refused]\033[0m  ", stderr);
                         ccode_fprint_safe(stderr, acc.tool_calls[i].name,
@@ -4159,7 +4447,7 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
                     ccode_fprint_safe(stderr, prepared.display, "");
                     fputs(")...\n", stderr);
 
-                    tool_result = execute_prepared_tool(cfg->workspace,
+                    tool_result = execute_prepared_tool(cfg, cfg->workspace,
                                                         &prepared);
                     if (tool_result) {
                         if (ccode_conversation_add_tool_result(conv,
@@ -4171,6 +4459,19 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
                             break;
                         }
                         free(tool_result);
+                    } else {
+                        /* Never leave the model without a tool response: a
+                         * silent gap would stall the agent loop or make the
+                         * next request violate the assistant/tool pairing. */
+                        fputs("  \033[33m[error]\033[0m  tool execution "
+                              "returned no result\n", stderr);
+                        if (append_tool_error(conv, acc.tool_calls[i].id,
+                                "{\"error\":\"Tool execution failed\"}") != 0) {
+                            ccode_sse_accumulator_destroy(&acc);
+                            fprintf(stderr, "Out of memory.\n");
+                            result = -1;
+                            break;
+                        }
                     }
                 }
                 if (result < 0) break;
@@ -4194,12 +4495,61 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
     return result < 0 ? 1 : 0;
 }
 
+/* A resumed session already carries its own system prompt (persisted as the
+ * first message). Re-adding it would duplicate the prefix, waste tokens, and
+ * defeat upstream prefix caching, so only add the prompt when absent. */
+static int conversation_has_system(const struct ccode_conversation *conv) {
+    size_t i;
+    for (i = 0; i < conv->count; i++) {
+        if (conv->messages[i].role == CCODE_ROLE_SYSTEM) return 1;
+    }
+    return 0;
+}
+
+/* Optional startup model verification: with CCODE_MODEL_VERIFY=1 the
+ * configured model is checked against the API list before the first request;
+ * if it is missing and CCODE_MODEL_FALLBACK names an alternative, cfg->model
+ * is switched to it. When verification cannot run (network error) the model
+ * is left unchanged. fallback_buf must outlive cfg->model use. */
+static void verify_model(struct ccode_agent_config *cfg,
+                         char *fallback_buf, size_t fallback_size) {
+    const char *env;
+    const char *fallback;
+    int rc;
+
+    if (!cfg->model || cfg->model[0] == '\0') return;
+    env = getenv("CCODE_MODEL_VERIFY");
+    if (!env || strcmp(env, "1") != 0) return;
+
+    rc = ccode_model_verify(cfg->api_base, cfg->api_key, cfg->model);
+    if (rc == 1) return;
+    if (rc == 0) {
+        fallback = getenv("CCODE_MODEL_FALLBACK");
+        if (fallback && fallback[0] != '\0' &&
+            strlen(fallback) < fallback_size &&
+            strchr(fallback, '"') == NULL) {
+            memcpy(fallback_buf, fallback, strlen(fallback) + 1);
+            fprintf(stderr,
+                    "  Model %s is not available; falling back to %s.\n",
+                    cfg->model, fallback_buf);
+            cfg->model = fallback_buf;
+        } else {
+            fprintf(stderr,
+                    "  Warning: model %s is not available.\n", cfg->model);
+        }
+    } else {
+        fprintf(stderr, "  Warning: could not verify model %s.\n", cfg->model);
+    }
+}
+
 int ccode_agent_run(struct ccode_agent_config *cfg) {
     struct ccode_conversation conv;
+    char model_fallback[256];
     int result = 0;
 
     reset_workspace_state();
     ccode_cancel_install();
+    verify_model(cfg, model_fallback, sizeof(model_fallback));
 
     if (init_workspace(cfg->workspace) != 0) {
         fprintf(stderr, "Could not initialize workspace root.\n");
@@ -4223,7 +4573,8 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
         fprintf(stderr, "Resumed session (%zu messages loaded).\n", conv.count);
     }
 
-    if (cfg->read_only_tools || cfg->tools_enabled) {
+    if ((cfg->read_only_tools || cfg->tools_enabled) &&
+        !conversation_has_system(&conv)) {
         const char *sys = ccode_coding_agent_system_prompt();
         if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
             fprintf(stderr, "Out of memory.\n");
@@ -4344,7 +4695,67 @@ static void print_repl_help(void) {
         "    /sessions delete N Delete a session file\n"
         "    /sessions rename O N Rename a session file\n"
         "    /sessions export N F Export a session (json/md/txt)\n"
-        "    /resume [NAME]     Resume a session (most recent if no name)\n");
+        "    /resume [NAME]     Resume a session (most recent if no name)\n"
+        "    /resume --list     List resumable sessions\n"
+        "    /session new [N]   Start a new session (optionally saved as N)\n"
+        "    /session switch N  Switch to a saved session\n"
+        "    /session list      List all sessions\n");
+}
+
+/* Shared pretty printer for the JSON session list from ccode_session_list().
+ * Used by /sessions and /session list. */
+static void print_session_list(void) {
+    char *sessions = ccode_session_list();
+    if (!sessions) {
+        fputs("  Could not list sessions.\n", stderr);
+        return;
+    }
+    fprintf(stderr, "  Sessions:\n");
+    {
+        const char *p = sessions;
+        int n = 0;
+        while (*p) {
+            const char *name_start, *name_end, *sz, *ms;
+            char name_buf[256], sz_buf[32], ms_buf[32];
+
+            name_start = strstr(p, "\"name\":\"");
+            if (!name_start) break;
+            name_start += 8;
+            name_end = strchr(name_start, '"');
+            if (!name_end) break;
+            {
+                size_t nl2 = (size_t)(name_end - name_start);
+                if (nl2 >= sizeof(name_buf)) nl2 = sizeof(name_buf) - 1;
+                memcpy(name_buf, name_start, nl2);
+                name_buf[nl2] = '\0';
+            }
+
+            sz = strstr(name_end, "\"size\":");
+            ms = strstr(name_end, "\"messages\":");
+            sz = sz ? sz + 7 : "0";
+            ms = ms ? ms + 11 : "0";
+            {
+                const char *se = strchr(sz, ',');
+                const char *me = strchr(ms, ',');
+                if (!se) se = strchr(sz, '}');
+                if (!me) me = strchr(ms, '}');
+                {
+                    size_t sl = se ? (size_t)(se - sz) : strlen(sz);
+                    size_t ml2 = me ? (size_t)(me - ms) : strlen(ms);
+                    if (sl >= sizeof(sz_buf)) sl = sizeof(sz_buf) - 1;
+                    if (ml2 >= sizeof(ms_buf)) ml2 = sizeof(ms_buf) - 1;
+                    memcpy(sz_buf, sz, sl); sz_buf[sl] = '\0';
+                    memcpy(ms_buf, ms, ml2); ms_buf[ml2] = '\0';
+                }
+            }
+
+            n++;
+            fprintf(stderr, "    %d. %s (%s bytes, %s msgs)\n",
+                    n, name_buf, sz_buf, ms_buf);
+            p = name_end + 1;
+        }
+    }
+    free(sessions);
 }
 
 int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
@@ -4361,6 +4772,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
     } else {
         current_model[0] = '\0';
     }
+    verify_model(cfg, current_model, sizeof(current_model));
     {
         const char *eff = cfg->thinking_effort ? cfg->thinking_effort : "medium";
         size_t el = strlen(eff);
@@ -4407,7 +4819,8 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
         }
     }
 
-    if (cfg->read_only_tools || cfg->tools_enabled) {
+    if ((cfg->read_only_tools || cfg->tools_enabled) &&
+        !conversation_has_system(&conv)) {
         const char *sys = ccode_coding_agent_system_prompt();
         if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
             fprintf(stderr, "Out of memory.\n");
@@ -4466,6 +4879,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                 const char *ch = change_count > 0 ? change_log_serialize() : NULL;
                 const char *tk = task_count > 0 ? task_list_serialize() : NULL;
                 ccode_conversation_compact(&conv, ch, tk);
+                ccode_agent_summary_cache_reset();
                 fprintf(stderr, "  Conversation compacted.\n");
                 continue;
             } else if (strcmp(line, "/models") == 0) {
@@ -4647,6 +5061,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                     fprintf(stderr, "Out of memory.\n");
                     goto cleanup;
                 }
+                ccode_agent_summary_cache_reset();
                 if (cfg->read_only_tools || cfg->tools_enabled) {
                     const char *sys = ccode_coding_agent_system_prompt();
                     if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
@@ -4657,57 +5072,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                 fprintf(stderr, "  Conversation cleared.\n");
                 continue;
             } else if (strcmp(line, "/sessions") == 0) {
-                char *sessions = ccode_session_list();
-                if (!sessions) {
-                    fputs("  Could not list sessions.\n", stderr);
-                } else {
-                    fprintf(stderr, "  Sessions:\n");
-                    {
-                        const char *p = sessions;
-                        int n = 0;
-                        while (*p) {
-                            const char *name_start, *name_end, *sz, *ms;
-                            char name_buf[256], sz_buf[32], ms_buf[32];
-
-                            name_start = strstr(p, "\"name\":\"");
-                            if (!name_start) break;
-                            name_start += 8;
-                            name_end = strchr(name_start, '"');
-                            if (!name_end) break;
-                            {
-                                size_t nl2 = (size_t)(name_end - name_start);
-                                if (nl2 >= sizeof(name_buf)) nl2 = sizeof(name_buf) - 1;
-                                memcpy(name_buf, name_start, nl2);
-                                name_buf[nl2] = '\0';
-                            }
-
-                            sz = strstr(name_end, "\"size\":");
-                            ms = strstr(name_end, "\"messages\":");
-                            sz = sz ? sz + 7 : "0";
-                            ms = ms ? ms + 11 : "0";
-                            {
-                                const char *se = strchr(sz, ',');
-                                const char *me = strchr(ms, ',');
-                                if (!se) se = strchr(sz, '}');
-                                if (!me) me = strchr(ms, '}');
-                                {
-                                    size_t sl = se ? (size_t)(se - sz) : strlen(sz);
-                                    size_t ml2 = me ? (size_t)(me - ms) : strlen(ms);
-                                    if (sl >= sizeof(sz_buf)) sl = sizeof(sz_buf) - 1;
-                                    if (ml2 >= sizeof(ms_buf)) ml2 = sizeof(ms_buf) - 1;
-                                    memcpy(sz_buf, sz, sl); sz_buf[sl] = '\0';
-                                    memcpy(ms_buf, ms, ml2); ms_buf[ml2] = '\0';
-                                }
-                            }
-
-                            n++;
-                            fprintf(stderr, "    %d. %s (%s bytes, %s msgs)\n",
-                                    n, name_buf, sz_buf, ms_buf);
-                            p = name_end + 1;
-                        }
-                    }
-                    free(sessions);
-                }
+                print_session_list();
                 continue;
             } else if (strncmp(line, "/sessions delete ", 17) == 0) {
                 const char *name = line + 17;
@@ -4772,8 +5137,17 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                 char session_path[4096];
                 const char *dir = ccode_session_dir();
 
+                if (strcmp(name, "--list") == 0) {
+                    print_session_list();
+                    continue;
+                }
+
                 if (!dir) {
                     fputs("  Session directory not available.\n", stderr);
+                    continue;
+                }
+                if (ccode_session_ensure_dir() != 0) {
+                    fputs("  Could not create session directory.\n", stderr);
                     continue;
                 }
 
@@ -4806,6 +5180,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                     }
                     ccode_conversation_destroy(&conv);
                     conv = new_conv;
+                    ccode_agent_summary_cache_reset();
                     fprintf(stderr, "  Resumed session: %s (%zu messages loaded)\n",
                             name, conv.count);
                     task_list_reset();
@@ -4816,6 +5191,151 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                         have_session_path = 1;
                     }
                 }
+                continue;
+            } else if (strncmp(line, "/session", 8) == 0) {
+                const char *arg = line[8] == ' ' ? line + 9 : "";
+                const char *dir = ccode_session_dir();
+
+                if (strcmp(arg, "list") == 0) {
+                    print_session_list();
+                    continue;
+                }
+
+                if (!dir) {
+                    fputs("  Session directory not available.\n", stderr);
+                    continue;
+                }
+                if (ccode_session_ensure_dir() != 0) {
+                    fputs("  Could not create session directory.\n", stderr);
+                    continue;
+                }
+
+                if (strncmp(arg, "new", 3) == 0 &&
+                    (arg[3] == '\0' || arg[3] == ' ')) {
+                    const char *name = arg[3] == ' ' ? arg + 4 : "";
+                    struct ccode_session_metadata meta;
+                    struct ccode_conversation fresh;
+                    char path[4096];
+                    size_t nl = strlen(name);
+
+                    ccode_agent_summary_cache_reset();
+                    task_list_reset();
+                    change_log_reset();
+                    history_count = 0;
+                    ccode_conversation_destroy(&conv);
+                    if (ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) != 0) {
+                        fputs("  Out of memory.\n", stderr);
+                        goto cleanup;
+                    }
+                    if (cfg->read_only_tools || cfg->tools_enabled) {
+                        const char *sys = ccode_coding_agent_system_prompt();
+                        if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
+                            fputs("  Out of memory.\n", stderr);
+                            goto cleanup;
+                        }
+                    }
+
+                    if (name[0] == '\0') {
+                        have_session_path = 0;
+                        current_session_path[0] = '\0';
+                        fprintf(stderr, "  New session started (unnamed).\n");
+                        continue;
+                    }
+                    if (!dir || strchr(name, '/') ||
+                        nl < 6 || strcmp(name + nl - 5, ".json") != 0 ||
+                        nl >= CCODE_SESSION_NAME_MAX) {
+                        fprintf(stderr, "  Invalid session name: %s\n", name);
+                        continue;
+                    }
+                    if (snprintf(path, sizeof(path), "%s/%s", dir, name)
+                        >= (int)sizeof(path)) {
+                        fputs("  Session path too long.\n", stderr);
+                        continue;
+                    }
+
+                    memset(&meta, 0, sizeof(meta));
+                    if (cfg->model) {
+                        size_t ml = strlen(cfg->model);
+                        if (ml >= sizeof(meta.model)) ml = sizeof(meta.model) - 1;
+                        memcpy(meta.model, cfg->model, ml);
+                        meta.model[ml] = '\0';
+                    }
+                    if (workspace_root[0]) {
+                        size_t wl = strlen(workspace_root);
+                        if (wl >= sizeof(meta.workspace)) wl = sizeof(meta.workspace) - 1;
+                        memcpy(meta.workspace, workspace_root, wl);
+                        meta.workspace[wl] = '\0';
+                    }
+                    meta.created_at = time(NULL);
+
+                    if (ccode_conversation_init(&fresh, CCODE_MAX_MESSAGES) != 0) {
+                        fputs("  Out of memory.\n", stderr);
+                        goto cleanup;
+                    }
+                    if (cfg->read_only_tools || cfg->tools_enabled) {
+                        const char *sys = ccode_coding_agent_system_prompt();
+                        if (ccode_conversation_add(&fresh, CCODE_ROLE_SYSTEM, sys) != 0) {
+                            ccode_conversation_destroy(&fresh);
+                            fputs("  Out of memory.\n", stderr);
+                            goto cleanup;
+                        }
+                    }
+                    if (ccode_conversation_save(&fresh, path, NULL, NULL, &meta) != 0) {
+                        ccode_conversation_destroy(&fresh);
+                        fprintf(stderr, "  Could not save session: %s\n", name);
+                        continue;
+                    }
+                    ccode_conversation_destroy(&fresh);
+                    if (strlen(path) < sizeof(current_session_path)) {
+                        memcpy(current_session_path, path, strlen(path) + 1);
+                        have_session_path = 1;
+                    }
+                    fprintf(stderr, "  New session started: %s\n", name);
+                    continue;
+                }
+
+                if (strncmp(arg, "switch", 6) == 0 && arg[6] == ' ') {
+                    const char *name = arg + 7;
+                    struct ccode_conversation new_conv;
+                    char path[4096];
+                    size_t nl = strlen(name);
+
+                    if (!dir || strchr(name, '/') ||
+                        nl < 6 || strcmp(name + nl - 5, ".json") != 0 ||
+                        nl >= CCODE_SESSION_NAME_MAX) {
+                        fprintf(stderr, "  Invalid session name: %s\n", name);
+                        continue;
+                    }
+                    if (snprintf(path, sizeof(path), "%s/%s", dir, name)
+                        >= (int)sizeof(path)) {
+                        fputs("  Session path too long.\n", stderr);
+                        continue;
+                    }
+                    if (ccode_conversation_init(&new_conv, CCODE_MAX_MESSAGES) != 0) {
+                        fputs("  Out of memory.\n", stderr);
+                        goto cleanup;
+                    }
+                    if (ccode_conversation_load(&new_conv, path, NULL, NULL) != 0) {
+                        ccode_conversation_destroy(&new_conv);
+                        fprintf(stderr, "  Could not load session: %s\n", name);
+                        continue;
+                    }
+                    ccode_conversation_destroy(&conv);
+                    conv = new_conv;
+                    ccode_agent_summary_cache_reset();
+                    task_list_reset();
+                    change_log_reset();
+                    if (strlen(path) < sizeof(current_session_path)) {
+                        memcpy(current_session_path, path, strlen(path) + 1);
+                        have_session_path = 1;
+                    }
+                    fprintf(stderr, "  Switched to session: %s (%zu messages loaded)\n",
+                            name, conv.count);
+                    continue;
+                }
+
+                fputs("  Usage: /session new [name] | /session switch <name> | "
+                      "/session list\n", stderr);
                 continue;
             } else {
                 fputs("  Unknown command: ", stderr);
@@ -4996,6 +5516,10 @@ void test_change_log_add_denied_entry(const char *tool_name) {
 }
 void test_set_respect_gitignore(int v) {
     ccode_respect_gitignore_cached = v;
+}
+int test_conversation_has_tool_result(const struct ccode_conversation *conv,
+                                      const char *tool_call_id) {
+    return conversation_has_tool_result(conv, tool_call_id);
 }
 void ccode_test_cleanup_residual_temp_files(void) {
     cleanup_residual_temp_files();

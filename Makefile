@@ -1,5 +1,4 @@
 CC ?= cc
-PKG_CONFIG ?= pkg-config
 CPPFLAGS ?=
 CFLAGS ?= -O2 -std=c99 -Wall -Wextra -Wpedantic
 LDFLAGS ?=
@@ -9,7 +8,7 @@ override LDFLAGS += -m64
 
 SRC = src/main.c src/config.c src/tui/tui.c src/tui/term.c src/tui/render.c src/tui/input.c src/tui/messages.c src/tui/status.c src/tui/theme.c src/tui/protocol.c src/markdown.c
 TEST_JSON_SRC = tests/test_json.c src/json.c vendor/jsmn/jsmn.c
-TEST_AGENT_SRC = tests/test_agent.c src/agent/agent.c src/agent/message.c src/json.c src/http.c src/webfetch.c src/models.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c
+TEST_AGENT_SRC = tests/test_agent.c src/agent/agent.c src/agent/message.c src/json.c src/http.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c
 TEST_PERMISSIONS_SRC = $(wildcard tests/test_permissions.c)
 TEST_TUI_SRC = tests/test_tui.c
 TEST_MD_SRC = tests/test_markdown.c src/markdown.c
@@ -28,10 +27,9 @@ BUILD_MODE = http
 override CPPFLAGS += -DCCODE_HTTP_ONLY=1
 else
 BUILD_MODE = https
-MBEDTLS_CFLAGS := $(shell $(PKG_CONFIG) --cflags mbedtls 2>/dev/null)
-MBEDTLS_LIBS := $(shell $(PKG_CONFIG) --libs mbedtls 2>/dev/null)
-override CPPFLAGS += $(MBEDTLS_CFLAGS)
-LDLIBS += $(MBEDTLS_LIBS) -lmbedx509 -lmbedcrypto
+# mbedTLS 2.28.9 (LTS) vendored in vendor/mbedtls: no system libmbedtls needed.
+MBEDTLS_DIR = vendor/mbedtls
+override CPPFLAGS += -I$(MBEDTLS_DIR)/include
 endif
 
 ifneq ($(TEST_PERMISSIONS_SRC),)
@@ -42,7 +40,18 @@ OBJDIR = .build/$(BUILD_MODE)
 OBJ = $(addprefix $(OBJDIR)/,$(SRC:.c=.o))
 MODE_BIN = $(OBJDIR)/ccode
 CLI_BIN = $(OBJDIR)/ccode-cli
-CLI_SRC = src/cli/main.c src/config.c src/http.c src/json.c src/webfetch.c src/models.c src/agent/message.c src/agent/agent.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c
+CLI_SRC = src/cli/main.c src/config.c src/http.c src/json.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/agent/message.c src/agent/agent.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c
+
+ifeq ($(BUILD_MODE),https)
+# Vendored mbedTLS library sources, compiled into the binary (no -lmbedtls).
+# Compiled with relaxed flags: third-party code, keep it quiet.
+MBEDTLS_SRC = $(wildcard $(MBEDTLS_DIR)/library/*.c)
+MBEDTLS_OBJ = $(addprefix $(OBJDIR)/,$(MBEDTLS_SRC:.c=.o))
+MBEDTLS_CFLAGS = -O2 -std=c99 -w -m64 -march=x86-64 -mtune=generic
+endif
+
+all: ccode ccode-cli
+.PHONY: all
 
 ccode: $(MODE_BIN)
 	@tmp=$@.$$$$; cp $< $$tmp && mv -f $$tmp $@
@@ -50,25 +59,22 @@ ccode: $(MODE_BIN)
 ccode-cli: $(CLI_BIN)
 	@tmp=$@.$$$$; cp $< $$tmp && mv -f $$tmp $@
 
-$(CLI_BIN): $(CLI_SRC)
+$(CLI_BIN): $(CLI_SRC) $(MBEDTLS_OBJ)
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(CLI_SRC) $(LDFLAGS) $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(CLI_SRC) $(MBEDTLS_OBJ) $(LDFLAGS) $(LDLIBS)
 
-all: ccode ccode-cli
-
-$(MODE_BIN): $(OBJ)
-	$(CC) $(LDFLAGS) -o $@ $(OBJ) $(LDLIBS)
+$(MODE_BIN): $(OBJ) $(MBEDTLS_OBJ)
+	$(CC) $(LDFLAGS) -o $@ $(OBJ) $(MBEDTLS_OBJ) $(LDLIBS)
 
 $(OBJDIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 ifeq ($(BUILD_MODE),https)
-$(OBJ): | check-mbedtls
+$(OBJDIR)/$(MBEDTLS_DIR)/%.o: $(MBEDTLS_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(MBEDTLS_CFLAGS) -c -o $@ $<
 endif
-
-check-mbedtls:
-	@$(PKG_CONFIG) --exists mbedtls || { echo "mbedTLS development files are required. Install libmbedtls-dev or build with HTTP_ONLY=1 for local testing only." >&2; exit 1; }
 
 # 自动复制 HTTPS 版本到 test-sandbox
 test-sandbox: ccode
@@ -138,4 +144,4 @@ asan: clean
 repro: clean
 	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic -m64 -march=x86-64 -mtune=generic -ffile-prefix-map=$(PWD)=."
 
-.PHONY: ccode ccode-cli check-mbedtls clean test test-json test-agent test-http test-permissions test-tui test-markdown test-tty test-e2e test-streaming asan repro test-sandbox
+.PHONY: ccode ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-markdown test-tty test-e2e test-streaming asan repro test-sandbox

@@ -51,6 +51,12 @@ int ccode_parse_sse_delta(const char *data, size_t length,
  * unescaped and capped at CCODE_MAX_ERROR_LEN bytes. */
 char *ccode_parse_error_message(const char *body, size_t length);
 
+/* Unescape a complete JSON string body (without surrounding quotes) exactly
+ * once. Use on fully assembled streaming tool-call arguments; per-fragment
+ * unescaping corrupts escapes split across fragment boundaries. Returns a
+ * newly allocated string, or NULL on malformed escapes. */
+char *ccode_unescape_json_string(const char *s);
+
 void ccode_free_sse_delta(struct ccode_sse_delta *delta);
 
 int ccode_merge_tool_call(struct ccode_sse_tool_call *dest,

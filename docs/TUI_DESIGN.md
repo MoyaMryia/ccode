@@ -8,7 +8,7 @@
 
 - 零外部 UI 库依赖。使用 ANSI escape code + POSIX termios 手撸全部 UI
 - 不引入 ncurses、termbox 或任何需要额外安装的库
-- 唯一的外部依赖保持为 JSMN（JSON）和 mbedTLS（HTTPS）
+- 唯一的外部依赖保持为 JSMN（JSON）；mbedTLS（HTTPS）内置在 `vendor/mbedtls`，无系统依赖
 
 ### 2. 即时响应
 

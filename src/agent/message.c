@@ -751,6 +751,7 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
     parent_fd = open(parent_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (parent_fd < 0 || fsync(parent_fd) != 0) goto done;
     save_ok = 1;
+    (void)ccode_session_prune();
 
 done:
     if (f) fclose(f);
@@ -1403,6 +1404,10 @@ static int ensure_session_dir(void) {
     return 0;
 }
 
+int ccode_session_ensure_dir(void) {
+    return ensure_session_dir();
+}
+
 static int count_messages_in_file(const char *path) {
     FILE *f;
     int fd;
@@ -1518,6 +1523,87 @@ static int read_session_model(const char *path, char *model, size_t model_size) 
     }
 
     free(buf);
+    return 0;
+}
+
+/* Enforce CCODE_SESSION_KEEP_COUNT: when set to a positive N, delete the
+ * oldest session files (by mtime, ties broken by name) until at most N
+ * remain. Returns 0 on success or when pruning is disabled. Only session
+ * files (regular *.json, matching the save naming) are considered. */
+int ccode_session_prune(void) {
+    const char *env = getenv("CCODE_SESSION_KEEP_COUNT");
+    long keep;
+    const char *dir = ccode_session_dir();
+    DIR *d;
+    struct dirent *entry;
+    struct session_entry {
+        char name[CCODE_SESSION_NAME_MAX];
+        long long mtime;
+    } *entries = NULL;
+    size_t count = 0;
+    size_t cap = 0;
+    size_t i, j;
+
+    if (!env || env[0] == '\0') return 0;
+    keep = atol(env);
+    if (keep <= 0) return 0;
+    if (!dir) return -1;
+
+    d = opendir(dir);
+    if (!d) return -1;
+
+    while ((entry = readdir(d)) != NULL) {
+        char full_path[4096];
+        struct stat st;
+        size_t elen = strlen(entry->d_name);
+        long long mtime;
+
+        if (elen < 6 || strcmp(entry->d_name + elen - 5, ".json") != 0)
+            continue;
+        if (elen >= CCODE_SESSION_NAME_MAX) continue;
+        if (snprintf(full_path, sizeof(full_path), "%s/%s", dir, entry->d_name)
+            >= (int)sizeof(full_path))
+            continue;
+        if (stat(full_path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        mtime = (long long)st.st_mtime;
+
+        if (count == cap) {
+            size_t new_cap = cap == 0 ? 32 : cap * 2;
+            struct session_entry *tmp =
+                realloc(entries, new_cap * sizeof(*entries));
+            if (!tmp) { free(entries); closedir(d); return -1; }
+            entries = tmp;
+            cap = new_cap;
+        }
+        memcpy(entries[count].name, entry->d_name, elen + 1);
+        entries[count].mtime = mtime;
+        count++;
+    }
+    closedir(d);
+    if (count == 0) { free(entries); return 0; }
+
+    /* Sort oldest first (mtime ascending, name as tie-breaker). */
+    for (i = 1; i < count; i++) {
+        struct session_entry key = entries[i];
+        j = i;
+        while (j > 0 && (entries[j - 1].mtime > key.mtime ||
+               (entries[j - 1].mtime == key.mtime &&
+                strcmp(entries[j - 1].name, key.name) > 0))) {
+            entries[j] = entries[j - 1];
+            j--;
+        }
+        entries[j] = key;
+    }
+
+    /* Delete the oldest entries beyond the keep limit. */
+    for (i = 0; count > (size_t)keep; i++, count--) {
+        char path[4096];
+        if (snprintf(path, sizeof(path), "%s/%s", dir, entries[i].name)
+            >= (int)sizeof(path))
+            continue;
+        (void)unlink(path);
+    }
+    free(entries);
     return 0;
 }
 

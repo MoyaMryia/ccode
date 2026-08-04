@@ -18,10 +18,10 @@ else
     RESULT=1
 fi
 
-# ── HTTPS mock suite (when mbedTLS + OpenSSL available) ──
+# ── HTTPS mock suite (mbedTLS is vendored; needs Python ssl) ──
 echo
 echo "--- HTTPS mock suite ---"
-if pkg-config --exists mbedtls && python3 -c "import ssl" 2>/dev/null; then
+if python3 -c "import ssl" 2>/dev/null; then
     make clean >/dev/null 2>&1 || true
     if make && CCODE_TEST_HTTPS=1 bash ./tests/run.sh; then
         echo "  PASS: HTTPS mock suite"
@@ -30,7 +30,7 @@ if pkg-config --exists mbedtls && python3 -c "import ssl" 2>/dev/null; then
         RESULT=1
     fi
 else
-    echo "  SKIP: mbedTLS or OpenSSL not available"
+    echo "  SKIP: Python ssl not available"
 fi
 
 # ── ASan/UBSan build (smoke only) ──

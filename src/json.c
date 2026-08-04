@@ -189,9 +189,18 @@ static char *unescape_json_string(const char *js, int start, int end,
     out[o] = '\0';
     return out;
 
-invalid:
+ invalid:
     free(out);
     return NULL;
+}
+
+/* Unescape a complete JSON string body (without surrounding quotes) exactly
+ * once. Used on fully assembled streaming tool-call arguments: per-fragment
+ * unescaping corrupts escapes split across fragment boundaries. Returns a
+ * newly allocated string, or NULL on malformed escapes. */
+char *ccode_unescape_json_string(const char *s) {
+    if (!s) return NULL;
+    return unescape_json_string(s, 0, (int)strlen(s), SIZE_MAX);
 }
 
 static int token_byte_end(const ccode_jsmntok_t *tok) {
@@ -456,13 +465,22 @@ static int parse_tool_calls(const char *data, ccode_jsmntok_t *tokens,
             name_tok = find_key_in(tokens, num_tokens, func_idx,
                                    data, "arguments");
             if (name_tok) {
+                size_t arg_len;
                 if (name_tok->type != CCODE_JSMN_STRING) {
                     goto malformed;
                 }
-                slot->arguments = unescape_json_string(data,
-                                     name_tok->start, name_tok->end,
-                                     CCODE_MAX_SSE_TOOL_ARGUMENTS_LEN);
+                /* Keep the raw escaped bytes: streaming providers may split a
+                 * fragment in the middle of an escape sequence (e.g. "\n" as
+                 * "\" + "n"), so unescaping per fragment corrupts the result.
+                 * The final assembled arguments are unescaped exactly once,
+                 * right before the tool executes (see agent.c). */
+                arg_len = (size_t)(name_tok->end - name_tok->start);
+                if (arg_len > CCODE_MAX_SSE_TOOL_ARGUMENTS_LEN)
+                    goto malformed;
+                slot->arguments = malloc(arg_len + 1);
                 if (!slot->arguments) goto malformed;
+                memcpy(slot->arguments, data + name_tok->start, arg_len);
+                slot->arguments[arg_len] = '\0';
             }
         }
 

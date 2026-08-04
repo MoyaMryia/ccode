@@ -55,4 +55,9 @@ int ccode_cancel_pending(void);
 void ccode_cancel_child_register(pid_t child);
 void ccode_cancel_child_unregister(void);
 
+/* Reset the change-log/task summary deduplication cache. Call after
+ * /clear, /resume, /session new|switch, and /compact so that a later turn
+ * re-appends a summary that would otherwise compare equal. */
+void ccode_agent_summary_cache_reset(void);
+
 #endif

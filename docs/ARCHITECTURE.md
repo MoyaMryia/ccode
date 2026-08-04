@@ -221,8 +221,7 @@ ccode (TUI)                      ccode-cli (后端)
 | 依赖 | 用途 | 可选 |
 |------|------|------|
 | C99 编译器 (gcc/clang) | 编译 | 必选 |
-| `pkg-config` | 查找 mbedTLS | HTTP-only 可免 |
-| mbedTLS (libmbedtls-dev) | HTTPS TLS 传输 | HTTP-only 可免 |
+| mbedTLS 2.28.9 (`vendor/mbedtls`) | HTTPS TLS 传输 | HTTP-only 可免 |
 | POSIX 系统 (Linux) | 运行时 | 必选 |
 
 ### 构建
@@ -320,12 +319,12 @@ echo '{"type":"input","text":"hello"}' | ./ccode-cli --json
 # 基线测试 (HTTP-only)
 make clean && make HTTP_ONLY=1 test
 
-# HTTPS 覆盖测试 (需要 mbedTLS)
+# HTTPS 覆盖测试 (mbedTLS 内置, 无需安装)
 make clean && make
 CCODE_TEST_HTTPS=1 bash ./tests/run.sh
 ```
 
-测试组成（当前）：115 agent + 34 json + 27 http + 8 tui + 21 markdown + 20 e2e。
+测试组成（当前）：132 agent + 38 json + 27 http + 12 tui + 21 markdown + 5 tty + 5 e2e。
 
 ---
 
@@ -333,10 +332,10 @@ CCODE_TEST_HTTPS=1 bash ./tests/run.sh
 
 | 边界 | 机制 |
 |------|------|
-| 文件系统 | 工作区限制 (openat + 路径验证)、拒绝绝对/`..` 路径 |
-| 密钥 | 文件要求 0600 + 单硬链接，不记录到会话文件 |
-| 命令执行 | 单调超时、进程组终止、独立子进程环境 |
+| 文件系统 | 工作区限制 (openat + 路径验证)、拒绝绝对/`..` 路径；Landlock 写沙箱（可用时，写仅限 workspace+/tmp） |
+| 密钥 | 文件要求 0600 + 单硬链接，不记录到会话文件；子进程最小环境不继承父变量 |
+| 命令执行 | 单调超时、进程组终止、独立子进程环境、敏感路径过滤、破坏性命令拒绝 |
 | 终端输出 | 控制字符/BiDi 消杀 |
 | JSON 输入 | 严格解析 (拒绝未知/重复/越界) |
 
-当前以"先能用，再安全"为原则，安全加固在功能完成后进行。
+命令级安全加固已落地（2026-08）；Landlock 在支持的内核上自动启用，否则降级为命令过滤。

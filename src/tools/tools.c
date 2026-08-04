@@ -119,6 +119,23 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "\"timeout\":{\"type\":\"number\",\"description\":\"Timeout in seconds (optional, default 30)\"},"
      "\"max_size\":{\"type\":\"number\",\"description\":\"Max response size in bytes (optional, default 1MB)\"}"
      "},\"required\":[\"url\"]}"},
+
+    {"agent_tool",
+     "Delegate a task to a sub-agent that runs its own agent loop inside the "
+     "workspace and returns its final answer. The sub-agent is read-only by "
+     "default; set read_only to 'false' to let it use write tools (each write "
+     "still requires approval).",
+     "{\"type\":\"object\",\"properties\":{"
+     "\"task\":{\"type\":\"string\",\"description\":\"Task to delegate\"},"
+     "\"read_only\":{\"type\":\"string\",\"description\":\"Set to 'false' to allow write tools (optional, default true)\"}"
+     "},\"required\":[\"task\"]}"},
+
+    {"web_search",
+     "Search the web for the given query and return result titles, URLs and "
+     "snippets.",
+     "{\"type\":\"object\",\"properties\":{"
+     "\"query\":{\"type\":\"string\",\"description\":\"Search query\"}"
+     "},\"required\":[\"query\"]}"},
 };
 
 const size_t ccode_tool_definitions_count =
@@ -256,7 +273,7 @@ char *ccode_build_write_tools_json(void) {
                                    "glob", "grep",
                                    "git_status", "git_diff", "git_stat",
                                    "task_create", "task_update", "task_list",
-                                   "web_fetch"};
+                                   "web_fetch", "web_search", "agent_tool"};
     size_t i;
     int first = 1;
 

@@ -24,19 +24,19 @@
 #### 1.2 会话恢复增强
 - [x] `/resume <name>` — 恢复指定会话
 - [x] `/resume` — 恢复最近的会话
-- [ ] `/resume --list` — 显示可恢复的会话列表（可使用`/sessions`替代）
+- [x] `/resume --list` — 显示可恢复的会话列表
 - [x] 会话元数据持久化（创建时间、最后修改时间、模型、工作区）
 
 #### 1.3 会话状态管理
 - [x] 会话自动保存（每轮对话后）
 - [x] 会话大小限制（默认 10MB，可配置）
-- [ ] 会话清理策略（保留最近 N 个会话）
-- [ ] 会话压缩（自动清理旧消息，保留摘要）
+- [x] 会话清理策略（CCODE_SESSION_KEEP_COUNT，保存后自动删除最旧会话）
+- [x] 会话压缩（`/compact` + 消息数超过阈值时自动折叠旧消息，保留 role/工具/变更摘要）
 
 #### 1.4 多会话支持
-- [ ] `/session new [name]` — 创建新会话
-- [ ] `/session switch <name>` — 切换到其他会话
-- [ ] `/session list` — 列出所有活跃会话
+- [x] `/session new [name]` — 创建新会话（有名字则保存并切换；无名字仅清空）
+- [x] `/session switch <name>` — 切换到其他会话
+- [x] `/session list` — 列出所有活跃会话（与 `/sessions` 相同）
 - [ ] 会话隔离（不同会话有不同的工具状态）
 
 **使用场景：**
@@ -98,8 +98,8 @@ export CCODE_SESSION_KEEP_COUNT=10            # 保留最近会话数量
 
 #### 2.3 安全措施
 - [x] URL 验证（拒绝 file://, ftp:// 等非 HTTP 协议）
-- [ ] 域名黑名单（可配置）
-- [ ] 请求频率限制（防止滥用）
+- [x] 域名黑名单（CCODE_WEB_FETCH_BLACKLIST，支持精确与子域匹配，重定向同样检查）
+- [x] 请求频率限制（CCODE_WEB_FETCH_RATE_LIMIT 次/秒，超出返回结构化错误）
 - [ ] 内容过滤（可选，过滤恶意内容）
 
 #### 2.4 工具接口
@@ -201,9 +201,9 @@ export CCODE_WEB_FETCH_BLACKLIST="evil.com,tracker.com"  # 域名黑名单
   ```
 
 #### 3.4 模型验证
-- [ ] 启动时验证模型是否可用
+- [x] 启动时验证模型是否可用（CCODE_MODEL_VERIFY=1 开启；无法验证时按可用处理）
+- [x] 模型不可用时自动回退到默认模型（CCODE_MODEL_FALLBACK）
 - [ ] 切换模型时验证模型是否存在
-- [ ] 模型不可用时自动回退到默认模型
 - [ ] 显示模型价格信息（如果 API 支持）
 
 #### 3.5 模型使用统计
@@ -290,7 +290,15 @@ export CCODE_MODEL_ALIASES="fast=deepseek-v4-flash,smart=deepseek-v4"
 
 ### 5. AgentTool（子代理）
 
-**当前状态：** 没有
+**当前状态：** 已实现（`agent_tool` 工具）
+
+- [x] 委派任务给子代理，子代理运行独立 agent loop（独立对话上下文）
+- [x] 子代理默认只读（read_file/glob/grep/git_*），`read_only:"false"` 时继承写工具（写操作仍逐个审批）
+- [x] 嵌套深度限制（MAX_SUBAGENT_DEPTH=3），防止递归爆炸
+- [x] 子代理最终回复作为结构化工具结果返回主代理（上限 100KB）
+- [x] 子代理输出不回显到主输出（独立收集回调），工具执行过程仍可见
+- [x] 取消（SIGINT）、超时（50 轮上限）、审批与主代理共享
+- [x] 子代理失败/无回复返回结构化错误，不静默
 
 ### 6. 技能系统
 
@@ -298,7 +306,14 @@ export CCODE_MODEL_ALIASES="fast=deepseek-v4-flash,smart=deepseek-v4"
 
 ### 7. WebSearch
 
-**当前状态：** 没有
+**当前状态：** 已实现（`web_search` 工具）
+
+- [x] `web_search` 工具：query 必填，返回结构化结果 `{"results":[{"title","url","snippet"}]}`
+- [x] 默认端点 Bing（`https://www.bing.com/search?q={query}`），`CCODE_WEB_SEARCH_URL` 自定义模板（含 `{query}` 占位符）
+- [x] 经 `ccode_web_fetch` 抓取（`raw_html` 保留原始 HTML），自动继承域名黑名单与请求限流
+- [x] HTML 解析：`<li class="b_algo">` 块内提取标题链接（容忍 `class="tilk"`/`h="ID=SERP..."` 属性）、摘要、常见 HTML 实体解码（含数字实体）、JSON 转义输出
+- [x] 结果上限 8 条、query 上限 512 字节、响应上限 512KB
+- [x] 真实 Bing 页面离线解析验证 + 本地 mock 端点完整链路 e2e
 
 ## 实现顺序
 
@@ -319,14 +334,15 @@ Week 3+: 扩展功能
 
 | 功能 | 优先级 | 状态 | 备注 |
 |------|--------|------|------|
-| 会话管理 | P1 | 增强 | 列表/删除/重命名/导出/自动保存/元数据 |
+| 会话管理 | P1 | 增强 | 列表/删除/重命名/导出/自动保存/元数据/清理策略/多会话/压缩 |
+| 上下文缓存 | P1 | 已实现 | 请求前缀字节稳定（去重摘要、resume 不重复 system）+ 前缀稳定性回归测试 |
 | WebFetch | P1 | 已完成 | HTTP/HTTPS 抓取、HTML 转文本、大小限制 |
 | 模型管理 | P1 | 已完成 | API 模型列表/搜索/详情/切换/默认模型 |
 | Markdown 渲染 | P2 | 已完成 | 标题/加粗/斜体/行内代码/代码围栏/列表/引用/链接，行式流式 |
 | MCP | P2 | 未开始 | 扩展工具 |
-| AgentTool | P2 | 未开始 | 并行任务 |
+| AgentTool | P2 | 已完成 | 子代理委派（只读默认、深度限制、独立上下文） |
 | 技能系统 | P2 | 未开始 | 最佳实践 |
-| WebSearch | P2 | 未开始 | 搜索 |
+| WebSearch | P2 | 已完成 | Bing 端点可配置、结构化结果、继承抓取安全策略 |
 
 ## 已完成功能
 
@@ -348,6 +364,24 @@ Week 3+: 扩展功能
 - ✅ ccode-cli 端到端流式输出（普通 CLI 与 JSON Lines/TUI 后端均在每个 SSE delta 到达时立即输出）
 - ✅ Markdown 渲染（行式流式 markdown→ANSI：标题/加粗/斜体/行内代码/代码围栏/无序有序列表/引用/水平线/OSC 8 超链接；粗体使用 ANSI bold + 舒适的真彩色 RGB 绿色 `80,200,120` 兜底；控制字符与双向覆盖符消毒；`--no-markdown` / `CCODE_MARKDOWN=0` 禁用回退裸输出）
 - ✅ Coding Agent prompt（任务理解、先读后改、专用工具选择、最小变更、风险审批、验证闭环和诚实报告约束）
+- ✅ 非 200 错误响应等待完整 body 后再解析 error.message（header 与 body 分包的响应不再丢失错误消息；git 非仓库错误统一为结构化错误，git_status/git_diff/git_stat 大小写不敏感识别）
+- ✅ 上下文缓存命中保障（DeepSeek/OpenAI 前缀缓存）：
+  - `--resume`/REPL 启动加载会话后不再重复追加 system 提示（之前会双 system，浪费 token）
+  - change_log/task 摘要仅在内容变化时追加为 system 消息（之前每轮无条件重复追加）
+  - `/clear`、`/compact`、`/resume`、`/session new|switch` 重置摘要去重缓存
+  - 新增回归测试 `request_prefix_stable_across_turns`：连续请求字节前缀一致（含 JSON 转义/Unicode/工具调用场景）
+- ✅ 会话管理补齐：`CCODE_SESSION_KEEP_COUNT` 自动清理最旧会话（保存后触发）、`/session new|switch|list` 多会话、`/resume --list`
+- ✅ 工具调用流式参数修复：arguments 片段以原始转义字节累积、执行前统一 unescape 一次（`\uXXXX` 代理对/`\n` 等转义序列跨片段拆分不再损坏或拒绝）；拒绝 NUL 转义；拒绝重复 `tool_call_id` 执行（防重复副作用）；工具执行返回 NULL 时追加结构化错误而非静默（模型始终得到反馈）
+- ✅ AgentTool 子代理（`agent_tool` 工具：独立 loop、默认只读、深度限制 3、结果 100KB 上限、失败结构化错误）
+- ✅ WebFetch 安全（`CCODE_WEB_FETCH_BLACKLIST` 域名黑名单精确+子域匹配、重定向也检查；`CCODE_WEB_FETCH_RATE_LIMIT` 每秒请求上限）
+- ✅ 模型验证（`CCODE_MODEL_VERIFY=1` 启动时校验模型存在，缺失且配置 `CCODE_MODEL_FALLBACK` 时自动回退；容忍 `"id": "x"` 空白）
+- ✅ WebSearch（`web_search` 工具：Bing 端点可配、HTML 结构化解析、实体解码、结果上限；`webfetch` 新增 `raw_html` 选项保留原始标记）
+- ✅ 安全加固（命令级防护）：
+  - 子进程最小环境（全新构造，HOME=/tmp、PATH 白名单，不继承任何父变量如 CCODE_*/SSH_AUTH_SOCK/云凭据）
+  - 敏感路径过滤：bash/run_command 引用 ssh 密钥、AWS/Azure/K8s 凭据、shadow、/proc、/sys 等拒绝（`CCODE_DISABLE_COMMAND_FILTER=1` 关闭）
+  - 破坏性命令拒绝：mkfs/dd(带操作数)/chown/fdisk/shutdown 等整词检测
+  - `rm -rf /` 特例解析（不误伤 `rm -rf /tmp/...`）
+  - Landlock 写沙箱（`ccode_landlock_apply`）：写操作仅限 workspace + /tmp，内核不可用时自动降级（`CCODE_DISABLE_SANDBOX` 语义见 sandbox.c）
 
 ## 完成标准
 
@@ -355,7 +389,7 @@ Week 3+: 扩展功能
 
 1. CLI 模式下能用
 2. 有基本测试
-3. 通过现有测试套件（当前 115 个 agent 测试 + 34 json + 27 http + 8 tui + 21 markdown + 20 e2e 全通过）
+3. 通过现有测试套件（当前 132 个 agent 测试 + 38 json + 27 http + 12 tui + 21 markdown + 5 tty + 5 e2e 全通过）
 
 ## 暂时不管的事
 
