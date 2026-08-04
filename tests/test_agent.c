@@ -26,6 +26,7 @@
 #include "../src/agent/message.h"
 #include "../src/agent/agent.h"
 #include "../src/webfetch.h"
+#include "../src/websearch.h"
 #include "../src/models.h"
 
 /* Test-only exports declared in agent.c. */
@@ -1358,6 +1359,7 @@ static int test_run_command_process_tree_cleanup(void) {
     ssize_t n;
     long child_pid;
     char *argv[16];
+    char script[600];
     char *r;
 
     snprintf(pid_path, sizeof(pid_path), "fixtures/child_pid_%ld", (long)getpid());
@@ -1366,26 +1368,23 @@ static int test_run_command_process_tree_cleanup(void) {
     /* Fork a child that sleeps, write its PID to a file, then parent also
      * sleeps. The process group should be killed on timeout, including
      * the forked child. */
-    {
-        char script[600];
-        snprintf(script, sizeof(script),
-            "import os,sys\n"
-            "pid=os.fork()\n"
-            "if pid==0:\n"
-            "  import time\n"
-            "  time.sleep(30)\n"
-            "  open('%s','w').write('child survived')\n"
-            "else:\n"
-            "  f=open('%s','w')\n"
-            "  f.write(str(pid))\n"
-            "  f.close()\n"
-            "  sys.stdout.write('parent\\n')\n"
-            "  sys.stdout.flush()\n"
-            "  time.sleep(30)\n"
-            "  sys.exit(1)\n",
-            pid_path, pid_path);
-        argv[0] = "python3"; argv[1] = "-c"; argv[2] = script; argv[3] = NULL;
-    }
+    snprintf(script, sizeof(script),
+        "import os,sys\n"
+        "pid=os.fork()\n"
+        "if pid==0:\n"
+        "  import time\n"
+        "  time.sleep(30)\n"
+        "  open('%s','w').write('child survived')\n"
+        "else:\n"
+        "  f=open('%s','w')\n"
+        "  f.write(str(pid))\n"
+        "  f.close()\n"
+        "  sys.stdout.write('parent\\n')\n"
+        "  sys.stdout.flush()\n"
+        "  time.sleep(30)\n"
+        "  sys.exit(1)\n",
+        pid_path, pid_path);
+    argv[0] = "python3"; argv[1] = "-c"; argv[2] = script; argv[3] = NULL;
 
     r = test_exec_run_command("fixtures", argv, 3, 2000);
     ASSERT(r != NULL);
@@ -1705,7 +1704,8 @@ static int test_git_status_parsing(void) {
     test_reset_workspace();
     r = test_exec_tool("fixtures", "git_status", "{}");
     ASSERT(r != NULL);
-    ASSERT(strstr(r, "\"exit_code\":") != NULL);
+    ASSERT(strstr(r, "\"error\":\"Not a git repository\"") != NULL);
+    ASSERT(strstr(r, "\"exit_code\":") == NULL);
     free(r);
     return 1;
 }
@@ -1715,7 +1715,8 @@ static int test_git_diff_parsing(void) {
     test_reset_workspace();
     r = test_exec_tool("fixtures", "git_diff", "{}");
     ASSERT(r != NULL);
-    ASSERT(strstr(r, "\"exit_code\":") != NULL);
+    ASSERT(strstr(r, "\"error\":\"Not a git repository\"") != NULL);
+    ASSERT(strstr(r, "\"exit_code\":") == NULL);
     free(r);
     return 1;
 }
@@ -1930,6 +1931,25 @@ static int test_change_log_retains_truncation_and_denials(void) {
     return 1;
 }
 
+/* Re-using a tool_call_id that already produced a tool result must be
+ * detected so the agent refuses re-execution (duplicate side effects). */
+static int test_duplicate_tool_call_id_detected(void) {
+    struct ccode_conversation conv;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "") == 0);
+    ASSERT(ccode_conversation_add_tool_call(&conv, "call_1", "bash",
+                                            "{\"command\":\"true\"}") == 0);
+    ASSERT(test_conversation_has_tool_result(&conv, "call_1") == 0);
+    ASSERT(ccode_conversation_add_tool_result(&conv, "call_1",
+                                              "{\"exit_code\":0}") == 0);
+    ASSERT(test_conversation_has_tool_result(&conv, "call_1") == 1);
+    ASSERT(test_conversation_has_tool_result(&conv, "call_2") == 0);
+    ASSERT(test_conversation_has_tool_result(&conv, "") == 0);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
 static int test_glob_path_scope_restricts_results(void) {
     mkdir_p("fixtures/glob_scope_a");
     mkdir_p("fixtures/glob_scope_b");
@@ -2124,7 +2144,8 @@ static int test_git_stat_parsing(void) {
     test_reset_workspace();
     r = test_exec_tool("fixtures", "git_stat", "{}");
     ASSERT(r != NULL);
-    ASSERT(strstr(r, "\"exit_code\":") != NULL);
+    ASSERT(strstr(r, "\"error\":\"Not a git repository\"") != NULL);
+    ASSERT(strstr(r, "\"exit_code\":") == NULL);
     free(r);
     return 1;
 }
@@ -2536,6 +2557,54 @@ static int test_web_fetch_invalid_url(void) {
     return 1;
 }
 
+static int test_web_fetch_blacklist_and_rate_limit(void) {
+    struct ccode_web_fetch_opts opts;
+    char *result;
+    int ok = 0;
+
+    memset(&opts, 0, sizeof(opts));
+    setenv("CCODE_WEB_FETCH_BLACKLIST", "evil.com,corp.example", 1);
+
+    /* Exact host. */
+    opts.url = "https://evil.com/x";
+    result = ccode_web_fetch(&opts);
+    ASSERT(result != NULL);
+    ASSERT(strstr(result, "blacklisted") != NULL);
+    free(result);
+
+    /* Subdomain of a blacklisted host. */
+    opts.url = "http://sub.evil.com:8080/a";
+    result = ccode_web_fetch(&opts);
+    ASSERT(result != NULL);
+    ASSERT(strstr(result, "blacklisted") != NULL);
+    free(result);
+
+    /* Suffix match must not catch notevil.com. */
+    opts.url = "https://notevil.com/x";
+    result = ccode_web_fetch(&opts);
+    ASSERT(result != NULL);
+    ASSERT(strstr(result, "blacklisted") == NULL);
+    free(result);
+
+    unsetenv("CCODE_WEB_FETCH_BLACKLIST");
+
+    /* Rate limit: with a 1/sec limit the second attempt fails before any
+     * network I/O (the URL is a closed loopback port). */
+    setenv("CCODE_WEB_FETCH_RATE_LIMIT", "1", 1);
+    opts.url = "http://127.0.0.1:9/one";
+    result = ccode_web_fetch(&opts);
+    ASSERT(result != NULL);
+    free(result);
+    opts.url = "http://127.0.0.1:9/two";
+    result = ccode_web_fetch(&opts);
+    ASSERT(result != NULL);
+    ASSERT(strstr(result, "rate limit") != NULL);
+    free(result);
+    unsetenv("CCODE_WEB_FETCH_RATE_LIMIT");
+    ok = 1;
+    return ok;
+}
+
 static int test_web_fetch_tool_prepare(void) {
     char display[2048];
 
@@ -2571,6 +2640,53 @@ static int test_web_fetch_tool_prepare(void) {
     return 1;
 }
 
+static int test_agent_tool_prepare(void) {
+    char display[2048];
+    char *r;
+
+    ASSERT(test_prepare_tool_display("agent_tool",
+        "{\"task\":\"inspect the build system\"}",
+        display, sizeof(display)) == 0);
+    ASSERT(strstr(display, "agent_tool") != NULL);
+    ASSERT(strstr(display, "read-only") != NULL);
+    ASSERT(strstr(display, "inspect the build system") != NULL);
+
+    ASSERT(test_prepare_tool_display("agent_tool",
+        "{\"task\":\"fix it\",\"read_only\":\"false\"}",
+        display, sizeof(display)) == 0);
+    ASSERT(strstr(display, "read-only") == NULL);
+
+    ASSERT(test_prepare_tool_display("agent_tool",
+        "{\"task\":\"fix it\",\"read_only\":\"yes\"}",
+        display, sizeof(display)) != 0);
+    ASSERT(test_prepare_tool_display("agent_tool",
+        "{\"read_only\":\"false\"}",
+        display, sizeof(display)) != 0);
+    ASSERT(test_prepare_tool_display("agent_tool",
+        "{\"task\":\"\"}",
+        display, sizeof(display)) != 0);
+    ASSERT(test_prepare_tool_display("agent_tool",
+        "{\"task\":\"x\",\"bogus\":1}",
+        display, sizeof(display)) != 0);
+
+    /* Without an agent config (unit-test context) the tool must fail
+     * closed instead of dereferencing a NULL config. */
+    test_reset_workspace();
+    r = test_exec_tool("fixtures", "agent_tool",
+                       "{\"task\":\"hello\"}");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "Sub-agent not available") != NULL);
+    free(r);
+
+    /* Depth limit is enforced before any API call. */
+    r = test_exec_tool("fixtures", "agent_tool",
+                       "{\"task\":\"x\",\"read_only\":\"false\"}");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "Sub-agent not available") != NULL);
+    free(r);
+    return 1;
+}
+
 /* ── Model management tests ── */
 
 static int test_models_fetch_invalid(void) {
@@ -2590,6 +2706,159 @@ static int test_models_fetch_bad_url(void) {
     ASSERT(r != NULL);
     ASSERT(strstr(r, "error") != NULL);
     free(r);
+    return 1;
+}
+
+static int test_model_verify_error_paths(void) {
+    ASSERT(ccode_model_verify(NULL, NULL, NULL) == -1);
+    ASSERT(ccode_model_verify("", "", "") == -1);
+    ASSERT(ccode_model_verify("http://127.0.0.1:9/v1", "k", "m") == -1);
+    ASSERT(ccode_model_verify("http://127.0.0.1:9/v1", "k", "has\"quote") == -1);
+    return 1;
+}
+
+static int test_command_sensitive_paths(void) {
+    static const char *blocked[] = {
+        "cat /etc/shadow",
+        "ls -la /home/user/.ssh/id_rsa",
+        "cat ~/.aws/credentials",
+        "grep -r foo /proc",
+        "cat /sys/kernel/debug",
+        "rm -rf /",
+        "rm -fr /*",
+        "ssh-keygen -f /root/.ssh/id_ed25519",
+        "git config --global user.name x && cat ~/.git-credentials",
+    };
+    static const char *allowed[] = {
+        "echo hi",
+        "cat /etc/passwd",
+        "rm -rf /tmp/build",
+        "rm -rf .",
+        "git status",
+        "make test",
+        "cat /usr/local/bin/gcc",
+        "ls /home 2>/dev/null || echo nope",  /* /home/ with slash only */
+    };
+    size_t i;
+    for (i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++)
+        ASSERT(ccode_command_is_sensitive(blocked[i]) == 1);
+    for (i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++)
+        ASSERT(ccode_command_is_sensitive(allowed[i]) == 0);
+    return 1;
+}
+
+static int test_command_destructive_words(void) {
+    static const char *blocked[] = {
+        "dd if=/dev/zero of=/tmp/x",
+        "mkfs.ext4 /dev/sdb1",
+        "chown -R nobody /",
+        "fdisk -l /dev/sda",
+        "shutdown now",
+    };
+    static const char *allowed[] = {
+        "echo dd",
+        "git diff --stat",
+        "make check",
+        "cat fdisk_docs.txt",
+        "echo chmodded",
+    };
+    size_t i;
+    for (i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++)
+        ASSERT(ccode_command_mentions_destructive(blocked[i]) == 1);
+    for (i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++)
+        ASSERT(ccode_command_mentions_destructive(allowed[i]) == 0);
+    return 1;
+}
+
+/* Agent-level enforcement: bash/run_command execution must refuse sensitive
+ * and destructive commands end to end, and must not leak parent env vars
+ * (CCODE_* credentials) into the child environment. */
+static int test_command_sandbox_enforced(void) {
+    char *r;
+
+    test_reset_workspace();
+    r = test_exec_tool("fixtures", "bash", "{\"command\":\"cat /etc/shadow\"}");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "sensitive paths") != NULL);
+    free(r);
+
+    r = test_exec_tool("fixtures", "bash", "{\"command\":\"rm -rf /\"}");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "sensitive paths") != NULL);
+    free(r);
+
+    r = test_exec_tool("fixtures", "bash",
+                       "{\"command\":\"dd if=/dev/zero of=/tmp/x\"}");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "Destructive") != NULL);
+    free(r);
+
+    r = test_exec_tool("fixtures", "bash", "{\"command\":\"echo hi\"}");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "\"stdout\":\"hi") != NULL);
+    free(r);
+
+    /* The child environment must not carry the parent's CCODE_* vars. */
+    setenv("CCODE_API_KEY", "sk-should-not-leak", 1);
+    r = test_exec_tool("fixtures", "bash",
+                       "{\"command\":\"echo $CCODE_API_KEY\"}");
+    unsetenv("CCODE_API_KEY");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "sk-should-not-leak") == NULL);
+    ASSERT(strstr(r, "\"stdout\":\"\\n\"") != NULL);
+    free(r);
+    return 1;
+}
+
+static int test_web_search_parse_html(void) {
+    char *r;
+    const char *html =
+        "<html><body><ol id=\"b_results\">"
+        "<li class=\"b_algo\">"
+        "<h2><a href=\"https://example.com/page\">Example &amp; Co: a &quot;quoted&quot; title</a></h2>"
+        "<div class=\"b_caption\"><p>This is the <b>snippet</b> text.</p></div>"
+        "</li>"
+        "<li class=\"b_algo\">"
+        "<h2><a href=\"https://second.org/x\">Second result</a></h2>"
+        "<div class=\"b_caption\"><p>Another snippet with &lt;tag&gt; entities.</p></div>"
+        "</li>"
+        "</ol></body></html>";
+
+    r = ccode_web_search_parse_html(html, strlen(html));
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "\"title\":\"Example & Co: a \\\"quoted\\\" title\"") != NULL);
+    ASSERT(strstr(r, "\"url\":\"https://example.com/page\"") != NULL);
+    ASSERT(strstr(r, "\"snippet\":\"This is the snippet text.\"") != NULL);
+    ASSERT(strstr(r, "\"title\":\"Second result\"") != NULL);
+    ASSERT(strstr(r, "\"snippet\":\"Another snippet with <tag> entities.\"") != NULL);
+    free(r);
+
+    /* No results page. */
+    r = ccode_web_search_parse_html("<html><body>nothing here</body></html>",
+                                    strlen("<html><body>nothing here</body></html>"));
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "\"results\":[]") != NULL);
+    free(r);
+    return 1;
+}
+
+static int test_web_search_prepare(void) {
+    char display[2048];
+
+    ASSERT(test_prepare_tool_display("web_search",
+        "{\"query\":\"c99 json parser\"}",
+        display, sizeof(display)) == 0);
+    ASSERT(strstr(display, "c99 json parser") != NULL);
+
+    ASSERT(test_prepare_tool_display("web_search",
+        "{\"query\":\"\"}",
+        display, sizeof(display)) != 0);
+    ASSERT(test_prepare_tool_display("web_search",
+        "{\"bogus\":1}",
+        display, sizeof(display)) != 0);
+    ASSERT(test_prepare_tool_display("web_search",
+        "{\"query\":\"a\",\"extra\":\"b\"}",
+        display, sizeof(display)) != 0);
     return 1;
 }
 
@@ -2663,6 +2932,169 @@ static int test_build_request_thinking_default_effort(void) {
     free(req);
     ccode_conversation_destroy(&conv);
     return 1;
+}
+
+/* Return the byte offset in req just past the last message object of the
+ * "messages" array (i.e. the position of the array's closing ']'), or 0 on
+ * failure. String contents are JSON-escaped, so a naive escaped-quote scan
+ * is safe: any '"' is either a boundary or part of \" (a bare '"' can never
+ * appear inside content). */
+static size_t find_messages_prefix_end(const char *req) {
+    const char *p = strstr(req, "\"messages\":[");
+    const char *q;
+    size_t depth = 0;
+    if (!p) return 0;
+    q = p + 11;
+    for (; *q; q++) {
+        if (*q == '"') {
+            q++;
+            while (*q && !(*q == '"' && q[-1] != '\\')) q++;
+            if (!*q) return 0;
+        } else if (*q == '[' || *q == '{') {
+            depth++;
+        } else if (*q == ']' || *q == '}') {
+            if (depth == 0) return 0;
+            depth--;
+            if (depth == 0) return (size_t)(q - req);
+        }
+    }
+    return 0;
+}
+
+/* Two consecutive requests must share a byte-identical prefix up to the end
+ * of the last message of the earlier request. That is exactly the condition
+ * for upstream context caching (DeepSeek/OpenAI cache the request prefix and
+ * discount cached tokens). The later request continues the messages array
+ * with a comma at the prefix boundary. */
+static int test_request_prefix_stable_across_turns(void) {
+    struct ccode_conversation conv;
+    char *req1, *req2, *req3;
+    size_t prefix_end;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM,
+                                  "You are a coding agent.") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "user one") == 0);
+    req1 = ccode_conversation_build_request(&conv, "test-model",
+                                            "\"tools\":[{\"x\":1}]", 0, NULL);
+    ASSERT(req1 != NULL);
+
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "user two") == 0);
+    req2 = ccode_conversation_build_request(&conv, "test-model",
+                                            "\"tools\":[{\"x\":1}]", 0, NULL);
+    ASSERT(req2 != NULL);
+
+    prefix_end = find_messages_prefix_end(req1);
+    ASSERT(prefix_end > 0);
+    ASSERT(strncmp(req2, req1, prefix_end) == 0);
+    ASSERT(req2[prefix_end] == ',');
+    free(req2);
+    free(req1);
+
+    /* Tool-call round with hostile content: JSON escapes, unicode, newline.
+     * req3 covers system+user+assistant(tool call)+tool result+user; its
+     * prefix must match a request built without the trailing user message. */
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT,
+                                  "let me check") == 0);
+    ASSERT(ccode_conversation_add_tool_call(&conv, "call_1", "bash",
+        "{\"command\":\"echo \\\"q\\\" && ls\"}") == 0);
+    ASSERT(ccode_conversation_add_tool_result(&conv, "call_1",
+        "{\"exit_code\":0,\"stdout\":\"line\\n\\u00e9\\u4e2d \\\\\\\"\"}") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER,
+                                  "next: user\\\"quoted") == 0);
+    req3 = ccode_conversation_build_request(&conv, "test-model",
+                                            "\"tools\":[{\"x\":1}]", 1,
+                                            "medium");
+    ASSERT(req3 != NULL);
+    {
+        struct ccode_conversation conv2;
+        char *req_base;
+        size_t base_end;
+        ASSERT(ccode_conversation_init(&conv2, CCODE_MAX_MESSAGES) == 0);
+        ASSERT(ccode_conversation_add(&conv2, CCODE_ROLE_SYSTEM,
+                                      "You are a coding agent.") == 0);
+        ASSERT(ccode_conversation_add(&conv2, CCODE_ROLE_USER,
+                                      "user one") == 0);
+        ASSERT(ccode_conversation_add(&conv2, CCODE_ROLE_USER,
+                                      "user two") == 0);
+        ASSERT(ccode_conversation_add(&conv2, CCODE_ROLE_ASSISTANT,
+                                      "let me check") == 0);
+        ASSERT(ccode_conversation_add_tool_call(&conv2, "call_1", "bash",
+            "{\"command\":\"echo \\\"q\\\" && ls\"}") == 0);
+        ASSERT(ccode_conversation_add_tool_result(&conv2, "call_1",
+            "{\"exit_code\":0,\"stdout\":\"line\\n\\u00e9\\u4e2d \\\\\\\"\"}") == 0);
+        req_base = ccode_conversation_build_request(&conv2, "test-model",
+                                                    "\"tools\":[{\"x\":1}]", 1,
+                                                    "medium");
+        ASSERT(req_base != NULL);
+        base_end = find_messages_prefix_end(req_base);
+        ASSERT(base_end > 0);
+        ASSERT(strncmp(req3, req_base, base_end) == 0);
+        ASSERT(req3[base_end] == ',');
+        free(req_base);
+        ccode_conversation_destroy(&conv2);
+    }
+    free(req3);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
+/* CCODE_SESSION_KEEP_COUNT: only the N most recent sessions survive a save. */
+static int test_session_prune_keep_count(void) {
+    char dir[512];
+    const char *saved = getenv("CCODE_SESSION_DIR");
+    char old_env[1024];
+    int have_old = saved != NULL;
+    struct ccode_conversation conv;
+    struct ccode_session_metadata meta;
+    int i;
+    int ok = 0;
+
+    if (have_old) {
+        if (strlen(saved) >= sizeof(old_env)) return 0;
+        memcpy(old_env, saved, strlen(saved) + 1);
+    }
+    snprintf(dir, sizeof(dir), "fixtures/session_prune_%ld", (long)getpid());
+    mkdir_p(dir);
+    if (setenv("CCODE_SESSION_DIR", dir, 1) != 0) goto out;
+    if (setenv("CCODE_SESSION_KEEP_COUNT", "3", 1) != 0) goto out;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "m") == 0);
+    memset(&meta, 0, sizeof(meta));
+    meta.created_at = time(NULL);
+    for (i = 0; i < 6; i++) {
+        char path[600];
+        snprintf(path, sizeof(path), "%s/s%02d.json", dir, i);
+        ASSERT(ccode_conversation_save(&conv, path, NULL, NULL, &meta) == 0);
+        usleep(20000);
+    }
+    ccode_conversation_destroy(&conv);
+
+    {
+        /* The three oldest (s00..s02) must be gone, newest (s03..s05) kept. */
+        char path[600];
+        struct stat st;
+        for (i = 0; i < 3; i++) {
+            snprintf(path, sizeof(path), "%s/s%02d.json", dir, i);
+            ASSERT(stat(path, &st) != 0);
+        }
+        for (i = 3; i < 6; i++) {
+            snprintf(path, sizeof(path), "%s/s%02d.json", dir, i);
+            ASSERT(stat(path, &st) == 0);
+        }
+    }
+    ok = 1;
+out:
+    unsetenv("CCODE_SESSION_KEEP_COUNT");
+    if (have_old) setenv("CCODE_SESSION_DIR", old_env, 1);
+    else unsetenv("CCODE_SESSION_DIR");
+    {
+        char cmd[700];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
+        (void)system(cmd);
+    }
+    return ok;
 }
 
 int main(void) {
@@ -2790,6 +3222,7 @@ int main(void) {
     TEST(new_tool_arguments_are_strict);
     TEST(task_results_escape_model_content);
     TEST(change_log_retains_truncation_and_denials);
+    TEST(duplicate_tool_call_id_detected);
     TEST(load_rejects_strict_schema_and_is_transactional);
     TEST(content_limit_is_exact);
     TEST(save_is_loadable_and_rejects_oversized_state);
@@ -2808,11 +3241,19 @@ int main(void) {
 
     /* Phase 6: WebFetch tests */
     TEST(web_fetch_invalid_url);
+    TEST(web_fetch_blacklist_and_rate_limit);
     TEST(web_fetch_tool_prepare);
+    TEST(agent_tool_prepare);
+    TEST(web_search_parse_html);
+    TEST(web_search_prepare);
 
     /* Phase 7: Model management tests */
     TEST(models_fetch_invalid);
     TEST(models_fetch_bad_url);
+    TEST(model_verify_error_paths);
+    TEST(command_sensitive_paths);
+    TEST(command_destructive_words);
+    TEST(command_sandbox_enforced);
     TEST(coding_agent_prompt_contract);
 
     /* Phase 8: Thinking/reasoning request building tests */
@@ -2820,6 +3261,8 @@ int main(void) {
     TEST(build_request_thinking_medium);
     TEST(build_request_thinking_high);
     TEST(build_request_thinking_default_effort);
+    TEST(request_prefix_stable_across_turns);
+    TEST(session_prune_keep_count);
 
     fprintf(stderr, "\n=== Results: %d tests, %d failed ===\n",
             tests_run, tests_failed);

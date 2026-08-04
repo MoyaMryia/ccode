@@ -122,3 +122,46 @@ char *ccode_models_fetch(const char *api_base, const char *api_key) {
         return models_json;
     }
 }
+
+/* Verify that model is present in the API model list.
+ * Returns 1 when the model exists, 0 when the list was fetched but the model
+ * is absent, and -1 when the list could not be fetched (the caller should
+ * then treat the model as usable rather than fall back on a network error). */
+int ccode_model_verify(const char *api_base, const char *api_key,
+                       const char *model) {
+    char *models_json;
+    const char *p;
+    size_t model_len;
+    int found = 0;
+
+    if (!api_base || !api_key || !model || model[0] == '\0') return -1;
+    if (strchr(model, '"')) return -1;
+    model_len = strlen(model);
+
+    models_json = ccode_models_fetch(api_base, api_key);
+    if (!models_json) return -1;
+    if (strstr(models_json, "\"error\"")) {
+        free(models_json);
+        return -1;
+    }
+
+    /* Search "id" fields tolerating whitespace around the colon
+     * ("id": "model" or "id":"model"). */
+    p = models_json;
+    while ((p = strstr(p, "\"id\"")) != NULL) {
+        const char *q = p + 4;
+        while (*q == ' ' || *q == '\t') q++;
+        if (*q != ':') { p += 4; continue; }
+        q++;
+        while (*q == ' ' || *q == '\t') q++;
+        if (*q != '"') { p += 4; continue; }
+        q++;
+        if (strncmp(q, model, model_len) == 0 && q[model_len] == '"') {
+            found = 1;
+            break;
+        }
+        p += 4;
+    }
+    free(models_json);
+    return found ? 1 : 0;
+}

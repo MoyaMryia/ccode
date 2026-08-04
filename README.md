@@ -4,7 +4,7 @@
 
 ## 构建
 
-依赖：C99 编译器、`pkg-config`、mbedTLS 开发库（HTTPS 构建）。
+依赖：C99 编译器。mbedTLS 2.28.9 (LTS) 已内置在 `vendor/mbedtls`，无需安装系统库。
 
 ```sh
 make          # HTTPS（默认）

@@ -14,16 +14,14 @@
 - Python 只允许用于本地测试模拟，不作为可执行运行时依赖。
 - 不在源码输出、错误、测试夹具、诊断、会话数据或文档中记录 API 密钥。
 
-### 安全规则（暂时放宽）
+### 安全规则（已部分收紧）
 
-当前优先级是**先能用，再安全**。以下规则暂时放宽：
+当前优先级是**先能用，再安全**，但命令级防护已落地（2026-08）：敏感路径过滤、破坏性命令拒绝、子进程最小环境、Landlock 写沙箱（可用时）。以下规则仍然放宽：
 
-- 允许使用 `popen()` 执行 shell 命令（BashTool 需要）
-- 允许 shell 字符串执行（通过 `sh -c`）
-- 允许 `delete_file` 和 `move_file`（简单版本）
+- 允许 shell 字符串执行（通过 `sh -c`，但命令内容经敏感路径/破坏性命令过滤）
+- 允许 `delete_file` 和 `move_file`（简单版本，工作区限制内）
 - 允许 `--auto-approve` 跳过交互式审批
-
-安全加固在功能完成后进行。
+- 不要求完整沙箱隔离（Landlock 不可用时自动降级到命令过滤）
 
 ## 工作流程
 
@@ -162,7 +160,7 @@ make clean
 make HTTP_ONLY=1 test
 ```
 
-在 mbedTLS 和 OpenSSL 可用时运行 HTTPS 覆盖：
+在 mbedTLS 可用时运行 HTTPS 覆盖（mbedTLS 已内置，Python ssl 即可）：
 
 ```sh
 make clean

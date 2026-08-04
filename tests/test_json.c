@@ -319,6 +319,59 @@ static int test_tool_call_accumulation(void) {
     return 1;
 }
 
+/* Streaming providers may split a tool-call arguments fragment in the middle
+ * of an escape sequence ("\n" delivered as "\" then "n"). Arguments must be
+ * accumulated as raw escaped bytes and unescaped exactly once at execution
+ * time; per-fragment unescaping would corrupt the assembled JSON. */
+static int test_tool_arguments_escape_split_across_fragments(void) {
+    struct ccode_sse_accumulator acc;
+    char *decoded;
+
+    ccode_sse_accumulator_init(&acc);
+
+    /* Full escaped arguments: {\"command\":\"echo \nhello\"} where \n is the
+     * two bytes backslash+n. Fragment 1 ends right after the backslash. */
+    ASSERT(TEST_PROCESS(&acc,
+        "{\"choices\": [{\"delta\": {\"tool_calls\": [{\"index\": 0, \"id\": \"c1\", \"function\": {\"name\": \"bash\", \"arguments\": \"{\\\\\\\"command\\\\\\\":\\\\\\\"echo \\\\\"}}]}}]}") == 0);
+    ASSERT(TEST_PROCESS(&acc,
+        "{\"choices\": [{\"delta\": {\"tool_calls\": [{\"index\": 0, \"function\": {\"arguments\": \"nhello\\\\\\\"}\"}}]}}]}") == 0);
+
+    ASSERT(acc.tool_call_count == 1);
+    /* The accumulator keeps the raw escaped bytes (JSON text form, backslashes
+     * doubled); the exact decode is checked via ccode_unescape_json_string
+     * below. The critical property is that the escape sequence split across
+     * fragments (\ then n) survives assembly intact. */
+    ASSERT(strstr(acc.tool_calls[0].arguments, "nhello") != NULL);
+    ASSERT(strstr(acc.tool_calls[0].arguments, "\\n") != NULL);
+
+    decoded = ccode_unescape_json_string(acc.tool_calls[0].arguments);
+    ASSERT(decoded != NULL);
+    /* Exactly one unescape: the assembled escaped text survives fragment
+     * splitting. The final decode into real parameters happens later in
+     * prepare_tool's JSON parse. */
+    ASSERT(strcmp(decoded, "{\\\"command\\\":\\\"echo \\nhello\\\"}") == 0);
+    free(decoded);
+
+    ccode_sse_accumulator_destroy(&acc);
+
+    /* Surrogate pair split across fragments: per-fragment unescaping would
+     * emit lone surrogate bytes into the assembled arguments. */
+    ccode_sse_accumulator_init(&acc);
+    ASSERT(TEST_PROCESS(&acc,
+        "{\"choices\": [{\"delta\": {\"tool_calls\": [{\"index\": 0, \"id\": \"c2\", \"function\": {\"name\": \"bash\", \"arguments\": \"{\\\\\\\"msg\\\\\\\":\\\\\\\"\\\\ud83d\"}}]}}]}") == 0);
+    ASSERT(TEST_PROCESS(&acc,
+        "{\"choices\": [{\"delta\": {\"tool_calls\": [{\"index\": 0, \"function\": {\"arguments\": \"\\\\ude00\\\\\\\"}\"}}]}}]}") == 0);
+    ASSERT(acc.tool_call_count == 1);
+    ASSERT(strstr(acc.tool_calls[0].arguments, "\\\\ud83d\\\\ude00") != NULL);
+    decoded = ccode_unescape_json_string(acc.tool_calls[0].arguments);
+    ASSERT(decoded != NULL);
+    /* Escaped surrogate pair intact after a single unescape. */
+    ASSERT(strstr(decoded, "\\ud83d\\ude00") != NULL);
+    free(decoded);
+    ccode_sse_accumulator_destroy(&acc);
+    return 1;
+}
+
 static int test_parse_error_message_extract(void) {
     const char *body =
         "{\"error\":{\"message\":\"Rate limit exceeded\","
@@ -502,8 +555,7 @@ static int test_unicode_rejects_bad_escapes(void) {
 static int test_unicode_rejects_nul_in_tool_fields(void) {
     static const char *fields[] = {
         "\"id\":\"x\\u0000y\",\"function\":{\"name\":\"n\",\"arguments\":\"{}\"}",
-        "\"id\":\"x\",\"function\":{\"name\":\"n\\u0000m\",\"arguments\":\"{}\"}",
-        "\"id\":\"x\",\"function\":{\"name\":\"n\",\"arguments\":\"a\\u0000b\"}"
+        "\"id\":\"x\",\"function\":{\"name\":\"n\\u0000m\",\"arguments\":\"{}\"}"
     };
     size_t i;
     for (i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
@@ -513,6 +565,26 @@ static int test_unicode_rejects_nul_in_tool_fields(void) {
                  "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,%s}]}}]}",
                  fields[i]);
         ASSERT(ccode_parse_sse_delta(json, strlen(json), &delta) == -1);
+    }
+    /* Arguments are now accumulated as raw escaped bytes and unescaped once
+     * at execution time, so a NUL escape inside arguments must be rejected by
+     * the final unescape instead of the streaming parse. */
+    {
+        char json[256];
+        struct ccode_sse_accumulator acc;
+        struct ccode_sse_delta delta;
+        snprintf(json, sizeof(json),
+                 "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,"
+                 "\"id\":\"x\",\"function\":{\"name\":\"n\","
+                 "\"arguments\":\"a\\u0000b\"}}]}}]}");
+        ASSERT(ccode_parse_sse_delta(json, strlen(json), &delta) == 0);
+        ccode_free_sse_delta(&delta);
+        ccode_sse_accumulator_init(&acc);
+        ASSERT(ccode_sse_accumulator_process(&acc, json, strlen(json)) == 0);
+        ASSERT(acc.tool_call_count == 1);
+        ASSERT(strstr(acc.tool_calls[0].arguments, "\\u0000") != NULL);
+        ASSERT(ccode_unescape_json_string(acc.tool_calls[0].arguments) == NULL);
+        ccode_sse_accumulator_destroy(&acc);
     }
     return 1;
 }
@@ -688,6 +760,7 @@ int main(void) {
     TEST(tool_index_rejects_integer_overflow);
     TEST(content_accumulator_hard_limit);
     TEST(tool_arguments_accumulator_hard_limit);
+    TEST(tool_arguments_escape_split_across_fragments);
     TEST(accumulator_rejects_size_t_wrap);
     TEST(parse_reasoning_content_delta);
     TEST(reasoning_and_content_separate);

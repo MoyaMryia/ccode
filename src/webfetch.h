@@ -9,6 +9,7 @@ struct ccode_web_fetch_opts {
     int timeout_sec;
     size_t max_size;
     const char *auth_header;  /* Authorization header value (e.g., "Bearer sk-...") */
+    int raw_html;             /* Keep HTML markup instead of stripping tags */
 };
 
 /* Perform an HTTP/HTTPS GET or HEAD request.

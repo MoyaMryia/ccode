@@ -33,6 +33,7 @@
 #define DEFAULT_TOTAL_TIMEOUT_SEC   300
 #define CONNECT_TIMEOUT_MS          30000
 #define IO_TIMEOUT_MS               60000
+#define ERROR_BODY_MAX              4096
 
 struct parsed_url {
     int secure;
@@ -351,7 +352,8 @@ static int parse_content_length(const char *value, size_t length,
 static int parse_response_headers(char *buffer, size_t *used,
                                   int *headers_complete, int *chunked,
                                   int *has_content_length,
-                                  size_t *content_length) {
+                                  size_t *content_length,
+                                  int *non_200) {
     size_t header_end;
     size_t status_end;
     size_t line_start;
@@ -368,18 +370,9 @@ static int parse_response_headers(char *buffer, size_t *used,
         (memcmp(buffer, "HTTP/1.0 ", 9) != 0 && memcmp(buffer, "HTTP/1.1 ", 9) != 0) ||
         buffer[9] != '2' || buffer[10] != '0' || buffer[11] != '0' ||
         (status_end > 12 && buffer[12] != ' ')) {
-        size_t body_start = header_end + 4;
-        char *message = ccode_parse_error_message(buffer + body_start,
-                                                  *used - body_start);
-        if (message) {
-            fputs("Upstream returned a non-200 response: ", stderr);
-            ccode_fprint_safe(stderr, message, "");
-            fputc('\n', stderr);
-            free(message);
-        } else {
-            fprintf(stderr, "Upstream returned a non-200 response.\n");
-        }
-        return -1;
+        /* Non-200 (or malformed status) response: keep reading so the error
+         * body can be surfaced, instead of reporting before it arrives. */
+        *non_200 = 1;
     }
 
     *chunked = 0;
@@ -554,15 +547,58 @@ static int process_chunked_buffer(char *buffer, size_t *used,
     return 0;
 }
 
+static int report_error_response(const char *error_body, size_t error_body_len) {
+    if (error_body_len > 0) {
+        char *message = ccode_parse_error_message(error_body, error_body_len);
+        if (message) {
+            fputs("Upstream returned a non-200 response: ", stderr);
+            ccode_fprint_safe(stderr, message, "");
+            fputc('\n', stderr);
+            free(message);
+            return -1;
+        }
+    }
+    fprintf(stderr, "Upstream returned a non-200 response.\n");
+    return -1;
+}
+
 static int process_response(char *response, size_t *used, int *headers_complete,
                             int *chunked, int *chunks_complete,
                             int *has_content_length, size_t *content_length,
                             size_t *body_received,
                             struct sse_parser *parser,
-                            struct ccode_sse_accumulator *acc) {
+                            struct ccode_sse_accumulator *acc,
+                            int *error_response,
+                            char *error_body, size_t *error_body_len) {
     if (parse_response_headers(response, used, headers_complete, chunked,
-                               has_content_length, content_length) != 0)
+                               has_content_length, content_length,
+                               error_response) != 0)
         return -1;
+    if (*error_response) {
+        size_t take;
+        size_t cap = ERROR_BODY_MAX - *error_body_len;
+        if (cap == 0) return -1;
+        if (*has_content_length) {
+            size_t remaining;
+            if (*body_received > *content_length) return -1;
+            remaining = *content_length - *body_received;
+            if (*used > remaining) return -1;
+            take = *used < remaining ? *used : remaining;
+        } else {
+            take = *used;
+        }
+        if (take > cap) take = cap;
+        if (take > 0) {
+            memcpy(error_body + *error_body_len, response, take);
+            *error_body_len += take;
+            error_body[*error_body_len] = '\0';
+            *body_received += take;
+            *used -= take;
+            memmove(response, response + take, *used);
+        }
+        if (*has_content_length && *body_received >= *content_length) return 1;
+        return 0;
+    }
     if (!*headers_complete) return 0;
     if (*chunked)
         return process_chunked_buffer(response, used, parser, acc, chunks_complete);
@@ -635,6 +671,7 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     struct parsed_url url;
     struct sse_parser parser;
     char response[IO_BUF_SIZE];
+    char error_body[ERROR_BODY_MAX + 1];
     size_t used = 0;
     int headers_complete = 0;
     int chunked = 0;
@@ -642,6 +679,8 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     int has_content_length = 0;
     size_t content_length = 0;
     size_t body_received = 0;
+    size_t error_body_len = 0;
+    int error_response = 0;
     int total_timeout = DEFAULT_TOTAL_TIMEOUT_SEC;
     int socket_fd;
     long long total_deadline;
@@ -671,11 +710,18 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
         if (ready != 1) break;
         received = recv(socket_fd, response + used, sizeof(response) - used, 0);
         if (received > 0) {
+            int result;
             used += (size_t)received;
-            if (process_response(response, &used, &headers_complete, &chunked,
-                                 &chunks_complete, &has_content_length,
-                                 &content_length, &body_received,
-                                 &parser, acc) != 0) {
+            result = process_response(response, &used, &headers_complete, &chunked,
+                                      &chunks_complete, &has_content_length,
+                                      &content_length, &body_received,
+                                      &parser, acc, &error_response,
+                                      error_body, &error_body_len);
+            if (result > 0) {
+                close(socket_fd);
+                return report_error_response(error_body, error_body_len);
+            }
+            if (result < 0) {
                 close(socket_fd);
                 return -1;
             }
@@ -693,6 +739,8 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
         }
     }
     close(socket_fd);
+    if (error_response)
+        return report_error_response(error_body, error_body_len);
     if (!headers_complete || (chunked && chunks_complete != 1) ||
         (!chunked && has_content_length && body_received != content_length) ||
         !acc->stream_done) {
@@ -752,6 +800,7 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     const char *personalization = "ccode";
     char header[HEADER_BUF_SIZE];
     char response[IO_BUF_SIZE];
+    char error_body[ERROR_BODY_MAX + 1];
     size_t used = 0;
     int headers_complete = 0;
     int chunked = 0;
@@ -759,6 +808,8 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     int has_content_length = 0;
     size_t content_length = 0;
     size_t body_received = 0;
+    size_t error_body_len = 0;
+    int error_response = 0;
     int total_timeout = DEFAULT_TOTAL_TIMEOUT_SEC;
     int result = -1;
     int tls_result;
@@ -853,11 +904,18 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
         tls_result = mbedtls_ssl_read(&ssl, (unsigned char *)response + used,
                                      sizeof(response) - used);
         if (tls_result > 0) {
+            int pr;
             used += (size_t)tls_result;
-            if (process_response(response, &used, &headers_complete, &chunked,
-                                 &chunks_complete, &has_content_length,
-                                 &content_length, &body_received,
-                                 &parser, acc) != 0) goto cleanup;
+            pr = process_response(response, &used, &headers_complete, &chunked,
+                                  &chunks_complete, &has_content_length,
+                                  &content_length, &body_received,
+                                  &parser, acc, &error_response,
+                                  error_body, &error_body_len);
+            if (pr > 0) {
+                result = report_error_response(error_body, error_body_len);
+                goto cleanup;
+            }
+            if (pr < 0) goto cleanup;
             if (acc->stream_done && chunked && chunks_complete == 1) break;
             if (used == sizeof(response)) {
                 fprintf(stderr, "Response buffer full.\n");
@@ -877,6 +935,10 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
             mbedtls_strerror(tls_result, error_text, sizeof(error_text));
             fprintf(stderr, "TLS read error: %s.\n", error_text);
         }
+        goto cleanup;
+    }
+    if (error_response) {
+        result = report_error_response(error_body, error_body_len);
         goto cleanup;
     }
     if (!headers_complete || (chunked && chunks_complete != 1) ||

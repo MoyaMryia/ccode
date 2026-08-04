@@ -58,7 +58,58 @@ struct wf_transport {
 #endif
 };
 
+static long long wf_now_ms(void);
 static void wf_transport_close(struct wf_transport *transport);
+
+/* CCODE_WEB_FETCH_BLACKLIST: comma-separated host names. A host matches when
+ * it equals an entry or is a subdomain of it (evil.com blocks evil.com and
+ * sub.evil.com but not notevil.com). Redirections are checked too. */
+static int wf_host_blacklisted(const char *host) {
+    const char *env = getenv("CCODE_WEB_FETCH_BLACKLIST");
+    const char *p;
+    size_t host_len;
+    if (!env || env[0] == '\0' || !host || host[0] == '\0') return 0;
+    host_len = strlen(host);
+    p = env;
+    for (;;) {
+        const char *comma = strchr(p, ',');
+        size_t len = comma ? (size_t)(comma - p) : strlen(p);
+        if (len > 0 && len < 256) {
+            char entry[256];
+            memcpy(entry, p, len);
+            entry[len] = '\0';
+            if (strcmp(host, entry) == 0) return 1;
+            if (host_len > len &&
+                strcmp(host + host_len - len, entry) == 0 &&
+                host[host_len - len - 1] == '.')
+                return 1;
+        }
+        if (!comma) break;
+        p = comma + 1;
+    }
+    return 0;
+}
+
+/* CCODE_WEB_FETCH_RATE_LIMIT: maximum fetches per second (0/unset = no
+ * limit). Every fetch attempt that passes the blacklist check counts. */
+static long long wf_last_fetch_ms = 0;
+
+static int wf_rate_limit_exceeded(void) {
+    const char *env = getenv("CCODE_WEB_FETCH_RATE_LIMIT");
+    long limit;
+    long long now;
+    long long interval;
+    if (!env || env[0] == '\0') return 0;
+    limit = atol(env);
+    if (limit <= 0) return 0;
+    interval = 1000 / limit;
+    if (interval < 1) interval = 1;
+    now = wf_now_ms();
+    if (wf_last_fetch_ms != 0 && now - wf_last_fetch_ms < interval)
+        return 1;
+    wf_last_fetch_ms = now;
+    return 0;
+}
 
 static int wf_parse_url(const char *url, struct wf_url *out) {
     const char *host_start;
@@ -548,6 +599,21 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             goto done;
         }
 
+        if (wf_host_blacklisted(url.host)) {
+            size_t host_len = strlen(url.host);
+            result = malloc(96 + host_len);
+            if (result)
+                snprintf(result, 96 + host_len,
+                         "{\"error\":\"Host is blacklisted: %s\"}", url.host);
+            goto done;
+        }
+        if (wf_rate_limit_exceeded()) {
+            result = malloc(64);
+            if (result)
+                snprintf(result, 64, "{\"error\":\"Web fetch rate limit exceeded\"}");
+            goto done;
+        }
+
         deadline = wf_now_ms() + io_timeout + connect_timeout;
         conn_deadline = wf_now_ms() + connect_timeout;
 
@@ -750,12 +816,18 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
         /* Format based on content type. */
         if (strstr(content_type, "text/html") != NULL ||
             strstr(content_type, "application/xhtml") != NULL) {
-            /* Strip HTML tags. */
-            char *plain = malloc(body_len + 1);
-            if (plain) {
-                wf_strip_html(body_buf ? body_buf : "", plain, body_len + 1);
-                escaped = wf_json_escape(plain);
-                free(plain);
+            if (opts->raw_html) {
+                /* Keep the original HTML markup (used by web_search, which
+                 * parses result blocks itself). */
+                escaped = wf_json_escape(body_buf ? body_buf : "");
+            } else {
+                /* Strip HTML tags. */
+                char *plain = malloc(body_len + 1);
+                if (plain) {
+                    wf_strip_html(body_buf ? body_buf : "", plain, body_len + 1);
+                    escaped = wf_json_escape(plain);
+                    free(plain);
+                }
             }
         } else if (strstr(content_type, "application/json") != NULL) {
             /* Return JSON as-is (already valid JSON fragment). */
