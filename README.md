@@ -47,6 +47,7 @@ make HTTP_ONLY=1 test
 - [开发原则](docs/AGENTS.md)
 - [功能路线图](docs/FEATURES.md)
 - [TUI 设计](docs/TUI_DESIGN.md)
+- [BasicLinux 3.5.1 适配与测试环境](docs/BASICLINUX.md)
 
 ## 许可证
 
