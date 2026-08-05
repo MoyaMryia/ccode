@@ -130,6 +130,7 @@ int main(void) {
     req.target = "target\001x \342\200\256 ";
     req.workspace_root = "root\r\t \302\205 \342\201\246/end";
     req.read_only = 0;
+    req.auto_approve = 0;
     output = run_interactive(&req);
 
     assert(strstr(output, "shell\\x1B[2J\\nname\\x7F") != NULL);
@@ -148,6 +149,8 @@ int main(void) {
     req.tool_name = "tool";
     req.target = long_target;
     req.workspace_root = ".";
+    req.read_only = 0;
+    req.auto_approve = 0;
     output = run_interactive(&req);
     assert(strstr(output, long_target) != NULL);
     assert(strstr(output, "...[truncated]") == NULL);

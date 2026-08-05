@@ -57,9 +57,10 @@ static int input_column_between(const struct tui_input *input, size_t start,
     size_t offset = start;
     int column = 0;
     while (offset < end) {
+        size_t next;
         int width = utf8_char_width((const unsigned char *)input->text + offset,
                                     end - offset);
-        size_t next = next_utf8_char(input->text, end, offset);
+        next = next_utf8_char(input->text, end, offset);
         if (next <= offset) break;
         column += width;
         offset = next;

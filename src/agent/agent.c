@@ -1095,9 +1095,10 @@ static int append_cstr_with(char **buf, size_t *pos, size_t *cap,
                             const char *s) {
     size_t len = strlen(s);
     if (*pos + len + 1 > *cap) {
+        char * tmp;
         size_t new_cap = *cap * 2;
         if (new_cap < *pos + len + 1) new_cap = *pos + len + 1;
-        char *tmp = realloc(*buf, new_cap);
+        tmp = realloc(*buf, new_cap);
         if (!tmp) return -1;
         *buf = tmp;
         *cap = new_cap;
@@ -1137,9 +1138,10 @@ static int append_json_string_n(char **buf, size_t *pos, size_t *cap,
                 seq = hex; seqlen = (size_t)n2;
             } else {
                 if (*pos + 2 > *cap) {
+                    char * tmp;
                     size_t new_cap = *cap * 2;
                     if (new_cap < *pos + 2) new_cap = *pos + 2;
-                    char *tmp = realloc(*buf, new_cap);
+                    tmp = realloc(*buf, new_cap);
                     if (!tmp) return -1;
                     *buf = tmp; *cap = new_cap;
                 }
@@ -1149,9 +1151,10 @@ static int append_json_string_n(char **buf, size_t *pos, size_t *cap,
         }
 
         if (*pos + seqlen + 1 > *cap) {
+            char * tmp;
             size_t new_cap = *cap * 2;
             if (new_cap < *pos + seqlen + 1) new_cap = *pos + seqlen + 1;
-            char *tmp = realloc(*buf, new_cap);
+            tmp = realloc(*buf, new_cap);
             if (!tmp) return -1;
             *buf = tmp; *cap = new_cap;
         }
@@ -1186,13 +1189,13 @@ static int is_binary_content(const unsigned char *buf, size_t len) {
 }
 
 static char *exec_read_file(const char *workspace, const char *file_path) {
+    char * output;
     int fd;
     FILE *f;
     long fsize;
     unsigned char *source;
     size_t read_size;
     size_t output_cap, output_pos;
-    char *output;
 
     if (!file_path)
         return ccode_strdup("{\"error\":\"Missing file_path argument\"}");
@@ -1457,6 +1460,14 @@ static void glob_recursive(int parent_fd, const char *rel_dir,
                             int *first, int *count,
                             struct scan_budget *budget,
                             const struct gitignore_rules *parent_gi) {
+                                int nents, i;
+                                const struct gitignore_rules * active_gi;
+    int have_gi;
+    struct gitignore_rules merged_gi;
+    struct gitignore_rules local_gi;
+    struct stat st;
+    struct sorted_dirent * entries;
+    char rel_path[4096];
     regex_t gregex;
     int gregex_ok = 0;
 
@@ -1464,14 +1475,6 @@ static void glob_recursive(int parent_fd, const char *rel_dir,
         if (regcomp(&gregex, pattern, REG_EXTENDED | REG_NOSUB) == 0)
             gregex_ok = 1;
     }
-    struct sorted_dirent *entries;
-    int nents, i;
-    char rel_path[4096];
-    struct stat st;
-    struct gitignore_rules local_gi;
-    struct gitignore_rules merged_gi;
-    int have_gi;
-    const struct gitignore_rules *active_gi;
 
     if (depth > CCODE_MAX_TRAVERSAL_DEPTH) {
         budget->truncated = 1;
@@ -1843,14 +1846,14 @@ static void search_dir_recursive(int parent_fd, const char *rel_dir,
                                   int *first, int *match_count,
                                   struct scan_budget *budget,
                                   const struct gitignore_rules *parent_gi) {
+                                      const struct gitignore_rules * active_gi;
+    int have_gi;
+    struct gitignore_rules merged_gi;
+    struct gitignore_rules local_gi;
+    struct stat st;
+    char rel_path[4096];
     struct sorted_dirent *entries;
     int nents, i;
-    char rel_path[4096];
-    struct stat st;
-    struct gitignore_rules local_gi;
-    struct gitignore_rules merged_gi;
-    int have_gi;
-    const struct gitignore_rules *active_gi;
 
     if (depth > CCODE_MAX_TRAVERSAL_DEPTH) {
         budget->truncated = 1;
@@ -1995,10 +1998,11 @@ static char *exec_grep(const char *workspace, const char *pattern,
     close(root_fd);
 
     {
+                         int n;
         char tail[80];
         int truncated = (budget.truncated || match_count >= CCODE_MAX_GREP_MATCHES ||
                          total >= CCODE_MAX_LISTING_BYTES - 256);
-        int n = snprintf(tail, sizeof(tail),
+        n = snprintf(tail, sizeof(tail),
                          "],\"count\":%d,\"max\":%d%s}",
                          match_count, CCODE_MAX_GREP_MATCHES,
                          truncated ? ",\"truncated\":true" : "");
@@ -2074,12 +2078,13 @@ static int copy_string_token(const char *json, const ccode_jsmntok_t *token,
     if (token->type != CCODE_JSMN_STRING) return -1;
     len = (size_t)(token->end - token->start);
     while (in_pos < len) {
+        size_t encoded_len;
+        unsigned char encoded[4];
+        size_t consumed;
+        unsigned int cp;
         const unsigned char *input =
             (const unsigned char *)json + token->start + in_pos;
-        unsigned int cp;
-        size_t consumed = 1;
-        unsigned char encoded[4];
-        size_t encoded_len;
+        consumed = 1;
 
         if (input[0] == '\\') {
             unsigned int high = 0;
@@ -3131,14 +3136,16 @@ static const char *prepare_tool(const char *name, const char *arguments,
  * up to CONTEXT_LINES surrounding lines into display (bounded by its size). */
 #define EDIT_DIFF_CONTEXT 2
 static void generate_edit_diff(struct prepared_tool *prepared) {
+    size_t display_size;
+    char * display;
     int fd;
     FILE *f;
     long fsize;
     char *source, *match, *line_start, *scan;
     int old_line = 1, start_line, i;
     size_t read_size, dpos = 0;
-    char *display = prepared->display;
-    size_t display_size = sizeof(prepared->display);
+    display = prepared->display;
+    display_size = sizeof(prepared->display);
 
     if (prepared->kind != PREPARED_EDIT_FILE) return;
     if (prepared->value[0] == '\0') return;
@@ -4293,9 +4300,10 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
                         !acc.tool_calls[i].arguments ||
                         acc.tool_calls[i].id[0] == '\0' ||
                         acc.tool_calls[i].name[0] == '\0') {
+                            const char * tid;
                         const char *deny =
                             "{\"error\":\"Refused incomplete tool call\"}";
-                        const char *tid = acc.tool_calls[i].id
+                        tid = acc.tool_calls[i].id
                             ? acc.tool_calls[i].id : "unknown";
                         fprintf(stderr,
                                 "  \033[33m[refused]\033[0m  incomplete tool call "
@@ -4759,10 +4767,16 @@ static void print_session_list(void) {
 }
 
 int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
+    int have_session_path;
+    char current_session_path[4096];
+    int conv_initialized;
+    struct ccode_conversation conv;
+    int history_count;
+    int exit_code;
     char current_model[256];
     char current_effort[16];
     char history[CCODE_HISTORY_MAX][CCODE_INPUT_LINE_MAX];
-    int history_count = 0;
+    history_count = 0;
 
     if (cfg->model) {
         size_t ml = strlen(cfg->model);
@@ -4781,11 +4795,9 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
         current_effort[el] = '\0';
         cfg->thinking_effort = current_effort;
     }
-    int exit_code = 0;
-    struct ccode_conversation conv;
-    int conv_initialized = 0;
-    char current_session_path[4096];
-    int have_session_path = 0;
+    exit_code = 0;
+    conv_initialized = 0;
+    have_session_path = 0;
 
     current_session_path[0] = '\0';
 
@@ -4895,11 +4907,14 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                         const char *p = models;
                         int n = 0;
                         while ((p = strstr(p, "\"id\":\"")) != NULL) {
+                            char cur;
+                            const char * end;
+                            size_t id_len;
                             p += 6;
-                            const char *end = strchr(p, '"');
+                            end = strchr(p, '"');
                             if (!end) break;
-                            size_t id_len = (size_t)(end - p);
-                            char cur = ' ';
+                            id_len = (size_t)(end - p);
+                            cur = ' ';
                             if (id_len == strlen(current_model) &&
                                 memcmp(p, current_model, id_len) == 0) cur = '*';
                             fprintf(stderr, "    %c %.*s\n", cur, (int)id_len, p);
@@ -4907,8 +4922,12 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                         }
                         if (n == 0) {
                             const char *ct = strstr(models, "\"content\":\"");
-                            if (ct) { ct += 11; const char *ce = strchr(ct, '"');
-                                if (ce) fprintf(stderr, "    %.*s\n", (int)(ce - ct), ct); }
+                            if (ct) {
+                                const char *ce;
+                                ct += 11;
+                                ce = strchr(ct, '"');
+                                if (ce) fprintf(stderr, "    %.*s\n", (int)(ce - ct), ct);
+                            }
                             else fprintf(stderr, "    %s\n", models);
                         }
                     }
@@ -4923,12 +4942,17 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                     char *m = ccode_models_fetch(cfg->api_base, cfg->api_key);
                     if (!m) { fputs("  Could not fetch model list.\n", stderr); }
                     else {
+                        const char *p;
+                        int n = 0;
                         fprintf(stderr, "  Models matching \"%s\":\n", kw);
-                        const char *p = m; int n = 0;
+                        p = m;
                         while ((p = strstr(p, "\"id\":\""))) {
-                            p += 6; const char *e = strchr(p, '"');
+                            size_t l;
+                            const char *e;
+                            p += 6;
+                            e = strchr(p, '"');
                             if (!e) break;
-                            size_t l = (size_t)(e - p);
+                            l = (size_t)(e - p);
                             if (memmem(p, l, kw, strlen(kw))) {
                                 n++; fprintf(stderr, "    %d. %.*s\n", n, (int)l, p);
                             } p = e + 1;
@@ -4949,22 +4973,30 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                         int found = 0;
                         const char *p = m;
                         while ((p = strstr(p, "\"id\":\""))) {
-                            p += 6; const char *e = strchr(p, '"');
+                            size_t l;
+                            const char *e;
+                            p += 6;
+                            e = strchr(p, '"');
                             if (!e) break;
-                            size_t l = (size_t)(e - p);
+                            l = (size_t)(e - p);
                             if (l == strlen(name) && memcmp(p, name, l) == 0) {
+                                const char *scope_s;
+                                const char *ow;
+                                ptrdiff_t scope_max;
                                 fprintf(stderr, "  Model: %.*s\n", (int)l, p);
                                 found = 1;
-                                const char *scope_s = p > m + 20 ? p - 20 : m;
-                                ptrdiff_t scope_max = (m + strlen(m)) - scope_s;
+                                scope_s = p > m + 20 ? p - 20 : m;
+                                scope_max = (m + strlen(m)) - scope_s;
                                 if (scope_max > 300) scope_max = 300;
-                                { const char *ow = strstr(scope_s, "\"owned_by\":\"");
-                                    if (ow && (ow - scope_s) < scope_max) {
-                                        ow += 12; const char *oe = strchr(ow, '"');
-                                        if (oe) fprintf(stderr, "  Provider: %.*s\n",
-                                            (int)(oe - ow > 100 ? 100 : oe - ow), ow);
-                                    }
-                                } break;
+                                ow = strstr(scope_s, "\"owned_by\":\"");
+                                if (ow && (ow - scope_s) < scope_max) {
+                                    const char *oe;
+                                    ow += 12;
+                                    oe = strchr(ow, '"');
+                                    if (oe) fprintf(stderr, "  Provider: %.*s\n",
+                                        (int)(oe - ow > 100 ? 100 : oe - ow), ow);
+                                }
+                                break;
                             } p = e + 1;
                         }
                         if (!found) fprintf(stderr, "  Model not found: %s\n", name);
@@ -5090,12 +5122,14 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                     fprintf(stderr, "  Session renamed: %s -> %s\n", old_n, new_n);
                 continue;
             } else if (strncmp(line, "/sessions export ", 17) == 0) {
-                char name[256], fmt[32];
-                char *exported;
+                int n;
+                const char * ext;
+                FILE * out;
                 char out_path[4096];
-                FILE *out;
-                const char *ext = "json";
-                int n = sscanf(line + 17, "%255s %31s", name, fmt);
+                char * exported;
+                char name[256], fmt[32];
+                ext = "json";
+                n = sscanf(line + 17, "%255s %31s", name, fmt);
                 if (n < 1) {
                     fputs("  Usage: /sessions export <name> [format]\n", stderr);
                     continue;

@@ -638,6 +638,7 @@ static int send_all(int fd, const char *data, size_t length,
 static int send_http_request(int fd, const struct parsed_url *url,
                              const char *api_key, const char *body,
                              long long total_deadline) {
+        int header_length;
     char header[HEADER_BUF_SIZE];
     char host_header[sizeof(url->host) + sizeof(url->port) + 8];
     int host_length;
@@ -652,7 +653,7 @@ static int send_http_request(int fd, const struct parsed_url *url,
                                url->host, url->port);
     }
     if (host_length <= 0 || (size_t)host_length >= sizeof(host_header)) return -1;
-    int header_length = snprintf(header, sizeof(header),
+    header_length = snprintf(header, sizeof(header),
         "POST %s HTTP/1.1\r\n"
         "Host: %s\r\n"
         "Authorization: Bearer %s\r\n"

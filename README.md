@@ -39,7 +39,10 @@ export CCODE_MODEL="deepseek-v4-flash"
 ## 测试
 
 ```sh
-make HTTP_ONLY=1 test
+make HTTP_ONLY=1 test                          # 现代宿主全套
+make RETRO=1 test-json test-agent test-permissions test-markdown  # libc5 兼容层冒烟
+bash scripts/make_ghost_disk.sh                # 重建 BasicLinux 整盘镜像
+python3 scripts/guest_build.py --cc gcc-egcs-1.1.2 --targets 'ccode-cli'  # guest 内构建
 ```
 
 ## 文档

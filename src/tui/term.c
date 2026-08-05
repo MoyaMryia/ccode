@@ -60,8 +60,8 @@ int tui_term_read_key(int timeout_ms) {
     if (result <= 0) return -1;
     if (read(STDIN_FILENO, &c, 1) != 1) return -1;
     if (c == 0x1b) {
-        unsigned char next, code;
         struct pollfd sequence_poll = { STDIN_FILENO, POLLIN, 0 };
+        unsigned char next, code;
         if (poll(&sequence_poll, 1, 10) <= 0 || read(STDIN_FILENO, &next, 1) != 1)
             return 0x1b;
         if (next == 'O') {

@@ -28,9 +28,10 @@ static char *ccode_strdup(const char *s) {
 }
 
 static char *json_escape_len(const char *input, size_t *out_len) {
+    size_t dummy;
     size_t i, length = 0;
     char *output, *cursor;
-    size_t dummy = 0;
+    dummy = 0;
 
     if (!out_len) out_len = &dummy;
     if (!input) { *out_len = 0; return NULL; }
@@ -228,9 +229,10 @@ static size_t estimate_request_size(struct ccode_conversation *conv,
 static int append_str(char **buf, size_t *pos, size_t *cap, const char *s,
                       size_t len) {
     if (*pos + len + 1 > *cap) {
+        char * tmp;
         size_t new_cap = *cap * 2;
         if (new_cap < *pos + len + 1) new_cap = *pos + len + 1;
-        char *tmp = realloc(*buf, new_cap);
+        tmp = realloc(*buf, new_cap);
         if (!tmp) return -1;
         *buf = tmp;
         *cap = new_cap;
@@ -250,11 +252,11 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
                                        const char *tools_json,
                                        int thinking_enabled,
                                        const char *thinking_effort) {
+                                           char * escaped;
     size_t cap = estimate_request_size(conv, model);
     size_t pos = 0;
     char *buf = malloc(cap);
     size_t i, j;
-    char *escaped;
 
     if (!buf) return NULL;
     buf[0] = '\0';
@@ -400,16 +402,21 @@ static void scan_tool_result(const char *body,
 void ccode_conversation_compact(struct ccode_conversation *conv,
                                  const char *change_log_json,
                                  const char *task_list_json) {
+                                     size_t tool_call_count;
+    size_t command_count;
+    size_t truncated_count;
+    size_t error_count;
+    size_t denied_count;
+    size_t summary_len;
+    char * summary;
     size_t keep_first = 2;
     size_t keep_last = 8;
     size_t i, j, write_idx;
-    char *summary;
-    size_t summary_len;
-    size_t denied_count = 0;
-    size_t error_count = 0;
-    size_t truncated_count = 0;
-    size_t command_count = 0;
-    size_t tool_call_count = 0;
+    denied_count = 0;
+    error_count = 0;
+    truncated_count = 0;
+    command_count = 0;
+    tool_call_count = 0;
 
     if (conv->count <= keep_first + keep_last + 2) return;
 
@@ -584,20 +591,26 @@ static int str_to_role(const char *s, enum ccode_role *out) {
 int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
                             const char *tasks_json, const char *changes_json,
                             const struct ccode_session_metadata *meta) {
+                                const char * last_slash;
+    char * parent_path;
+    int parent_fd;
+    size_t persisted_count;
+    int renamed;
+    int save_ok;
+    int attempt;
+    size_t temp_path_size;
+    char * temp_path;
+    int first;
     FILE *f;
     int fd;
     struct stat st;
     size_t i, j;
-    int first = 1;
-    char *temp_path;
-    size_t temp_path_size;
-    int attempt;
-    int save_ok = 0;
-    int renamed = 0;
-    size_t persisted_count = 0;
-    int parent_fd = -1;
-    char *parent_path = NULL;
-    const char *last_slash;
+    first = 1;
+    save_ok = 0;
+    renamed = 0;
+    persisted_count = 0;
+    parent_fd = -1;
+    parent_path = NULL;
 
     if (!conv || !path) return -1;
     fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
@@ -890,10 +903,12 @@ static int unescape_json(const char *src, const char *src_end,
  * index or -1 if not found. Does not detect duplicates (caller must check). */
 static int obj_find_val(ccode_jsmntok_t *toks, int num_tokens,
                         int obj_idx, const char *js, const char *key) {
+    int expect_key;
+    int i;
     int obj_end = toks[obj_idx].end >= 0 ? toks[obj_idx].end
                                          : toks[obj_idx].start + 1;
-    int i = obj_idx + 1;
-    int expect_key = 1;
+    i = obj_idx + 1;
+    expect_key = 1;
     while (i < num_tokens && toks[i].start < obj_end) {
         if (expect_key) {
             if (toks[i].type == CCODE_JSMN_STRING &&
@@ -916,12 +931,15 @@ static int obj_find_val(ccode_jsmntok_t *toks, int num_tokens,
 /* Check that an object has no duplicate keys. Returns 0 if OK, -1 if dup. */
 static int obj_check_no_dups(ccode_jsmntok_t *toks, int num_tokens,
                              int obj_idx, const char *js) {
+    int nseen;
+    int seen[16];
+    int expect_key;
+    int i;
     int obj_end = toks[obj_idx].end >= 0 ? toks[obj_idx].end
                                          : toks[obj_idx].start + 1;
-    int i = obj_idx + 1;
-    int expect_key = 1;
-    int seen[16];
-    int nseen = 0;
+    i = obj_idx + 1;
+    expect_key = 1;
+    nseen = 0;
     while (i < num_tokens && toks[i].start < obj_end) {
         if (expect_key) {
             if (toks[i].type == CCODE_JSMN_STRING) {
@@ -953,10 +971,12 @@ static int obj_check_no_dups(ccode_jsmntok_t *toks, int num_tokens,
 static int obj_check_known_keys(ccode_jsmntok_t *toks, int num_tokens,
                                 int obj_idx, const char *js,
                                 const char **allowed, int n_allowed) {
+    int expect_key;
+    int i;
     int obj_end = toks[obj_idx].end >= 0 ? toks[obj_idx].end
                                          : toks[obj_idx].start + 1;
-    int i = obj_idx + 1;
-    int expect_key = 1;
+    i = obj_idx + 1;
+    expect_key = 1;
     while (i < num_tokens && toks[i].start < obj_end) {
         if (expect_key) {
             if (toks[i].type == CCODE_JSMN_STRING) {
@@ -1125,11 +1145,11 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
         int m;
 
         for (m = 0; m < arr_size; m++) {
+            char role_str[32];
+            int msg_sub;
             int msg_idx;
             int role_idx, content_idx, tc_idx, tcid_idx;
-            char role_str[32];
             enum ccode_role r;
-            int msg_sub;
 
             if (child >= num_tokens ||
                 toks[child].type != CCODE_JSMN_OBJECT ||
@@ -1205,11 +1225,11 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
                         int tc_child = tc_idx + 1;
                         int tci;
                         for (tci = 0; tci < tc_arr_size; tci++) {
-                            int tc_obj_idx, id_idx, type_idx, func_idx;
                             int name_idx, args_idx;
-                            char id_buf[256], name_buf[256];
-                            char args_buf[CCODE_MAX_CONTENT_LEN + 1];
                             int tc_sub;
+                            char args_buf[CCODE_MAX_CONTENT_LEN + 1];
+                            int tc_obj_idx, id_idx, type_idx, func_idx;
+                            char id_buf[256], name_buf[256];
 
                             if (tc_child >= num_tokens ||
                                 toks[tc_child].type != CCODE_JSMN_OBJECT)
@@ -1353,9 +1373,10 @@ static int buf_append_cstr(char **buf, size_t *pos, size_t *cap,
                             const char *s) {
     size_t len = strlen(s);
     if (*pos + len + 1 > *cap) {
+        char * tmp;
         size_t new_cap = *cap * 2;
         if (new_cap < *pos + len + 1) new_cap = *pos + len + 1;
-        char *tmp = realloc(*buf, new_cap);
+        tmp = realloc(*buf, new_cap);
         if (!tmp) return -1;
         *buf = tmp;
         *cap = new_cap;
@@ -1368,9 +1389,10 @@ static int buf_append_cstr(char **buf, size_t *pos, size_t *cap,
 
 static int buf_append_json_string(char **buf, size_t *pos, size_t *cap,
                                    const char *s) {
+    int ret;
     char *escaped = json_escape_len(s, NULL);
     if (!escaped) return -1;
-    int ret = buf_append_cstr(buf, pos, cap, escaped);
+    ret = buf_append_cstr(buf, pos, cap, escaped);
     free(escaped);
     return ret;
 }
@@ -1503,9 +1525,10 @@ static int read_session_model(const char *path, char *model, size_t model_size) 
     }
 
     if (meta_idx >= 0) {
+        int j;
         int obj_end = toks[meta_idx].end >= 0 ? toks[meta_idx].end
                                               : toks[meta_idx].start + 1;
-        int j = meta_idx + 1;
+        j = meta_idx + 1;
         while (j < num_tokens && toks[j].start < obj_end) {
             if (toks[j].type == CCODE_JSMN_STRING &&
                 ccode_jsmn_token_streq(buf, &toks[j], "model") &&
