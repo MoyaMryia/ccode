@@ -22,8 +22,9 @@ export CCODE_API_BASE="https://api.deepseek.com"
 export CCODE_API_KEY="sk-..."
 export CCODE_MODEL="deepseek-v4-flash"
 
-./ccode -i --write   # 交互模式
-./ccode -p "解释一下这个项目" --write   # 单次提示
+./ccode --write                # TUI 交互模式
+./ccode-cli -p "解释一下这个项目" --write   # 单次提示
+./ccode-cli --default           # 交互 + 读写工具 + thinking（不开自动审批）
 ```
 
 ## 特性

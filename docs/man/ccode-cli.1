@@ -1,0 +1,298 @@
+.TH CCODE-CLI 1 "August 2026" "ccode v0.1" "User Commands"
+.SH NAME
+ccode-cli \- terminal AI coding assistant (CLI backend)
+.SH SYNOPSIS
+.B ccode-cli
+[\fIoptions\fR] [\fB\-p\fR \fIPROMPT\fR | \fB\-i\fR]
+.SH DESCRIPTION
+.B ccode-cli
+is a lightweight local coding agent speaking the OpenAI-compatible Chat
+Completions API (streaming SSE). It runs in one of three modes:
+.TP
+.B Single prompt
+.BI \-p " PROMPT"
+sends one prompt and exits.
+.TP
+.B Interactive REPL
+.BI \-i
+reads prompts from stdin until EOF or
+.BR /exit .
+.TP
+.B JSON Lines protocol
+.BI \-\-json
+speaks a line-based JSON protocol on stdin/stdout; this is what the
+.BR ccode (1)
+TUI uses to drive it, and it can be reused by other frontends.
+.PP
+The agent can inspect and modify the workspace with tools; by default
+only read-only tools are enabled, pass
+.B \-\-write
+to enable write tools. Tools run only after interactive confirmation
+unless
+.B \-\-auto-approve
+is given.
+.SH OPTIONS
+.TP
+.BI \-p ", " \-\-prompt " TEXT"
+Send one prompt then exit. Ignored when
+.B \-i
+is also given.
+.TP
+.BR \-i ", " \-\-interactive
+Read prompts from stdin until EOF or
+.BR /exit .
+.TP
+.B \-\-json
+Use the JSON Lines protocol (machine mode). Implies interactive.
+.TP
+.BI \-\-api-base " URL"
+OpenAI-compatible API base URL (defaults to
+.BR CCODE_API_BASE ).
+.TP
+.BI \-\-api-key " KEY"
+API key (defaults to
+.BR CCODE_API_KEY ;
+see
+.B CCODE_API_KEY_FILE
+for the file-based variant).
+.TP
+.BI \-\-model " NAME"
+Model name (defaults to
+.BR CCODE_MODEL ).
+.TP
+.B \-\-write
+Enable read and write tools.
+.TP
+.B \-\-read-only
+Read-only tools (read_file, glob, grep, git_*). The default.
+.TP
+.B \-\-default
+Fast start: interactive REPL plus read/write tools plus thinking.
+Never enables
+.BR \-\-auto-approve .
+.TP
+.B \-\-auto-approve
+Approve all tool requests without prompting (also
+.BR CCODE_AUTO_APPROVE=1 ).
+.TP
+.B \-\-thinking
+Enable thinking/reasoning mode.
+.TP
+.BI \-\-thinking-effort " LEVEL"
+Thinking effort:
+.BR low ", " medium ", " high ", " xhigh
+or
+.BR max .
+.TP
+.B \-\-no-markdown
+Disable markdown rendering in human-facing output.
+.TP
+.BI \-\-save-session " PATH"
+Save the conversation to
+.I PATH
+after each prompt.
+.TP
+.BI \-\-resume " PATH"
+Load a conversation from
+.I PATH
+before the run.
+.TP
+.BI \-\-session-dir " DIR"
+Session storage directory.
+.TP
+.BR \-h ", " \-\-help
+Show usage.
+.SH REPL SLASH COMMANDS
+.TP
+.B /help
+Show available commands.
+.TP
+.B /exit
+Quit the REPL.
+.TP
+.B /clear
+Forget in-conversation history for this session.
+.TP
+.B /compact
+Compact the conversation history (folds old messages into summaries).
+.TP
+.B /history
+Print prompts entered this session.
+.TP
+.B /model [NAME]
+Show the current model or switch to
+.IR NAME .
+.TP
+.B /model default NAME
+Persist the default model.
+.TP
+.B /models
+List available models from the API.
+.TP
+.B /models search KEYWORD
+Search models.
+.TP
+.B /models info NAME
+Show model details.
+.TP
+.B /thinking [on|off]
+Show or toggle thinking mode.
+.TP
+.B /thinking effort LEVEL
+Set thinking effort (low, medium, high, xhigh, max).
+.TP
+.B /sessions
+List saved sessions.
+.TP
+.B /sessions delete NAME
+Delete a session file.
+.TP
+.B /sessions rename OLD NEW
+Rename a session file.
+.TP
+.B /sessions export NAME FORMAT
+Export a session (json, md, txt).
+.TP
+.B /resume [NAME]
+Resume a session (most recent if no name).
+.TP
+.B /resume \-\-list
+List resumable sessions.
+.TP
+.B /session new [NAME]
+Start a new session (optionally saved as NAME).
+.TP
+.B /session switch NAME
+Switch to a saved session.
+.TP
+.B /session list
+List all sessions.
+.SH TOOLS
+.PP
+Read-only (always available):
+read_file, glob, grep, git_status, git_diff, git_stat.
+.PP
+Read-write (with
+.BR \-\-write ):
+write_file, edit_file, delete_file, move_file, run_command, bash,
+web_fetch, web_search, agent_tool.
+.SH ENVIRONMENT
+.SS API
+.TP
+.B CCODE_API_BASE
+API base URL (required).
+.TP
+.B CCODE_API_KEY
+API key (required).
+.TP
+.B CCODE_API_KEY_FILE
+Path to a key file (regular file, single hard link, mode 0600).
+.TP
+.B CCODE_MODEL
+Default model name (required).
+.TP
+.B CCODE_MODEL_VERIFY
+Set 1 to verify the model exists at startup; falls back to
+.BR CCODE_MODEL_FALLBACK .
+.TP
+.B CCODE_MODEL_FALLBACK
+Fallback model when verification fails.
+.TP
+.B CCODE_WORKSPACE
+Workspace directory (default: current directory).
+.SS Tools and security
+.TP
+.B CCODE_READ_ONLY_TOOLS
+Set 1 to enable read-only tools (already the default).
+.TP
+.B CCODE_WRITE_TOOLS
+Set 1 to enable write tools (same as
+.BR \-\-write ).
+.TP
+.B CCODE_AUTO_APPROVE
+Set 1 to skip interactive approval.
+.TP
+.B CCODE_DISABLE_COMMAND_FILTER
+Set 1 to disable sensitive-path and destructive-command filtering.
+.TP
+.B CCODE_RUN_COMMAND_TIMEOUT
+Default command timeout in milliseconds.
+.TP
+.B CCODE_COMMAND_OUTPUT_LIMIT
+Per-stream command output cap in bytes.
+.TP
+.B CCODE_RESPECT_GITIGNORE
+Set 1 to have glob/grep honor .gitignore.
+.SS Networking and TLS
+.TP
+.B CCODE_REQUEST_TIMEOUT
+Overall request timeout in seconds (default 300).
+.TP
+.B CCODE_CA_FILE
+Custom CA bundle for TLS certificate verification.
+.TP
+.B CCODE_WEB_FETCH_BLACKLIST
+Comma-separated hostnames blacklisted for web_fetch (subdomains match).
+.TP
+.B CCODE_WEB_FETCH_RATE_LIMIT
+Minimum seconds between web_fetch requests.
+.TP
+.B CCODE_WEB_FETCH_USER_AGENT
+User-Agent for web_fetch.
+.TP
+.B CCODE_WEB_SEARCH_URL
+URL template for web_search (must contain the
+.I {query}
+placeholder).
+.SS Sessions
+.TP
+.B CCODE_SESSION_DIR
+Session storage directory (default ~/.ccode/sessions).
+.TP
+.B CCODE_SESSION_AUTO_SAVE
+Auto-save after each turn (default 1).
+.TP
+.B CCODE_SESSION_MAX_SIZE
+Max session file size (default 10M).
+.TP
+.B CCODE_SESSION_KEEP_COUNT
+Number of sessions to keep (default 10).
+.SS Rendering
+.TP
+.B CCODE_MARKDOWN
+Set 0 to disable markdown rendering.
+.TP
+.B CCODE_THINKING
+Set 1 to enable thinking mode.
+.TP
+.B CCODE_THINKING_EFFORT
+Thinking effort: low, medium, high, xhigh, max.
+.SH FILES
+.TP
+.I ~/.ccode/sessions/
+Conversation session files (JSON v3).
+.SH BUILD NOTES
+.PP
+Build with
+.BR "make ccode-cli" .
+HTTPS uses vendored mbedTLS by default; use
+.B "make HTTP_ONLY=1"
+for a plain-HTTP build. The retro i386 port (BasicLinux 3.5.1, libc5,
+gcc 2.7.2.3 / egcs 1.1.2) builds with
+.B "make RETRO=1 ccode-cli"
+using the vendored PolarSSL 1.3.9 TLS backend, and the QEMU guest
+pipeline is
+.B "make retro-test"
+(see docs/BASICLINUX.md).
+.SH SEE ALSO
+.BR ccode (1),
+.PD 0
+.TP
+.I docs/FEATURES.md
+Feature checklist and roadmap
+.TP
+.I docs/ARCHITECTURE.md
+Architecture and deployment notes
+.TP
+.I docs/BASICLINUX.md
+Retro i386 / BasicLinux port and QEMU guest builds

@@ -223,14 +223,25 @@ run_test_exit "HTTP_ONLY remote endpoint rejected" 1 -p "hi" --api-base "http://
 echo "--- Incomplete stream ---"
 run_test_exit "incomplete" 1 -p "__ccode_test_incomplete"
 
-# 12. Tool calls must not execute unless an explicit mode is enabled.
+# 12. Default mode is read-only: read tools execute, write tools are denied
+# unless --write (or CCODE_WRITE_TOOLS=1) is given.
 echo "--- Tool execution gate ---"
-output=$(timeout "$TIMEOUT" "$CCODE" -p "__ccode_test_tool-calls" 2>&1) || exit_code=$?
-if echo "$output" | grep -q "tools are not enabled"; then
-    echo "  PASS: unenabled tool call denied"
+output=$(timeout "$TIMEOUT" "$CCODE" -p "__ccode_test_tool-calls" 2>&1) || true
+if echo "$output" | grep -q "Tool result received."; then
+    echo "  PASS: default read-only mode executes read tools"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL: unenabled tool call was not denied"
+    echo "  FAIL: default read-only mode did not execute read tools"
+    [ -z "$output" ] || printf '    %s\n' "$output"
+    FAIL=$((FAIL + 1))
+fi
+output=$(timeout "$TIMEOUT" "$CCODE" -p "__ccode_test_tool-calls-write" 2>&1) || true
+if echo "$output" | grep -q "write_file: unavailable"; then
+    echo "  PASS: default read-only mode denies write tools"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: default read-only mode did not deny write tools"
+    [ -z "$output" ] || printf '    %s\n' "$output"
     FAIL=$((FAIL + 1))
 fi
 

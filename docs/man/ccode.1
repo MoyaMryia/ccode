@@ -1,0 +1,131 @@
+.TH CCODE 1 "August 2026" "ccode v0.1" "User Commands"
+.SH NAME
+ccode \- terminal AI coding assistant (TUI frontend)
+.SH SYNOPSIS
+.B ccode
+[\fIoptions\fR]
+.SH DESCRIPTION
+.B ccode
+is the interactive terminal UI for the
+.B ccode
+coding agent.
+It renders the conversation in an ANSI terminal, streams assistant output
+as it arrives, shows tool permission prompts, and manages input history.
+All agent work is delegated to the backend executable
+.BR ccode-cli (1),
+which is spawned automatically (override with
+.B \-\-backend
+or
+.BR CCODE_BACKEND ).
+.PP
+The TUI is always interactive: no
+.B \-i
+or prompt flag is required. A bare
+.B ccode
+starts the UI, and options such as
+.B \-\-thinking
+or
+.B \-\-write
+are forwarded to the backend.
+.SH OPTIONS
+.TP
+.BI \-\-api-base " URL"
+OpenAI-compatible API base URL (defaults to
+.BR CCODE_API_BASE ).
+.TP
+.BI \-\-api-key " KEY"
+API key (defaults to
+.BR CCODE_API_KEY ).
+.TP
+.BI \-\-model " NAME"
+Model name (defaults to
+.BR CCODE_MODEL ).
+.TP
+.B \-\-thinking
+Enable thinking/reasoning mode.
+.TP
+.BI \-\-thinking-effort " LEVEL"
+Thinking effort:
+.BR low ", " medium ", " high ", " xhigh
+or
+.BR max
+(default:
+.BR medium ).
+.TP
+.B \-\-write
+Enable read and write tools (write_file, edit_file, bash, run_command,
+web_fetch, ...) with interactive confirmation.
+.TP
+.B \-\-read-only
+Read-only tools (read_file, glob, grep, git_*). This is the default mode.
+.TP
+.B \-\-default
+Fast start preset: interactive UI plus read/write tools plus thinking.
+Never enables
+.BR \-\-auto-approve .
+.TP
+.B \-\-auto-approve
+Approve every tool request without asking. Equivalent to
+.BR CCODE_AUTO_APPROVE=1 .
+.TP
+.B \-\-no-markdown
+Disable markdown rendering (raw output).
+.TP
+.BI \-\-backend " PATH"
+Path to the
+.B ccode-cli
+backend executable (defaults to one next to the ccode binary, or
+.BR CCODE_BACKEND ).
+.TP
+.BI \-\-save-session " PATH"
+Save the conversation to
+.I PATH
+after each prompt.
+.TP
+.BI \-\-resume " PATH"
+Load a conversation from
+.I PATH
+before the run.
+.TP
+.BI \-\-session-dir " DIR"
+Session storage directory (defaults to
+.BR CCODE_SESSION_DIR ).
+.TP
+.BR \-h ", " \-\-help
+Show usage.
+.SH TUI KEYS
+.TP
+.B Enter
+Submit the input line.
+.TP
+.B Ctrl\-C
+Cancel the in-flight request (press twice to quit).
+.TP
+.B Ctrl\-D / Ctrl\-Q
+Quit the TUI.
+.PP
+Additional editing keys follow common readline conventions (arrows,
+home/end, backspace, etc.).
+.SH ENVIRONMENT
+See
+.BR ccode-cli (1)
+for the full list. Relevant to the TUI:
+.TP
+.B CCODE_BACKEND
+Path to the backend executable.
+.TP
+.B CCODE_WORKSPACE
+Workspace directory (defaults to the current directory).
+.SH FILES
+.TP
+.I ~/.ccode/sessions/
+Conversation session files (JSON).
+.SH SEE ALSO
+.BR ccode-cli (1),
+.PD 0
+.TP
+.I docs/FEATURES.md
+Feature checklist and roadmap
+.TP
+.I docs/BASICLINUX.md
+Retro i386 / BasicLinux port (gcc 2.7, libc5, QEMU guest builds)

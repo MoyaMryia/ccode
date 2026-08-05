@@ -209,6 +209,20 @@ retro-test:
 
 test: $(TEST_TARGETS)
 
+# Install binaries and man pages under $(DESTDIR)/$(PREFIX).
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+MANDIR ?= $(PREFIX)/share/man/man1
+
+install: ccode ccode-cli
+	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(MANDIR)
+	install -m 0755 ccode $(DESTDIR)$(BINDIR)/ccode
+	install -m 0755 ccode-cli $(DESTDIR)$(BINDIR)/ccode-cli
+	install -m 0644 docs/man/ccode.1 $(DESTDIR)$(MANDIR)/ccode.1
+	install -m 0644 docs/man/ccode-cli.1 $(DESTDIR)$(MANDIR)/ccode-cli.1
+
+.PHONY: install
+
 clean:
 	rm -rf .build
 	rm -f ccode ccode-cli tests/test_json tests/test_agent tests/test_permissions tests/test_tui tests/test_markdown
