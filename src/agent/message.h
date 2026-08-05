@@ -72,7 +72,8 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
                                        const char *model,
                                        const char *tools_json,
                                        int thinking_enabled,
-                                       const char *thinking_effort);
+                                       const char *thinking_effort,
+                                       const char *api_base);
 
 void ccode_conversation_compact(struct ccode_conversation *conv,
                                  const char *change_log_json,

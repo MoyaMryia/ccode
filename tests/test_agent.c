@@ -2914,7 +2914,7 @@ static int test_build_request_no_thinking(void) {
     ASSERT(ccode_conversation_init(&conv, 4) == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hello") == 0);
     req = ccode_conversation_build_request(&conv, "test-model", NULL,
-                                           0, NULL);
+                                           0, NULL, NULL);
     ASSERT(req != NULL);
     ASSERT(strstr(req, "\"model\":\"test-model\"") != NULL);
     ASSERT(strstr(req, "\"stream\":true") != NULL);
@@ -2930,7 +2930,7 @@ static int test_build_request_thinking_medium(void) {
     ASSERT(ccode_conversation_init(&conv, 4) == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hello") == 0);
     req = ccode_conversation_build_request(&conv, "test-model", NULL,
-                                           1, "medium");
+                                           1, "medium", NULL);
     ASSERT(req != NULL);
     ASSERT(strstr(req, "\"reasoning_effort\":\"medium\"") != NULL);
     ASSERT(strstr(req, "\"stream\":true") != NULL);
@@ -2945,7 +2945,7 @@ static int test_build_request_thinking_high(void) {
     ASSERT(ccode_conversation_init(&conv, 4) == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hello") == 0);
     req = ccode_conversation_build_request(&conv, "test-model", NULL,
-                                           1, "high");
+                                           1, "high", NULL);
     ASSERT(req != NULL);
     ASSERT(strstr(req, "\"reasoning_effort\":\"high\"") != NULL);
     free(req);
@@ -2958,9 +2958,44 @@ static int test_build_request_thinking_default_effort(void) {
     char *req;
     ASSERT(ccode_conversation_init(&conv, 4) == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hi") == 0);
-    req = ccode_conversation_build_request(&conv, "m", NULL, 1, NULL);
+    /* Thinking without an effort level sends the switch only. */
+    req = ccode_conversation_build_request(&conv, "m", NULL, 1, NULL, NULL);
     ASSERT(req != NULL);
-    ASSERT(strstr(req, "\"reasoning_effort\":\"medium\"") != NULL);
+    ASSERT(strstr(req, "\"thinking\":{\"type\":\"enabled\"}") != NULL);
+    ASSERT(strstr(req, "reasoning_effort") == NULL);
+    free(req);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
+static int test_build_request_thinking_switch(void) {
+    struct ccode_conversation conv;
+    char *req;
+    ASSERT(ccode_conversation_init(&conv, 4) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hi") == 0);
+    /* Off, no effort: no thinking fields at all. */
+    req = ccode_conversation_build_request(&conv, "m", NULL, 0, NULL, NULL);
+    ASSERT(req != NULL);
+    ASSERT(strstr(req, "\"thinking\"") == NULL);
+    ASSERT(strstr(req, "reasoning_effort") == NULL);
+    free(req);
+    /* Thinking only: enabled switch, no effort. */
+    req = ccode_conversation_build_request(&conv, "m", NULL, 1, NULL, NULL);
+    ASSERT(req != NULL);
+    ASSERT(strstr(req, "\"thinking\":{\"type\":\"enabled\"}") != NULL);
+    ASSERT(strstr(req, "reasoning_effort") == NULL);
+    free(req);
+    /* Effort only (always-reasoning providers): effort field, no switch. */
+    req = ccode_conversation_build_request(&conv, "m", NULL, 0, "high", NULL);
+    ASSERT(req != NULL);
+    ASSERT(strstr(req, "\"thinking\"") == NULL);
+    ASSERT(strstr(req, "\"reasoning_effort\":\"high\"") != NULL);
+    free(req);
+    /* Both: enabled switch plus effort. */
+    req = ccode_conversation_build_request(&conv, "m", NULL, 1, "high", NULL);
+    ASSERT(req != NULL);
+    ASSERT(strstr(req, "\"thinking\":{\"type\":\"enabled\"}") != NULL);
+    ASSERT(strstr(req, "\"reasoning_effort\":\"high\"") != NULL);
     free(req);
     ccode_conversation_destroy(&conv);
     return 1;
@@ -3008,12 +3043,14 @@ static int test_request_prefix_stable_across_turns(void) {
                                   "You are a coding agent.") == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "user one") == 0);
     req1 = ccode_conversation_build_request(&conv, "test-model",
-                                            "\"tools\":[{\"x\":1}]", 0, NULL);
+                                            "\"tools\":[{\"x\":1}]", 0,
+                                            NULL, NULL);
     ASSERT(req1 != NULL);
 
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "user two") == 0);
     req2 = ccode_conversation_build_request(&conv, "test-model",
-                                            "\"tools\":[{\"x\":1}]", 0, NULL);
+                                            "\"tools\":[{\"x\":1}]", 0,
+                                            NULL, NULL);
     ASSERT(req2 != NULL);
 
     prefix_end = find_messages_prefix_end(req1);
@@ -3036,7 +3073,7 @@ static int test_request_prefix_stable_across_turns(void) {
                                   "next: user\\\"quoted") == 0);
     req3 = ccode_conversation_build_request(&conv, "test-model",
                                             "\"tools\":[{\"x\":1}]", 1,
-                                            "medium");
+                                            "medium", NULL);
     ASSERT(req3 != NULL);
     {
         struct ccode_conversation conv2;
@@ -3057,7 +3094,7 @@ static int test_request_prefix_stable_across_turns(void) {
             "{\"exit_code\":0,\"stdout\":\"line\\n\\u00e9\\u4e2d \\\\\\\"\"}") == 0);
         req_base = ccode_conversation_build_request(&conv2, "test-model",
                                                     "\"tools\":[{\"x\":1}]", 1,
-                                                    "medium");
+                                                    "medium", NULL);
         ASSERT(req_base != NULL);
         base_end = find_messages_prefix_end(req_base);
         ASSERT(base_end > 0);
@@ -3293,6 +3330,7 @@ int main(void) {
     TEST(build_request_thinking_medium);
     TEST(build_request_thinking_high);
     TEST(build_request_thinking_default_effort);
+    TEST(build_request_thinking_switch);
     TEST(request_prefix_stable_across_turns);
     TEST(session_prune_keep_count);
 
