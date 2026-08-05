@@ -251,7 +251,8 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
                                        const char *model,
                                        const char *tools_json,
                                        int thinking_enabled,
-                                       const char *thinking_effort) {
+                                       const char *thinking_effort,
+                                       const char *api_base) {
                                            char * escaped;
     size_t cap = estimate_request_size(conv, model);
     size_t pos = 0;
@@ -329,11 +330,20 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
         if (append_cstr(&buf, &pos, &cap, tools_json) != 0) goto fail;
     }
 
+    /* The thinking switch and the effort knob are independent fields:
+     * thinking_enabled controls "thinking":{"type":"enabled"}, while a
+     * non-NULL thinking_effort controls "reasoning_effort". Providers
+     * that always reason (e.g. Kimi K3) can be driven by effort alone,
+     * and nothing is sent when both are off. */
     if (thinking_enabled) {
-        const char *effort = thinking_effort ? thinking_effort : "medium";
+        if (append_cstr(&buf, &pos, &cap,
+                        ",\"thinking\":{\"type\":\"enabled\"}") != 0)
+            goto fail;
+    }
+    if (thinking_effort) {
         if (append_cstr(&buf, &pos, &cap, ",\"reasoning_effort\":\"") != 0)
             goto fail;
-        if (append_cstr(&buf, &pos, &cap, effort) != 0) goto fail;
+        if (append_cstr(&buf, &pos, &cap, thinking_effort) != 0) goto fail;
         if (append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
     }
 

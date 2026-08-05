@@ -31,7 +31,9 @@ void ccode_print_usage(const char *program) {
         "      --default          Fast start: interactive + read/write tools + thinking (never auto-approve)\n"
         "      --auto-approve     Auto-approve all tool requests\n"
         "      --thinking         Enable thinking/reasoning mode\n"
-        "      --thinking-effort L  Thinking effort: low, medium, high, xhigh, or max (default: medium)\n"
+        "      --reasoning        Send the reasoning_effort field (default effort: medium)\n"
+        "      --reasoning-effort L  Reasoning effort: low, medium, high, xhigh, max\n"
+        "      --thinking-effort L  Alias for --reasoning-effort\n"
         "      --no-markdown      Disable markdown rendering (raw output)\n"
         "      --session-dir DIR  Session storage directory\n"
         "  -h, --help             Show this help\n"
@@ -201,18 +203,26 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
             config->thinking_enabled = 1;
             continue;
         }
-        if (strcmp(argv[i], "--thinking-effort") == 0 && i + 1 < argc) {
+        if (strcmp(argv[i], "--reasoning") == 0) {
+            /* Send the reasoning_effort field; default to medium when no
+             * explicit level was given. Independent of --thinking. */
+            if (!config->thinking_effort)
+                config->thinking_effort = "medium";
+            continue;
+        }
+        if ((strcmp(argv[i], "--reasoning-effort") == 0 ||
+             strcmp(argv[i], "--thinking-effort") == 0) && i + 1 < argc) {
             const char *effort = argv[++i];
             if (strcmp(effort, "low") != 0 &&
                 strcmp(effort, "medium") != 0 &&
                 strcmp(effort, "high") != 0 &&
                 strcmp(effort, "xhigh") != 0 &&
                 strcmp(effort, "max") != 0) {
-                fprintf(stderr, "Invalid thinking effort: %s (expected: low, medium, high, xhigh, max)\n", effort);
+                fprintf(stderr, "Invalid reasoning effort: %s (expected: low, medium, high, xhigh, max)\n", effort);
                 return -1;
             }
+            /* Setting a level implies sending the field. */
             config->thinking_effort = effort;
-            config->thinking_enabled = 1;
             continue;
         }
         if (strcmp(argv[i], "--no-markdown") == 0) {

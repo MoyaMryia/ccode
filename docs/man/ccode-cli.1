@@ -78,11 +78,22 @@ Approve all tool requests without prompting (also
 .B \-\-thinking
 Enable thinking/reasoning mode.
 .TP
-.BI \-\-thinking-effort " LEVEL"
-Thinking effort:
+.BI \-\-reasoning
+Send the reasoning_effort field (default effort:
+.BR medium ).
+Independent of
+.BR \-\-thinking .
+.TP
+.BI \-\-reasoning-effort " LEVEL"
+Reasoning effort:
 .BR low ", " medium ", " high ", " xhigh
 or
 .BR max .
+Implies reasoning on.
+.TP
+.BI \-\-thinking-effort " LEVEL"
+Alias for
+.BR \-\-reasoning-effort .
 .TP
 .B \-\-no-markdown
 Disable markdown rendering in human-facing output.
@@ -136,10 +147,17 @@ Search models.
 Show model details.
 .TP
 .B /thinking [on|off]
-Show or toggle thinking mode.
+Show or toggle the thinking field.
+.TP
+.B /reasoning [on|off]
+Show or toggle the reasoning_effort field.
+.TP
+.B /reasoning effort LEVEL
+Set reasoning effort (low, medium, high, xhigh, max).
 .TP
 .B /thinking effort LEVEL
-Set thinking effort (low, medium, high, xhigh, max).
+Legacy alias for
+.B /reasoning effort.
 .TP
 .B /sessions
 List saved sessions.

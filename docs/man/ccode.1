@@ -45,12 +45,13 @@ Model name (defaults to
 Enable thinking/reasoning mode.
 .TP
 .BI \-\-thinking-effort " LEVEL"
-Thinking effort:
+Reasoning effort:
 .BR low ", " medium ", " high ", " xhigh
 or
-.BR max
-(default:
-.BR medium ).
+.BR max .
+Independent of
+.BR \-\-thinking :
+it only sets the reasoning_effort field.
 .TP
 .B \-\-write
 Enable read and write tools (write_file, edit_file, bash, run_command,

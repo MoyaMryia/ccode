@@ -4336,8 +4336,9 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
         }
 
         body = ccode_conversation_build_request(conv, cfg->model, tools_json,
-                                                 cfg->thinking_enabled,
-                                                 cfg->thinking_effort);
+                                                cfg->thinking_enabled,
+                                                cfg->thinking_effort,
+                                                cfg->api_base);
         free(tools_json);
         if (!body) {
             fprintf(stderr, "Out of memory while building request.\n");
@@ -4805,9 +4806,11 @@ static void print_repl_help(void) {
         "    /models            List available models from API\n"
         "    /models search K   Search models by keyword\n"
         "    /models info NAME  Show model details\n"
-        "    /thinking          Toggle thinking/reasoning mode\n"
+        "    /thinking          Show or toggle the thinking field\n"
         "    /thinking on|off   Enable or disable thinking\n"
-        "    /thinking effort L Set thinking effort: low, medium, high, xhigh, max\n"
+        "    /reasoning         Show or toggle the reasoning_effort field\n"
+        "    /reasoning on|off  Enable or disable reasoning_effort\n"
+        "    /reasoning effort L Set reasoning effort: low, medium, high, xhigh, max\n"
         "    /history           Show prompts entered this session\n"
         "    /sessions          List all saved sessions\n"
         "    /sessions delete N Delete a session file\n"
@@ -4903,7 +4906,9 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
         if (el >= sizeof(current_effort)) el = sizeof(current_effort) - 1;
         memcpy(current_effort, eff, el);
         current_effort[el] = '\0';
-        cfg->thinking_effort = current_effort;
+        /* Keep cfg->thinking_effort untouched: NULL means reasoning is
+         * off (send no reasoning_effort field), the default "medium" is
+         * only the display/fallback value. */
     }
     exit_code = 0;
     conv_initialized = 0;
@@ -5148,15 +5153,13 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                 continue;
             } else if (strncmp(line, "/thinking", 9) == 0) {
                 if (strcmp(line, "/thinking") == 0) {
-                    fprintf(stderr, "  Thinking: %s (effort: %s)\n",
-                            cfg->thinking_enabled ? "on" : "off",
-                            current_effort);
+                    fprintf(stderr, "  Thinking: %s\n",
+                            cfg->thinking_enabled ? "on" : "off");
                     continue;
                 }
                 if (strcmp(line, "/thinking on") == 0) {
                     cfg->thinking_enabled = 1;
-                    fprintf(stderr, "  Thinking enabled (effort: %s).\n",
-                            current_effort);
+                    fputs("  Thinking enabled.\n", stderr);
                     continue;
                 }
                 if (strcmp(line, "/thinking off") == 0) {
@@ -5165,7 +5168,41 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                     continue;
                 }
                 if (strncmp(line, "/thinking effort ", 17) == 0) {
+                    /* Legacy alias of /reasoning effort. */
+                    size_t el = strlen(line + 17);
                     const char *eff = line + 17;
+                    if (el >= sizeof(current_effort))
+                        el = sizeof(current_effort) - 1;
+                    memcpy(current_effort, eff, el);
+                    current_effort[el] = '\0';
+                    cfg->thinking_effort = current_effort;
+                    fprintf(stderr, "  Reasoning effort set to: %s.\n",
+                            current_effort);
+                    continue;
+                }
+                fputs("  Usage: /thinking [on|off]\n", stderr);
+                continue;
+            } else if (strncmp(line, "/reasoning", 10) == 0) {
+                if (strcmp(line, "/reasoning") == 0) {
+                    fprintf(stderr, "  Reasoning: %s (effort: %s)\n",
+                            cfg->thinking_effort ? "on" : "off",
+                            current_effort);
+                    continue;
+                }
+                if (strcmp(line, "/reasoning on") == 0) {
+                    if (!cfg->thinking_effort)
+                        cfg->thinking_effort = current_effort;
+                    fprintf(stderr, "  Reasoning enabled (effort: %s).\n",
+                            current_effort);
+                    continue;
+                }
+                if (strcmp(line, "/reasoning off") == 0) {
+                    cfg->thinking_effort = NULL;
+                    fputs("  Reasoning disabled.\n", stderr);
+                    continue;
+                }
+                if (strncmp(line, "/reasoning effort ", 18) == 0) {
+                    const char *eff = line + 18;
                     if (strcmp(eff, "low") == 0 ||
                         strcmp(eff, "medium") == 0 ||
                         strcmp(eff, "high") == 0 ||
@@ -5177,23 +5214,16 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                         memcpy(current_effort, eff, el);
                         current_effort[el] = '\0';
                         cfg->thinking_effort = current_effort;
-                        if (!cfg->thinking_enabled) {
-                            cfg->thinking_enabled = 1;
-                            fprintf(stderr,
-                                "  Thinking enabled, effort set to: %s.\n",
-                                current_effort);
-                        } else {
-                            fprintf(stderr,
-                                "  Thinking effort set to: %s.\n",
-                                current_effort);
-                        }
+                        fprintf(stderr,
+                            "  Reasoning effort set to: %s.\n",
+                            current_effort);
                     } else {
-                        fputs("  Usage: /thinking effort low|medium|high|xhigh|max\n",
+                        fputs("  Usage: /reasoning effort low|medium|high|xhigh|max\n",
                               stderr);
                     }
                     continue;
                 }
-                fputs("  Usage: /thinking [on|off|effort low|medium|high|xhigh|max]\n",
+                fputs("  Usage: /reasoning [on|off|effort low|medium|high|xhigh|max]\n",
                       stderr);
                 continue;
             } else if (strcmp(line, "/clear") == 0) {

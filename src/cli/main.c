@@ -299,35 +299,46 @@ static void backend_command(struct json_session_state *state, const char *comman
         state->options.model = state->options.model_name;
         json_print("message", "Model switched.");
     } else if (strcmp(command, "/thinking") == 0) {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "Thinking: %s (effort: %s)",
-                 state->options.thinking_enabled ? "on" : "off",
-                 state->options.thinking_effort ? state->options.thinking_effort : "medium");
-        json_print("message", msg);
+        json_print("message", state->options.thinking_enabled
+                        ? "Thinking: on" : "Thinking: off");
     } else if (strcmp(command, "/thinking on") == 0) {
         state->options.thinking_enabled = 1;
         json_print("message", "Thinking enabled.");
     } else if (strcmp(command, "/thinking off") == 0) {
         state->options.thinking_enabled = 0;
         json_print("message", "Thinking disabled.");
-    } else if (strncmp(command, "/thinking effort ", 17) == 0) {
-        const char *eff = normalize_thinking_effort(command + 17);
+    } else if (strcmp(command, "/reasoning") == 0) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Reasoning: %s (effort: %s)",
+                 state->options.thinking_effort ? "on" : "off",
+                 state->options.thinking_effort ? state->options.thinking_effort
+                                                : "medium");
+        json_print("message", msg);
+    } else if (strcmp(command, "/reasoning on") == 0) {
+        if (!state->options.thinking_effort) {
+            snprintf(state->options.thinking_effort_buf,
+                     sizeof(state->options.thinking_effort_buf), "%s", "medium");
+            state->options.thinking_effort = state->options.thinking_effort_buf;
+        }
+        json_print("message", "Reasoning enabled.");
+    } else if (strcmp(command, "/reasoning off") == 0) {
+        state->options.thinking_effort = NULL;
+        json_print("message", "Reasoning disabled.");
+    } else if (strncmp(command, "/reasoning effort ", 18) == 0 ||
+               strncmp(command, "/thinking effort ", 17) == 0) {
+        const char *eff = strncmp(command, "/reasoning ", 11) == 0
+                              ? normalize_thinking_effort(command + 18)
+                              : normalize_thinking_effort(command + 17);
         if (eff) {
             char msg[64];
             snprintf(state->options.thinking_effort_buf,
                      sizeof(state->options.thinking_effort_buf), "%s", eff);
             state->options.thinking_effort = state->options.thinking_effort_buf;
-            if (!state->options.thinking_enabled) {
-                state->options.thinking_enabled = 1;
-                snprintf(msg, sizeof(msg),
-                         "Thinking enabled, effort set to: %s.", eff);
-            } else {
-                snprintf(msg, sizeof(msg),
-                         "Thinking effort set to: %s.", eff);
-            }
+            snprintf(msg, sizeof(msg),
+                     "Reasoning effort set to: %s.", eff);
             json_print("message", msg);
         } else {
-            json_print("error", "Usage: /thinking effort low|medium|high|xhigh|max");
+            json_print("error", "Usage: /reasoning effort low|medium|high|xhigh|max");
         }
     } else if (strcmp(command, "/history") == 0) {
         char output[65536];
