@@ -70,6 +70,50 @@ EOF
     debugfs -w -R 'write /tmp/inittab.r /etc/inittab' "$FS_IMG" >/dev/null 2>&1 || fail "write inittab"
 fi
 
+# 1b. QEMU user-net networking, idempotently injected into /etc/rc
+# (AMD PCnet-PCI 10.0.2.15, gw 10.0.2.2 = host, DNS 10.0.2.3 via slirp).
+# NB: ne2k-pci needs the 8390 core module, which BasicLinux dropped from
+# /lib/modules; pcnet32.o is self-contained and probes PCnet/PCI fine.
+debugfs -R 'cat /etc/rc' "$FS_IMG" > /tmp/rc_work.sh 2>/dev/null || fail "cannot read rc"
+if ! grep -q 'pcnet32' /tmp/rc_work.sh; then
+    echo "-- injecting QEMU user-net config into /etc/rc"
+    python3 - << 'EOF'
+import re
+src = open('/tmp/rc_work.sh').read()
+src = re.sub(r'\n# QEMU user-net networking.*?\n}\n', '\n', src, flags=re.S)
+net = '''
+# QEMU user-net networking (PCnet-PCI, slirp)
+[ -f /lib/modules/2.2.26/net/pcnet32.o ] && insmod /lib/modules/2.2.26/net/pcnet32.o 2>/dev/null
+ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null && {
+    route add default gw 10.0.2.2 2>/dev/null
+    echo "nameserver 10.0.2.3" > /etc/resolv.conf
+    echo "NET UP"
+}
+'''
+src = src.replace('echo RC-COMPLETE\n', net + 'echo RC-COMPLETE\n')
+open('/tmp/rc_work.sh', 'w').write(src)
+EOF
+    debugfs -w -R 'rm /etc/rc' "$FS_IMG" >/dev/null 2>&1 || true
+    debugfs -w -R 'write /tmp/rc_work.sh /etc/rc' "$FS_IMG" >/dev/null 2>&1 || fail "write rc (net)"
+    debugfs -w -R 'sif /etc/rc mode 0100755' "$FS_IMG" >/dev/null 2>&1 || true
+fi
+
+# 1c. CA bundle for the guest TLS backend (PolarSSL parses /etc/ssl/certs).
+# Host CAs are copied in so the guest can verify real-world chains
+# (e.g. api.deepseek.com -> TrustAsia -> DigiCert Global Root G2).
+if ! debugfs -R 'ls /etc/ssl/certs' "$FS_IMG" 2>/dev/null | grep -q '\.pem'; then
+    echo "-- injecting host CA bundle into guest /etc/ssl/certs"
+    rm -rf /tmp/ca_inject && mkdir -p /tmp/ca_inject
+    cp /etc/ssl/certs/*.pem /tmp/ca_inject/ 2>/dev/null || true
+    if [ -n "$(ls -A /tmp/ca_inject 2>/dev/null)" ]; then
+        debugfs -w -R 'mkdir /etc/ssl' "$FS_IMG" >/dev/null 2>&1 || true
+        debugfs -w -R 'mkdir /etc/ssl/certs' "$FS_IMG" >/dev/null 2>&1 || true
+        for f in /tmp/ca_inject/*.pem; do
+            debugfs -w -R "write $f /etc/ssl/certs/$(basename "$f")" "$FS_IMG" >/dev/null 2>&1 || true
+        done
+    fi
+fi
+
 # 2. fresh disk
 dd if=/dev/zero of="$OUT" bs=1M count=$DISK_MB status=none
 printf 'start=2048, size=%d, type=6\nstart=%d, size=%d, type=83\nstart=%d, size=%d, type=82\n' \

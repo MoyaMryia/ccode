@@ -4,6 +4,7 @@
 
 #include "webfetch.h"
 #include "permissions/permissions.h"
+#include "tls_backend.h"
 
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -21,7 +22,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#ifndef CCODE_HTTP_ONLY
+#if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/net_sockets.h>
@@ -47,7 +48,7 @@ struct wf_url {
 
 struct wf_transport {
     int fd;
-#ifndef CCODE_HTTP_ONLY
+#if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
     int secure;
     mbedtls_net_context server;
     mbedtls_ssl_context ssl;
@@ -283,7 +284,7 @@ static int wf_wait_fd(int fd, short events, long long deadline) {
     return poll(&pfd, 1, timeout) == 1 ? 1 : 0;
 }
 
-#ifndef CCODE_HTTP_ONLY
+#if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
 static int wf_tls_wait(struct wf_transport *transport, int tls_result,
                        long long deadline) {
     short events = tls_result == MBEDTLS_ERR_SSL_WANT_WRITE ? POLLOUT : POLLIN;
@@ -299,7 +300,7 @@ static int wf_transport_open(struct wf_transport *transport,
     transport->fd = wf_connect(url->host, url->port, deadline);
     if (transport->fd < 0) return -1;
 
-#ifndef CCODE_HTTP_ONLY
+#if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
     if (url->secure) {
         const char *ca_file = getenv("CCODE_CA_FILE");
         const char *personalization = "ccode-webfetch";
@@ -373,7 +374,7 @@ static int wf_transport_open(struct wf_transport *transport,
 
 static void wf_transport_close(struct wf_transport *transport) {
     if (!transport) return;
-#ifndef CCODE_HTTP_ONLY
+#if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
     if (transport->secure) {
         (void)mbedtls_ssl_close_notify(&transport->ssl);
         mbedtls_ssl_free(&transport->ssl);
@@ -398,7 +399,7 @@ static int wf_send_all(struct wf_transport *transport, const char *data,
         long long rem = deadline - wf_now_ms();
         if (rem <= 0 || !wf_wait_fd(transport->fd, POLLOUT, deadline))
             return -1;
-#ifndef CCODE_HTTP_ONLY
+#if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
         if (transport->secure) {
             int tls_result = mbedtls_ssl_write(&transport->ssl,
                                                (const unsigned char *)data,
@@ -435,7 +436,7 @@ static ssize_t wf_recv_until(struct wf_transport *transport, char *buf, size_t m
             if (wf_now_ms() >= deadline) *timed_out = 1;
             break;
         }
-#ifndef CCODE_HTTP_ONLY
+#if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
         if (transport->secure) {
             int tls_result = mbedtls_ssl_read(&transport->ssl,
                                               (unsigned char *)(buf + total),

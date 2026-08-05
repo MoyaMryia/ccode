@@ -282,16 +282,26 @@ def main():
         '~/ccode/logs/guest'))
     ap.add_argument('--skip-prep', action='store_true',
                     help='skip source staging (reuse current disk)')
+    ap.add_argument('--hostfwd', default='',
+                    help='host->guest inbound port forwards, comma separated '
+                         '"HOSTPORT-GUESTPORT" (e.g. "2222-22,8080-80" maps '
+                         'host:2222 -> guest:22). Default: none.')
     args = ap.parse_args()
 
     if not args.skip_prep:
         prep_sources(args.workdir, args.fs, args.disk)
+
+    netdev = 'user,id=n1'
+    for fwd in [f.strip() for f in args.hostfwd.split(',') if f.strip()]:
+        netdev += ',hostfwd=tcp::%s' % fwd.replace('-', '-:', 1)
 
     qmp = '/tmp/qmp.sock'
     if os.path.exists(qmp):
         os.unlink(qmp)
     q = QEMU(['qemu-system-i386', '-m', str(args.mem),
               '-hda', args.disk,
+              '-netdev', netdev,
+              '-device', 'pcnet,netdev=n1',
               '-qmp', 'unix:%s,server,nowait' % qmp], qmp)
     print('qemu up, waiting for boot...', flush=True)
 
@@ -310,8 +320,11 @@ def main():
     # guest is idle again.
     steps = [
         ('probe', 'cd /root && which gcc gcc-egcs-1.1.2 gcc-2.7.2.3 '
-                  'make tar sh', 30),
+                  'make tar sh ar', 30),
         ('unpack', 'cd /root && tar xf ccode-src.tar && ls Makefile src', 60),
+        ('tls', 'cd /root && make -C vendor/polarssl-1.3.9/library '
+                'CC=gcc-egcs-1.1.2 CFLAGS="-O2 -I../include '
+                '-include /root/src/compat/compat.h -I/root/src/compat"', 900),
         ('build', 'cd /root && make RETRO=1 RETRO_NATIVE=1 '
                   'CC=%s %s' % (args.cc, args.targets), 900),
         ('help', 'cd /root && ./ccode-cli --help', 60),

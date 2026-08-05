@@ -395,6 +395,10 @@ def main():
     ap.add_argument('--disk-boot', action='store_true',
                     help='boot the -hda disk as a standalone ghost disk '
                          '(MBR+GRUB, no cdrom), QEMU -boot c')
+    ap.add_argument('--hostfwd', default='',
+                    help='host->guest inbound port forwards, comma separated '
+                         '"HOSTPORT-GUESTPORT" (e.g. "2222-22"). '
+                         'Default: none.')
     args = ap.parse_args()
 
     qmp_sock = args.attach or '/tmp/qmp.sock'
@@ -405,16 +409,24 @@ def main():
         except OSError:
             pass
 
+    netdev = 'user,id=n1'
+    for fwd in [f.strip() for f in args.hostfwd.split(',') if f.strip()]:
+        netdev += ',hostfwd=tcp::%s' % fwd.replace('-', '-:', 1)
+
     if args.attach:
         argv = None
     elif args.disk_boot:
         argv = ['qemu-system-i386', '-m', str(args.mem),
                 '-hda', args.hda,
+                '-netdev', netdev,
+                '-device', 'pcnet,netdev=n1',
                 '-display', 'curses',
                 '-qmp', 'unix:%s,server,nowait' % qmp_sock]
     elif args.kernel:
         argv = ['qemu-system-i386', '-m', str(args.mem),
                 '-kernel', args.kernel, '-hda', args.hda,
+                '-netdev', netdev,
+                '-device', 'pcnet,netdev=n1',
                 '-display', 'curses',
                 '-qmp', 'unix:%s,server,nowait' % qmp_sock]
         if args.initrd:
