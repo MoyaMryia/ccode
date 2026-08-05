@@ -2399,8 +2399,60 @@ struct prepared_tool {
     int read_only_subagent;
 };
 
-static const char *prepare_tool(const char *name, const char *arguments,
-                                struct prepared_tool *prepared) {
+/* Models sometimes mirror the OpenAI wire format they see in the
+ * conversation history and wrap tool arguments one level deeper, e.g.
+ *   {"arguments": {"file_path": "x"}}           (object form)
+ *   {"arguments": "{\"file_path\": \"x\"}"}     (JSON-string form)
+ * Unwrap that shape (returns a malloc'd buffer in *out; caller frees) so
+ * both the wrapped and the plain {"file_path": "x"} forms validate. */
+static int unwrap_tool_arguments(const char *arguments, char **out) {
+    ccode_jsmn_parser parser;
+    ccode_jsmntok_t tokens[8];
+    int num_tokens;
+    int start, end;
+
+    *out = NULL;
+    if (!arguments) return 0;
+    ccode_jsmn_init(&parser);
+    num_tokens = ccode_jsmn_parse(&parser, arguments, strlen(arguments),
+                                  tokens, 8);
+    /* Envelope shape: outer object with exactly one "arguments" key.
+     * jsmn expands nested objects, so the object form yields 5 tokens
+     * (obj, key, inner obj, key, value) and the string form 3. */
+    if (tokens[0].type != CCODE_JSMN_OBJECT || tokens[0].size != 2 ||
+        tokens[1].type != CCODE_JSMN_STRING ||
+        !ccode_jsmn_token_streq(arguments, &tokens[1], "arguments"))
+        return 0; /* not the wrapped shape */
+
+    if (tokens[2].type == CCODE_JSMN_STRING && num_tokens == 3) {
+        char *body;
+        /* jsmn STRING tokens span the content only (no quotes). */
+        start = tokens[2].start;
+        end = tokens[2].end;
+        if (end <= start) return 0;
+        body = malloc((size_t)(end - start) + 1);
+        if (!body) return 0;
+        memcpy(body, arguments + start, (size_t)(end - start));
+        body[end - start] = '\0';
+        *out = ccode_unescape_json_string(body);
+        free(body);
+        return *out ? 1 : 0;
+    }
+    if (tokens[2].type == CCODE_JSMN_OBJECT && num_tokens == 5) {
+        start = tokens[2].start;
+        end = tokens[2].end;
+        if (end <= start) return 0;
+        *out = malloc((size_t)(end - start) + 1);
+        if (!*out) return 0;
+        memcpy(*out, arguments + start, (size_t)(end - start));
+        (*out)[end - start] = '\0';
+        return 1;
+    }
+    return 0;
+}
+
+static const char *prepare_tool_inner(const char *name, const char *arguments,
+                                      struct prepared_tool *prepared) {
     ccode_jsmn_parser parser;
     ccode_jsmntok_t tokens[128];
     int num_tokens;
@@ -2685,7 +2737,8 @@ static const char *prepare_tool(const char *name, const char *arguments,
             !ccode_jsmn_token_streq(arguments, &tokens[1], "file_path") ||
             copy_string_token(arguments, &tokens[2], prepared->value,
                               sizeof(prepared->value)) != 0)
-            return "{\"error\":\"Invalid read_file arguments\"}";
+            return "{\"error\":\"Invalid read_file arguments: expected "
+                   "{\\\"file_path\\\": \\\"<path>\\\"}\"}";
         if (is_home_relative_path(prepared->value))
             return "{\"error\":\"Home-relative paths are not allowed\"}";
         prepared->kind = PREPARED_READ_FILE;
@@ -3129,6 +3182,20 @@ static const char *prepare_tool(const char *name, const char *arguments,
     }
 
     return "{\"error\":\"Unknown tool\"}";
+}
+
+/* Entry point: unwrap a possible {"arguments": ...} envelope before the
+ * strict per-tool validation in prepare_tool_inner. */
+static const char *prepare_tool(const char *name, const char *arguments,
+                                struct prepared_tool *prepared) {
+    char *unwrapped = NULL;
+    const char *result;
+
+    if (unwrap_tool_arguments(arguments, &unwrapped) == 1)
+        arguments = unwrapped;
+    result = prepare_tool_inner(name, arguments, prepared);
+    free(unwrapped);
+    return result;
 }
 
 /* Generate a bounded line-oriented diff for edit_file preview. Scans the file
