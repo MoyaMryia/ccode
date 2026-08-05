@@ -379,9 +379,10 @@ Week 3+: 扩展功能
 - ✅ WebSearch（`web_search` 工具：Bing 端点可配、HTML 结构化解析、实体解码、结果上限；`webfetch` 新增 `raw_html` 选项保留原始标记）
 - ✅ 安全加固（命令级防护）：
   - 子进程最小环境（全新构造，HOME=/tmp、PATH 白名单，不继承任何父变量如 CCODE_*/SSH_AUTH_SOCK/云凭据）
-  - 敏感路径过滤：bash/run_command 引用 ssh 密钥、AWS/Azure/K8s 凭据、shadow、/proc、/sys 等拒绝（`CCODE_DISABLE_COMMAND_FILTER=1` 关闭）
-  - 破坏性命令拒绝：mkfs/dd(带操作数)/chown/fdisk/shutdown 等整词检测
+  - 敏感路径过滤：硬模式（ssh 密钥、AWS/Azure/K8s 凭据、shadow、/proc/self、/proc/kcore 等）始终拒绝；软模式（/root/、/home/、/.config/）在路径位于工作区内时放行——修复了 /root 工作区下合法命令被误伤的问题；`/proc`、`/sys` 系统信息查询放行（`CCODE_DISABLE_COMMAND_FILTER=1` 关闭）
+  - 破坏性命令拒绝：mkfs/dd(带操作数)/chown/fdisk/shutdown 等整词检测；chmod 已移出（`chmod +x` 是常规开发命令）
   - `rm -rf /` 特例解析（不误伤 `rm -rf /tmp/...`）
+  - 非 bash 的 /bin/sh（如 BasicLinux 的 BusyBox ash）下，失败的命令结果附 `shell_note` 提示模型改用 POSIX 语法
   - Landlock 写沙箱（`ccode_landlock_apply`）：写操作仅限 workspace + /tmp，内核不可用时自动降级（`CCODE_DISABLE_SANDBOX` 语义见 sandbox.c）
 
 ## 完成标准

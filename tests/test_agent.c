@@ -2722,12 +2722,13 @@ static int test_command_sensitive_paths(void) {
         "cat /etc/shadow",
         "ls -la /home/user/.ssh/id_rsa",
         "cat ~/.aws/credentials",
-        "grep -r foo /proc",
-        "cat /sys/kernel/debug",
+        "cat /proc/self/environ",
         "rm -rf /",
         "rm -fr /*",
         "ssh-keygen -f /root/.ssh/id_ed25519",
         "git config --global user.name x && cat ~/.git-credentials",
+        "cat /etc/shadow && ls /root/x",  /* hard pattern wins over ws */
+        "ls /root/project 2>/dev/null || echo nope",  /* outside ws */
     };
     static const char *allowed[] = {
         "echo hi",
@@ -2737,13 +2738,24 @@ static int test_command_sensitive_paths(void) {
         "git status",
         "make test",
         "cat /usr/local/bin/gcc",
+        "grep -r foo /proc",        /* system info, no longer blocked */
+        "cat /sys/kernel/debug",    /* ditto */
         "ls /home 2>/dev/null || echo nope",  /* /home/ with slash only */
     };
     size_t i;
     for (i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++)
-        ASSERT(ccode_command_is_sensitive(blocked[i]) == 1);
+        ASSERT(ccode_command_is_sensitive(blocked[i], NULL) == 1);
     for (i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++)
-        ASSERT(ccode_command_is_sensitive(allowed[i]) == 0);
+        ASSERT(ccode_command_is_sensitive(allowed[i], NULL) == 0);
+    /* Workspace tolerance: paths under the workspace root pass even
+     * though they match soft patterns like /root/. */
+    ASSERT(ccode_command_is_sensitive("gcc -o /root/x /root/x.c",
+                                      "/root") == 0);
+    ASSERT(ccode_command_is_sensitive("ls -la /root/.ssh/id_rsa",
+                                      "/root") == 1);  /* hard pattern */
+    ASSERT(ccode_command_is_sensitive("cat /root/secret.txt", "/root") == 0);
+    ASSERT(ccode_command_is_sensitive("cat /root/secret.txt",
+                                      "/home/user/proj") == 1);
     return 1;
 }
 
@@ -2761,6 +2773,8 @@ static int test_command_destructive_words(void) {
         "make check",
         "cat fdisk_docs.txt",
         "echo chmodded",
+        "chmod +x script.sh",       /* routine dev command, not blocked */
+        "chmod 755 run.sh && ./run.sh",
     };
     size_t i;
     for (i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++)

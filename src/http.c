@@ -1,6 +1,7 @@
 #include "http.h"
 #include "json.h"
 #include "permissions/permissions.h"
+#include "tls_backend.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -18,13 +19,22 @@
 #include <time.h>
 #include <unistd.h>
 
-#ifndef CCODE_HTTP_ONLY
+#if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/error.h>
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509_crt.h>
+#elif CCODE_TLS_BACKEND == CCODE_TLS_POLARSSL
+#include <polarssl/ctr_drbg.h>
+#include <polarssl/entropy.h>
+#include <polarssl/error.h>
+#include <polarssl/net.h>
+#include <polarssl/ssl.h>
+#include <polarssl/x509_crt.h>
+#elif CCODE_TLS_BACKEND == CCODE_TLS_OPENSSL
+#error "CCODE_TLS_BACKEND=OPENSSL not implemented yet"
 #endif
 
 #define IO_BUF_SIZE                 (32 * 1024)
@@ -353,12 +363,13 @@ static int parse_response_headers(char *buffer, size_t *used,
                                   int *headers_complete, int *chunked,
                                   int *has_content_length,
                                   size_t *content_length,
-                                  int *non_200) {
+                                  int *non_200, int *status_code) {
     size_t header_end;
     size_t status_end;
     size_t line_start;
 
     if (*headers_complete) return 0;
+    *status_code = 0;
     for (header_end = 0; header_end + 3 < *used; header_end++) {
         if (memcmp(buffer + header_end, "\r\n\r\n", 4) == 0) break;
     }
@@ -368,10 +379,22 @@ static int parse_response_headers(char *buffer, size_t *used,
     }
     if (status_end + 1 >= header_end || status_end < 12 ||
         (memcmp(buffer, "HTTP/1.0 ", 9) != 0 && memcmp(buffer, "HTTP/1.1 ", 9) != 0) ||
-        buffer[9] != '2' || buffer[10] != '0' || buffer[11] != '0' ||
         (status_end > 12 && buffer[12] != ' ')) {
-        /* Non-200 (or malformed status) response: keep reading so the error
-         * body can be surfaced, instead of reporting before it arrives. */
+        /* Malformed status line: keep reading so the error body can be
+         * surfaced, instead of reporting before it arrives. */
+        *non_200 = 1;
+    } else if (buffer[9] >= '0' && buffer[9] <= '9' &&
+               buffer[10] >= '0' && buffer[10] <= '9' &&
+               buffer[11] >= '0' && buffer[11] <= '9') {
+        *status_code = (buffer[9] - '0') * 100 +
+                       (buffer[10] - '0') * 10 +
+                       (buffer[11] - '0');
+        if (buffer[9] != '2' || buffer[10] != '0' || buffer[11] != '0') {
+            /* Non-200 response: keep reading so the error body can be
+             * surfaced, instead of reporting before it arrives. */
+            *non_200 = 1;
+        }
+    } else {
         *non_200 = 1;
     }
 
@@ -547,18 +570,25 @@ static int process_chunked_buffer(char *buffer, size_t *used,
     return 0;
 }
 
-static int report_error_response(const char *error_body, size_t error_body_len) {
+static int report_error_response(const char *error_body, size_t error_body_len,
+                                 int status_code) {
     if (error_body_len > 0) {
         char *message = ccode_parse_error_message(error_body, error_body_len);
         if (message) {
-            fputs("Upstream returned a non-200 response: ", stderr);
+            if (status_code > 0)
+                fprintf(stderr, "Upstream returned HTTP %d: ", status_code);
+            else
+                fputs("Upstream returned a non-200 response: ", stderr);
             ccode_fprint_safe(stderr, message, "");
             fputc('\n', stderr);
             free(message);
             return -1;
         }
     }
-    fprintf(stderr, "Upstream returned a non-200 response.\n");
+    if (status_code > 0)
+        fprintf(stderr, "Upstream returned HTTP %d.\n", status_code);
+    else
+        fprintf(stderr, "Upstream returned a non-200 response.\n");
     return -1;
 }
 
@@ -568,11 +598,11 @@ static int process_response(char *response, size_t *used, int *headers_complete,
                             size_t *body_received,
                             struct sse_parser *parser,
                             struct ccode_sse_accumulator *acc,
-                            int *error_response,
+                            int *error_response, int *status_code,
                             char *error_body, size_t *error_body_len) {
     if (parse_response_headers(response, used, headers_complete, chunked,
                                has_content_length, content_length,
-                               error_response) != 0)
+                               error_response, status_code) != 0)
         return -1;
     if (*error_response) {
         size_t take;
@@ -615,7 +645,7 @@ static int process_response(char *response, size_t *used, int *headers_complete,
     return 0;
 }
 
-#ifdef CCODE_HTTP_ONLY
+#if CCODE_TLS_BACKEND == CCODE_TLS_NONE
 static int send_all(int fd, const char *data, size_t length,
                     long long total_deadline) {
     long long deadline = phase_deadline(total_deadline, IO_TIMEOUT_MS);
@@ -682,6 +712,7 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     size_t body_received = 0;
     size_t error_body_len = 0;
     int error_response = 0;
+    int status_code = 0;
     int total_timeout = DEFAULT_TOTAL_TIMEOUT_SEC;
     int socket_fd;
     long long total_deadline;
@@ -716,11 +747,11 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
             result = process_response(response, &used, &headers_complete, &chunked,
                                       &chunks_complete, &has_content_length,
                                       &content_length, &body_received,
-                                      &parser, acc, &error_response,
+                                      &parser, acc, &error_response, &status_code,
                                       error_body, &error_body_len);
             if (result > 0) {
                 close(socket_fd);
-                return report_error_response(error_body, error_body_len);
+                return report_error_response(error_body, error_body_len, status_code);
             }
             if (result < 0) {
                 close(socket_fd);
@@ -741,7 +772,7 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     }
     close(socket_fd);
     if (error_response)
-        return report_error_response(error_body, error_body_len);
+        return report_error_response(error_body, error_body_len, status_code);
     if (!headers_complete || (chunked && chunks_complete != 1) ||
         (!chunked && has_content_length && body_received != content_length) ||
         !acc->stream_done) {
@@ -750,7 +781,7 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     }
     return 0;
 }
-#else
+#elif CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
 static int tls_send_no_signal(void *context, const unsigned char *data,
                               size_t length) {
     mbedtls_net_context *server = context;
@@ -811,6 +842,7 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     size_t body_received = 0;
     size_t error_body_len = 0;
     int error_response = 0;
+    int status_code = 0;
     int total_timeout = DEFAULT_TOTAL_TIMEOUT_SEC;
     int result = -1;
     int tls_result;
@@ -910,10 +942,10 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
             pr = process_response(response, &used, &headers_complete, &chunked,
                                   &chunks_complete, &has_content_length,
                                   &content_length, &body_received,
-                                  &parser, acc, &error_response,
+                                  &parser, acc, &error_response, &status_code,
                                   error_body, &error_body_len);
             if (pr > 0) {
-                result = report_error_response(error_body, error_body_len);
+                result = report_error_response(error_body, error_body_len, status_code);
                 goto cleanup;
             }
             if (pr < 0) goto cleanup;
@@ -939,7 +971,7 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
         goto cleanup;
     }
     if (error_response) {
-        result = report_error_response(error_body, error_body_len);
+        result = report_error_response(error_body, error_body_len, status_code);
         goto cleanup;
     }
     if (!headers_complete || (chunked && chunks_complete != 1) ||
@@ -959,4 +991,225 @@ cleanup:
     mbedtls_entropy_free(&entropy);
     return result;
 }
+#elif CCODE_TLS_BACKEND == CCODE_TLS_POLARSSL
+static int polarssl_send_no_signal(void *context, const unsigned char *data,
+                                   size_t length) {
+    const int *fd = context;
+    ssize_t sent = send(*fd, data, length, MSG_NOSIGNAL);
+    if (sent >= 0) return (int)sent;
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+        return POLARSSL_ERR_NET_WANT_WRITE;
+    return POLARSSL_ERR_NET_SEND_FAILED;
+}
+
+static int polarssl_recv(void *context, unsigned char *data, size_t length) {
+    const int *fd = context;
+    ssize_t got = recv(*fd, data, length, 0);
+    if (got >= 0) return (int)got;
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+        return POLARSSL_ERR_NET_WANT_READ;
+    return POLARSSL_ERR_NET_RECV_FAILED;
+}
+
+static int polarssl_wait(const int *fd, int ssl_result, long long deadline) {
+    short events = ssl_result == POLARSSL_ERR_NET_WANT_WRITE ? POLLOUT : POLLIN;
+    return wait_fd(*fd, events, deadline);
+}
+
+static int polarssl_write_all(ssl_context *ssl, const int *fd,
+                              const unsigned char *data, size_t length,
+                              long long total_deadline) {
+    size_t sent = 0;
+    long long deadline = phase_deadline(total_deadline, IO_TIMEOUT_MS);
+    while (sent < length) {
+        int result = ssl_write(ssl, data + sent, length - sent);
+        if (result > 0) {
+            sent += (size_t)result;
+        } else if ((result == POLARSSL_ERR_NET_WANT_READ ||
+                    result == POLARSSL_ERR_NET_WANT_WRITE) &&
+                   polarssl_wait(fd, result, deadline) == 1) {
+            continue;
+        } else {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int ccode_stream_chat(const char *api_base, const char *api_key,
+                      const char *body, struct ccode_sse_accumulator *acc) {
+    struct parsed_url url;
+    struct sse_parser parser;
+    ssl_context ssl;
+    x509_crt ca;
+    ctr_drbg_context rng;
+    entropy_context entropy;
+    const char *ca_file = getenv("CCODE_CA_FILE");
+    const char *personalization = "ccode";
+    char header[HEADER_BUF_SIZE];
+    char response[IO_BUF_SIZE];
+    char error_body[ERROR_BODY_MAX + 1];
+    size_t used = 0;
+    int headers_complete = 0;
+    int chunked = 0;
+    int chunks_complete = 0;
+    int has_content_length = 0;
+    size_t content_length = 0;
+    size_t body_received = 0;
+    size_t error_body_len = 0;
+    int error_response = 0;
+    int status_code = 0;
+    int total_timeout = DEFAULT_TOTAL_TIMEOUT_SEC;
+    int result = -1;
+    int tls_result;
+    int fd = -1;
+    long long total_deadline;
+
+    const char *env = getenv("CCODE_REQUEST_TIMEOUT");
+    if (env) { int value = atoi(env); if (value > 0) total_timeout = value; }
+    total_deadline = now_ms() + (long long)total_timeout * 1000;
+    memset(&parser, 0, sizeof(parser));
+    if (has_crlf(api_key) || parse_url(api_base, &url) != 0) {
+        fprintf(stderr, "Invalid CCODE_API_BASE URL or API key.\n");
+        return -1;
+    }
+    if (!url.secure) {
+        fprintf(stderr, "Refusing http:// URL. Use an HTTPS endpoint.\n");
+        return -1;
+    }
+
+    entropy_init(&entropy);
+    if (ctr_drbg_init(&rng, entropy_func, &entropy,
+                      (const unsigned char *)personalization,
+                      strlen(personalization)) != 0) {
+        fprintf(stderr, "Could not initialize the RNG.\n");
+        entropy_free(&entropy);
+        return -1;
+    }
+    ssl_init(&ssl);
+    x509_crt_init(&ca);
+    ssl_set_endpoint(&ssl, SSL_IS_CLIENT);
+    ssl_set_authmode(&ssl, SSL_VERIFY_REQUIRED);
+    ssl_set_rng(&ssl, ctr_drbg_random, &rng);
+    if (ca_file) {
+        if (x509_crt_parse_file(&ca, ca_file) != 0) {
+            fprintf(stderr, "Could not load CCODE_CA_FILE.\n");
+            goto cleanup;
+        }
+    } else if (x509_crt_parse_path(&ca, "/etc/ssl/certs") < 0 ||
+               ca.next == NULL) {
+        /* 1.3.9's parse_path returns the count of unparseable files
+         * (positive), not an all-or-nothing status: an ECDSA-only CA next
+         * to a fine RSA one is normal. Only a real I/O error (negative) or
+         * zero parsed certs is fatal. */
+        fprintf(stderr, "Could not load system CA certificates.\n");
+        goto cleanup;
+    }
+    ssl_set_ca_chain(&ssl, &ca, NULL, NULL);
+    if (ssl_set_hostname(&ssl, url.host) != 0) {
+        fprintf(stderr, "Could not initialize the TLS context.\n");
+        goto cleanup;
+    }
+    fd = connect_tcp(url.host, url.port,
+                     phase_deadline(total_deadline, CONNECT_TIMEOUT_MS), 0);
+    if (fd < 0) {
+        fprintf(stderr, "Could not connect to the HTTPS endpoint.\n");
+        goto cleanup;
+    }
+    ssl_set_bio(&ssl, polarssl_recv, &fd, polarssl_send_no_signal, &fd);
+    {
+        long long deadline = phase_deadline(total_deadline, CONNECT_TIMEOUT_MS);
+        while ((tls_result = ssl_handshake(&ssl)) != 0) {
+            if ((tls_result != POLARSSL_ERR_NET_WANT_READ &&
+                 tls_result != POLARSSL_ERR_NET_WANT_WRITE) ||
+                polarssl_wait(&fd, tls_result, deadline) != 1) {
+                char error_text[128];
+                polarssl_strerror(tls_result, error_text, sizeof(error_text));
+                fprintf(stderr, "TLS handshake failed: %s.\n", error_text);
+                goto cleanup;
+            }
+        }
+    }
+    if (ssl_get_verify_result(&ssl) != 0) {
+        fprintf(stderr, "TLS certificate verification failed.\n");
+        goto cleanup;
+    }
+    {
+        int header_length = snprintf(header, sizeof(header),
+            "POST %s HTTP/1.1\r\n"
+            "Host: %s\r\n"
+            "Authorization: Bearer %s\r\n"
+            "Content-Type: application/json\r\n"
+            "Accept: text/event-stream\r\n"
+            "Content-Length: %lu\r\n"
+            "Connection: close\r\n\r\n",
+            url.path, url.host, api_key, (unsigned long)strlen(body));
+        if (header_length < 0 || (size_t)header_length >= sizeof(header) ||
+            polarssl_write_all(&ssl, &fd, (const unsigned char *)header,
+                               (size_t)header_length, total_deadline) != 0 ||
+            polarssl_write_all(&ssl, &fd, (const unsigned char *)body,
+                               strlen(body), total_deadline) != 0) goto cleanup;
+    }
+
+    while (now_ms() < total_deadline) {
+        long long read_deadline = phase_deadline(total_deadline, IO_TIMEOUT_MS);
+        tls_result = ssl_read(&ssl, (unsigned char *)response + used,
+                              sizeof(response) - used);
+        if (tls_result > 0) {
+            int pr;
+            used += (size_t)tls_result;
+            pr = process_response(response, &used, &headers_complete, &chunked,
+                                  &chunks_complete, &has_content_length,
+                                  &content_length, &body_received,
+                                  &parser, acc, &error_response, &status_code,
+                                  error_body, &error_body_len);
+            if (pr > 0) {
+                result = report_error_response(error_body, error_body_len, status_code);
+                goto cleanup;
+            }
+            if (pr < 0) goto cleanup;
+            if (acc->stream_done && chunked && chunks_complete == 1) break;
+            if (used == sizeof(response)) {
+                fprintf(stderr, "Response buffer full.\n");
+                goto cleanup;
+            }
+            continue;
+        }
+        if (tls_result == POLARSSL_ERR_NET_WANT_READ ||
+            tls_result == POLARSSL_ERR_NET_WANT_WRITE) {
+            if (polarssl_wait(&fd, tls_result, read_deadline) == 1) continue;
+            fprintf(stderr, "TLS read timed out.\n");
+            goto cleanup;
+        }
+        if (tls_result == 0 ||
+            tls_result == POLARSSL_ERR_SSL_PEER_CLOSE_NOTIFY) break;
+        {
+            char error_text[128];
+            polarssl_strerror(tls_result, error_text, sizeof(error_text));
+            fprintf(stderr, "TLS read error: %s.\n", error_text);
+        }
+        goto cleanup;
+    }
+    if (error_response) {
+        result = report_error_response(error_body, error_body_len, status_code);
+        goto cleanup;
+    }
+    if (!headers_complete || (chunked && chunks_complete != 1) ||
+        (!chunked && has_content_length && body_received != content_length) ||
+        !acc->stream_done) {
+        if (now_ms() >= total_deadline) fprintf(stderr, "Request timed out.\n");
+        goto cleanup;
+    }
+    result = 0;
+
+cleanup:
+    if (fd >= 0) close(fd);
+    ssl_free(&ssl);
+    x509_crt_free(&ca);
+    ctr_drbg_free(&rng);
+    entropy_free(&entropy);
+    return result;
+}
+#else
+#error "unsupported CCODE_TLS_BACKEND"
 #endif

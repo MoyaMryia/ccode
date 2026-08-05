@@ -57,16 +57,32 @@ ifeq ($(HTTP_ONLY),1)
 BUILD_MODE = http
 override CPPFLAGS += -DCCODE_HTTP_ONLY=1
 else
+ifeq ($(TLS),polarssl)
+# Host-side PolarSSL build: fast verification of the retro TLS backend
+# against the Python ssl mock. No compat shims needed on glibc.
+BUILD_MODE = polarssl
+override CPPFLAGS += -DCCODE_TLS_BACKEND=2 -Ivendor/polarssl-1.3.9/include
+POLARSSL_OBJ = $(addprefix $(OBJDIR)/,$(POLARSSL_SRC:.c=.o))
+else
 BUILD_MODE = https
 # mbedTLS 2.28.9 (LTS) vendored in vendor/mbedtls: no system libmbedtls needed.
 MBEDTLS_DIR = vendor/mbedtls
 override CPPFLAGS += -I$(MBEDTLS_DIR)/include
 endif
+endif
 
 # RETRO=1 wins over HTTP_ONLY/mbedTLS: force the libc5 / 2.2.26 build.
 ifeq ($(RETRO),1)
 BUILD_MODE = retro
-override CPPFLAGS += -DCCODE_HTTP_ONLY=1 -DCCODE_RETRO=1
+# NB: do NOT define CCODE_HTTP_ONLY here - it would win the CCODE_TLS_BACKEND
+# derivation in src/tls_backend.h (http-only instead of the PolarSSL backend).
+override CPPFLAGS += -DCCODE_RETRO=1
+# Vendored PolarSSL 1.3.9 provides the TLS backend on the retro toolchain
+# (gcc 2.7/egcs 1.1.2 cannot build mbedTLS 2.28); compat shims give it
+# stdint.h/inttypes.h via -Isrc/compat. CCODE_TLS_BACKEND is derived in
+# src/tls_backend.h from CCODE_HTTP_ONLY/CCODE_RETRO.
+override CPPFLAGS += -Ivendor/polarssl-1.3.9/include
+POLARSSL_OBJ = $(addprefix $(OBJDIR)/,$(POLARSSL_SRC:.c=.o))
 # On a glibc host, enable the shim so the retro path compiles and links
 # against a modern libc for smoke-testing. A native libc5 toolchain has
 # no __GLIBC__ and picks the shim up automatically, so don't define this
@@ -91,6 +107,11 @@ MODE_BIN = $(OBJDIR)/ccode
 CLI_BIN = $(OBJDIR)/ccode-cli
 CLI_SRC = src/cli/main.c src/config.c src/http.c src/json.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/agent/message.c src/agent/agent.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c
 
+# Vendored PolarSSL 1.3.9 (retro TLS backend; see
+# vendor/polarssl-1.3.9/README.ccode.md). Compiled into the binary via the
+# generic rule below; only non-empty in the retro / host-polarssl modes.
+POLARSSL_SRC = $(wildcard vendor/polarssl-1.3.9/library/*.c)
+
 ifeq ($(BUILD_MODE),https)
 # Vendored mbedTLS library sources, compiled into the binary (no -lmbedtls).
 # Compiled with relaxed flags: third-party code, keep it quiet.
@@ -108,12 +129,12 @@ ccode: $(MODE_BIN)
 ccode-cli: $(CLI_BIN)
 	@tmp=$@.$$$$; cp $< $$tmp && mv -f $$tmp $@
 
-$(CLI_BIN): $(CLI_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ)
+$(CLI_BIN): $(CLI_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ)
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(CLI_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(LDFLAGS) $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(CLI_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ) $(LDFLAGS) $(LDLIBS)
 
-$(MODE_BIN): $(OBJ) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ)
-	$(CC) $(LDFLAGS) -o $@ $(OBJ) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(LDFLAGS) $(LDLIBS)
+$(MODE_BIN): $(OBJ) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ)
+	$(CC) $(LDFLAGS) -o $@ $(OBJ) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ) $(LDFLAGS) $(LDLIBS)
 
 $(OBJDIR)/%.o: %.c
 	@mkdir -p $(dir $@)

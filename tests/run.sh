@@ -140,7 +140,7 @@ else
     FAIL=$((FAIL + 1))
 fi
 output=$(timeout "$TIMEOUT" "$CCODE" -p "__ccode_test_non-200-controls" 2>&1) || true
-error_line=$(printf '%s\n' "$output" | grep 'Upstream returned a non-200 response' || true)
+error_line=$(printf '%s\n' "$output" | grep 'Upstream returned HTTP 400' || true)
 if [[ "$error_line" == *'Bad\x1B[31m\nmessage\u202E'* ]] &&
    [[ "$error_line" != *$'\033'* ]]; then
     echo "  PASS: provider error terminal controls sanitized"

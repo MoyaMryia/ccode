@@ -3327,6 +3327,38 @@ static int detect_escaped_descendants(pid_t child) {
     return escaped;
 }
 
+/* Detect whether /bin/sh is actually bash (vs ash/dash/busybox on the
+ * retro guest). Cached after the first probe. The retro target runs
+ * BusyBox ash, so bash-only syntax in shell-string commands fails there;
+ * the executor attaches a hint to failed results in that case. */
+static int sh_is_bash(void) {
+    static int cached = -1;
+    int pfd[2];
+    pid_t pid;
+    int st;
+    char c = '\0';
+
+    if (cached >= 0) return cached;
+    cached = 0;
+    if (pipe(pfd) != 0) return cached;
+    pid = fork();
+    if (pid == 0) {
+        close(pfd[0]);
+        dup2(pfd[1], STDOUT_FILENO);
+        close(pfd[1]);
+        execl("/bin/sh", "sh", "-c",
+              "printf '%s' \"${BASH_VERSION:-}\"", (char *)NULL);
+        _exit(0);
+    }
+    if (pid > 0) {
+        close(pfd[1]);
+        if (read(pfd[0], &c, 1) == 1 && c != '\0') cached = 1;
+        close(pfd[0]);
+        waitpid(pid, &st, 0);
+    }
+    return cached;
+}
+
 static char *exec_run_command_ex(const char *workspace,
                                char * const *argv, size_t argc,
                                int timeout_ms, int allow_shell) {
@@ -3353,16 +3385,18 @@ static char *exec_run_command_ex(const char *workspace,
         return ccode_strdup("{\"error\":\"No command specified\"}");
     if (!allow_shell && is_shell_string_invocation(argv, argc))
         return ccode_strdup("{\"error\":\"Shell string execution is not allowed\"}");
+    /* Workspace must be initialized before filtering so soft-sensitive
+     * patterns can be tolerated for paths inside the workspace. */
+    if (init_workspace(workspace) != 0)
+        return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
     for (i = 0; i < argc; i++) {
-        if (ccode_command_is_sensitive(argv[i]))
+        if (ccode_command_is_sensitive(argv[i], workspace_root))
             return ccode_strdup(
                 "{\"error\":\"Command may access sensitive paths\"}");
         if (ccode_command_mentions_destructive(argv[i]))
             return ccode_strdup(
                 "{\"error\":\"Destructive command is not allowed\"}");
     }
-    if (init_workspace(workspace) != 0)
-        return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
 
     if (ccode_run_pipe(stdout_pipe) != 0 || ccode_run_pipe(stderr_pipe) != 0) {
         if (stdout_pipe[0] >= 0) { close(stdout_pipe[0]); close(stdout_pipe[1]); }
@@ -3601,6 +3635,15 @@ static char *exec_run_command_ex(const char *workspace,
         if (incomplete_cleanup)
             if (append_cstr_with(&result, &result_pos, &result_cap,
                     ",\"incomplete_cleanup\":true") != 0) goto oom;
+        if ((!WIFEXITED(status) || WEXITSTATUS(status) != 0 || timed_out) &&
+            !sh_is_bash()) {
+            static const char note[] =
+                ",\"shell_note\":\"/bin/sh is a POSIX shell, not bash; "
+                "bash-only syntax ([[ ]], ${var//pat}, arrays, "
+                "for((;;))) will fail\"";
+            if (append_cstr_with(&result, &result_pos, &result_cap,
+                    note) != 0) goto oom;
+        }
         if (append_cstr_with(&result, &result_pos, &result_cap,
                 "}") != 0) goto oom;
     }
