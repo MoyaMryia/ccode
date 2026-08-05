@@ -83,11 +83,11 @@
 # 重建整盘镜像(一键)
 bash scripts/make_ghost_disk.sh
 
-# guest 构建(一键;结果看 logs/guest/ 下的 .log/.rc 与 p2.img)
-python3 scripts/guest_build.py --cc gcc-egcs-1.1.2 --targets 'ccode-cli'
+# guest 构建(一键;默认 egcs 1.1.2 构建 ccode(TUI)+ccode-cli,结果看 logs/guest/)
+python3 scripts/guest_build.py
 
-# boot 诊断(32KB VGA 可见窗,不会再假卡死)
-python3 scripts/qemu_diag.py --disk-boot --hda vm/bl3-disk.img
+# boot 诊断/冒烟(32KB VGA 可见窗,不会假卡死;banner 即成功)
+python3 scripts/qemu_bootcheck.py --disk-boot --hda vm/bl3-disk.img
 
 # 宿主 retro 冒烟
 make RETRO=1 ccode-cli && make RETRO=1 test-json test-agent

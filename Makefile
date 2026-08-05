@@ -176,6 +176,16 @@ test-e2e: ccode-cli
 test-streaming: ccode-cli
 	python3 ./tests/test_streaming.py
 
+# ── Retro guest smoke (QEMU/BasicLinux): build ccode inside the guest ──
+# One-shot full pipeline: tar sources -> inject into vm/bl3-disk.img ->
+# boot QEMU (gtk window) -> make RETRO=1 RETRO_NATIVE=1 -> sync ->
+# extract logs to logs/guest/ and judge from those files.
+# Requires vm/bl3-disk.img (bash scripts/make_ghost_disk.sh) and
+# qemu-system-i386. Slow (~15 min) and mutates the disk, so NOT part of
+# the default `test` target. Fixed defaults only: smoke means smoke.
+retro-test:
+	python3 ./scripts/guest_build.py
+
 test: $(TEST_TARGETS)
 
 clean:
@@ -193,4 +203,4 @@ asan: clean
 repro: clean
 	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic -m64 -march=x86-64 -mtune=generic -ffile-prefix-map=$(PWD)=."
 
-.PHONY: ccode ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-markdown test-tty test-e2e test-streaming asan repro test-sandbox
+.PHONY: ccode ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-markdown test-tty test-e2e test-streaming retro-test asan repro test-sandbox

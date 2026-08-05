@@ -27,9 +27,9 @@ bash scripts/make_ghost_disk.sh
 一键在 guest 内构建/测试 ccode(单次前台运行,每次完整 boot ~10s):
 
 ```sh
-python3 scripts/guest_build.py --cc gcc-egcs-1.1.2 --targets 'ccode-cli'
-python3 scripts/guest_build.py --cc gcc-2.7.2.3 --targets 'ccode-cli test-json'
-python3 scripts/guest_build.py --skip-prep ...   # 跳过源码重新注入
+python3 scripts/guest_build.py                        # 默认 egcs 1.1.2，构建 ccode(TUI)+ccode-cli
+python3 scripts/guest_build.py --cc gcc-2.7.2.3       # 换编译器
+python3 scripts/guest_build.py --skip-prep ...        # 跳过源码重新注入
 ```
 
 流程:tar 源码 → debugfs 注入 fs7.img → dd 回分区 → boot(gtk 窗口可
@@ -39,18 +39,19 @@ python3 scripts/guest_build.py --skip-prep ...   # 跳过源码重新注入
 **结果判定只看抽出的文件**(`logs/guest/`:`p2.img` 完整根分区 +
 每步 `.log/.rc`);屏幕只作活性信号。纯文本链路,不依赖 OCR/多模态。
 
-## QEMU guest 诊断
+## QEMU guest 诊断与冒烟
 
-### qemu_diag.py(事件驱动 boot 监视器)
+### qemu_bootcheck.py(事件驱动 boot 监视/冒烟)
 每个 boot 阶段独立匹配 + 独立超时,1s tick 采样 guest CPU/QMP 状态,
 经 QMP `pmemsave 0xB8000`(全部 32KB,按"最后非空行"定位可见窗——
 2.2 内核硬件滚动后偏移 0 是旧画面)直接读 VGA 文本,
 事故时立刻输出:时间线、现场屏幕、最近行、CPU(判定 halted/spinning)、
-针对性建议。
+针对性建议。定制 rc 打印 BL3 欢迎 banner("The BL3 kernel has")
+即视为 boot 成功,立即以 0 退出。
 
 ```sh
-python3 scripts/qemu_diag.py --disk-boot --hda vm/bl3-disk.img   # 整盘模式
-python3 scripts/qemu_diag.py --attach /tmp/qmp.sock              # 诊断运行中 VM
+python3 scripts/qemu_bootcheck.py --disk-boot --hda vm/bl3-disk.img   # 整盘模式
+python3 scripts/qemu_bootcheck.py --attach /tmp/qmp.sock              # 诊断运行中 VM
 ```
 
 退出码:0 到达 shell,1 阶段超时/卡住,2 QEMU 退出,3 用法错误。

@@ -39,8 +39,10 @@ def decl_match(line):
         return None  # e.g. `out = malloc(...)` - assignment, not declaration
     if EXPR_CHARS.search(type_part):
         return None  # e.g. `slot->index = v;` or `x + y = ...`
-    # type_part must be a pure type token sequence: ident (ident|*)* with separators
-    if not re.match(r'([A-Za-z_][A-Za-z0-9_]*\s+)*([A-Za-z_][A-Za-z0-9_]*\s*)?(\*+\s*)?(,\s*)?$', type_part):
+    # type_part must be a pure type token sequence: ident (ident|*)* with
+    # separators, and must contain at least one identifier (a bare `*` is a
+    # dereference assignment like `*p = v;`, not a declaration)
+    if not re.match(r'([A-Za-z_][A-Za-z0-9_]*\s+)*[A-Za-z_][A-Za-z0-9_]*\s*(\*+\s*)?(,\s*)?$', type_part):
         return None
     # multi-decl `type a, b;` => sep ';' but there's a top-level comma before name
     return name, sep, rest
@@ -71,7 +73,8 @@ def find_block_open(lines, i):
 def is_stmt(line):
     s = line.rstrip()
     if not s.strip(): return False
-    if s.strip().startswith('//') or s.strip().startswith('/*') or s.strip().startswith('*'): return False
+    if s.strip().startswith('//') or s.strip().startswith('/*') or \
+       (s.strip().startswith('*') and not s.endswith(';')): return False
     if s.strip().startswith('#'): return False
     if s.strip() == '{': return False
     if s.strip().startswith('{'): return False  # block start (may carry a comment)
