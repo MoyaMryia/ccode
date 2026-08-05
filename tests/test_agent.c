@@ -808,6 +808,24 @@ static int test_tool_arguments_are_strict(void) {
     ASSERT(r != NULL && strstr(r, "error") != NULL);
     free(r);
 
+    /* Wrapped {"arguments": ...} envelope (OpenAI-wire-style, which models
+     * copy from the conversation history) must be unwrapped and work. */
+    r = test_exec_tool("fixtures", "read_file",
+                       "{\"arguments\":{\"file_path\":\"sample_text.txt\"}}");
+    ASSERT(r != NULL && strstr(r, "error") == NULL);
+    free(r);
+
+    r = test_exec_tool("fixtures", "read_file",
+                       "{\"arguments\":\"{\\\"file_path\\\":\\\"sample_text.txt\\\"}\"}");
+    ASSERT(r != NULL && strstr(r, "error") == NULL);
+    free(r);
+
+    r = test_exec_tool("fixtures", "read_file",
+                       "{\"arguments\":{\"file_path\":\"sample_text.txt\","
+                       "\"extra\":1}}");
+    ASSERT(r != NULL && strstr(r, "error") != NULL);
+    free(r);
+
     r = test_exec_tool("fixtures", "glob", "{\"pattern\":7}");
     ASSERT(r != NULL && strstr(r, "error") != NULL);
     free(r);

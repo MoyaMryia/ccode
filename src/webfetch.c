@@ -28,6 +28,13 @@
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509_crt.h>
+#elif CCODE_TLS_BACKEND == CCODE_TLS_POLARSSL
+#include <polarssl/ctr_drbg.h>
+#include <polarssl/entropy.h>
+#include <polarssl/error.h>
+#include <polarssl/net.h>
+#include <polarssl/ssl.h>
+#include <polarssl/x509_crt.h>
 #endif
 
 #define CCODE_WF_CONNECT_TIMEOUT_MS 15000
@@ -48,14 +55,22 @@ struct wf_url {
 
 struct wf_transport {
     int fd;
-#if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
+#if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS || \
+    CCODE_TLS_BACKEND == CCODE_TLS_POLARSSL
     int secure;
+#endif
+#if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
     mbedtls_net_context server;
     mbedtls_ssl_context ssl;
     mbedtls_ssl_config config;
     mbedtls_x509_crt ca;
     mbedtls_ctr_drbg_context rng;
     mbedtls_entropy_context entropy;
+#elif CCODE_TLS_BACKEND == CCODE_TLS_POLARSSL
+    ssl_context ssl;
+    x509_crt ca;
+    ctr_drbg_context rng;
+    entropy_context entropy;
 #endif
 };
 
@@ -284,11 +299,37 @@ static int wf_wait_fd(int fd, short events, long long deadline) {
     return poll(&pfd, 1, timeout) == 1 ? 1 : 0;
 }
 
-#if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
+#if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS || \
+    CCODE_TLS_BACKEND == CCODE_TLS_POLARSSL
 static int wf_tls_wait(struct wf_transport *transport, int tls_result,
                        long long deadline) {
+#if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
     short events = tls_result == MBEDTLS_ERR_SSL_WANT_WRITE ? POLLOUT : POLLIN;
+#else
+    short events = tls_result == POLARSSL_ERR_NET_WANT_WRITE ? POLLOUT : POLLIN;
+#endif
     return wf_wait_fd(transport->fd, events, deadline);
+}
+#endif
+
+#if CCODE_TLS_BACKEND == CCODE_TLS_POLARSSL
+static int wf_polarssl_send(void *context, const unsigned char *data,
+                            size_t length) {
+    const int *fd = context;
+    ssize_t sent = send(*fd, data, length, MSG_NOSIGNAL);
+    if (sent >= 0) return (int)sent;
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+        return POLARSSL_ERR_NET_WANT_WRITE;
+    return POLARSSL_ERR_NET_SEND_FAILED;
+}
+
+static int wf_polarssl_recv(void *context, unsigned char *data, size_t length) {
+    const int *fd = context;
+    ssize_t got = recv(*fd, data, length, 0);
+    if (got >= 0) return (int)got;
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+        return POLARSSL_ERR_NET_WANT_READ;
+    return POLARSSL_ERR_NET_RECV_FAILED;
 }
 #endif
 
@@ -362,6 +403,58 @@ static int wf_transport_open(struct wf_transport *transport,
             return -1;
         }
     }
+#elif CCODE_TLS_BACKEND == CCODE_TLS_POLARSSL
+    if (url->secure) {
+        const char *ca_file = getenv("CCODE_CA_FILE");
+        const char *personalization = "ccode-webfetch";
+        int tls_result;
+
+        transport->secure = 1;
+        entropy_init(&transport->entropy);
+        if (ctr_drbg_init(&transport->rng, entropy_func, &transport->entropy,
+                          (const unsigned char *)personalization,
+                          strlen(personalization)) != 0) {
+            entropy_free(&transport->entropy);
+            close(transport->fd);
+            transport->fd = -1;
+            return -1;
+        }
+        ssl_init(&transport->ssl);
+        x509_crt_init(&transport->ca);
+        ssl_set_endpoint(&transport->ssl, SSL_IS_CLIENT);
+        ssl_set_authmode(&transport->ssl, SSL_VERIFY_REQUIRED);
+        ssl_set_rng(&transport->ssl, ctr_drbg_random, &transport->rng);
+        if (ca_file) {
+            if (x509_crt_parse_file(&transport->ca, ca_file) != 0) {
+                wf_transport_close(transport);
+                return -1;
+            }
+        } else if (x509_crt_parse_path(&transport->ca,
+                                        "/etc/ssl/certs") < 0 ||
+                   transport->ca.next == NULL) {
+            wf_transport_close(transport);
+            return -1;
+        }
+        ssl_set_ca_chain(&transport->ssl, &transport->ca, NULL, NULL);
+        if (ssl_set_hostname(&transport->ssl, url->host) != 0) {
+            wf_transport_close(transport);
+            return -1;
+        }
+        ssl_set_bio(&transport->ssl, wf_polarssl_recv, &transport->fd,
+                    wf_polarssl_send, &transport->fd);
+        while ((tls_result = ssl_handshake(&transport->ssl)) != 0) {
+            if ((tls_result != POLARSSL_ERR_NET_WANT_READ &&
+                 tls_result != POLARSSL_ERR_NET_WANT_WRITE) ||
+                !wf_tls_wait(transport, tls_result, deadline)) {
+                wf_transport_close(transport);
+                return -1;
+            }
+        }
+        if (ssl_get_verify_result(&transport->ssl) != 0) {
+            wf_transport_close(transport);
+            return -1;
+        }
+    }
 #else
     if (url->secure) {
         close(transport->fd);
@@ -387,6 +480,17 @@ static void wf_transport_close(struct wf_transport *transport) {
         transport->secure = 0;
         return;
     }
+#elif CCODE_TLS_BACKEND == CCODE_TLS_POLARSSL
+    if (transport->secure) {
+        if (transport->fd >= 0) close(transport->fd);
+        ssl_free(&transport->ssl);
+        x509_crt_free(&transport->ca);
+        ctr_drbg_free(&transport->rng);
+        entropy_free(&transport->entropy);
+        transport->fd = -1;
+        transport->secure = 0;
+        return;
+    }
 #endif
     if (transport->fd >= 0) close(transport->fd);
     transport->fd = -1;
@@ -408,6 +512,20 @@ static int wf_send_all(struct wf_transport *transport, const char *data,
                 n = tls_result;
             } else if (tls_result == MBEDTLS_ERR_SSL_WANT_READ ||
                        tls_result == MBEDTLS_ERR_SSL_WANT_WRITE) {
+                if (!wf_tls_wait(transport, tls_result, deadline)) return -1;
+                continue;
+            } else {
+                return -1;
+            }
+        } else
+#elif CCODE_TLS_BACKEND == CCODE_TLS_POLARSSL
+        if (transport->secure) {
+            int tls_result = ssl_write(&transport->ssl,
+                                       (const unsigned char *)data, len);
+            if (tls_result > 0) {
+                n = tls_result;
+            } else if (tls_result == POLARSSL_ERR_NET_WANT_READ ||
+                       tls_result == POLARSSL_ERR_NET_WANT_WRITE) {
                 if (!wf_tls_wait(transport, tls_result, deadline)) return -1;
                 continue;
             } else {
@@ -449,6 +567,24 @@ static ssize_t wf_recv_until(struct wf_transport *transport, char *buf, size_t m
                 continue;
             } else if (tls_result == 0 ||
                        tls_result == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
+                n = 0;
+            } else {
+                return -1;
+            }
+        } else
+#elif CCODE_TLS_BACKEND == CCODE_TLS_POLARSSL
+        if (transport->secure) {
+            int tls_result = ssl_read(&transport->ssl,
+                                      (unsigned char *)(buf + total),
+                                      max - total);
+            if (tls_result > 0) {
+                n = tls_result;
+            } else if (tls_result == POLARSSL_ERR_NET_WANT_READ ||
+                       tls_result == POLARSSL_ERR_NET_WANT_WRITE) {
+                if (!wf_tls_wait(transport, tls_result, deadline)) break;
+                continue;
+            } else if (tls_result == 0 ||
+                       tls_result == POLARSSL_ERR_SSL_PEER_CLOSE_NOTIFY) {
                 n = 0;
             } else {
                 return -1;
