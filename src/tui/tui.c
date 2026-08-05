@@ -94,8 +94,8 @@ static void tui_process_backend(struct tui_protocol *protocol,
                     *thinking_enabled = 1;
                     const char *eff = strstr(text, "effort set to: ");
                     if (eff) {
-                        eff += 15;
                         size_t i;
+                        eff += 15;
                         for (i = 0; i < thinking_effort_cap - 1 && eff[i] && eff[i] != '.' && eff[i] != '\n'; i++)
                             thinking_effort[i] = eff[i];
                         thinking_effort[i] = '\0';
@@ -105,8 +105,8 @@ static void tui_process_backend(struct tui_protocol *protocol,
                 } else {
                     const char *eff_label = strstr(text, "Thinking effort set to: ");
                     if (eff_label) {
-                        eff_label += 24;
                         size_t i;
+                        eff_label += 24;
                         for (i = 0; i < thinking_effort_cap - 1 && eff_label[i] && eff_label[i] != '.' && eff_label[i] != '\n'; i++)
                             thinking_effort[i] = eff_label[i];
                         thinking_effort[i] = '\0';

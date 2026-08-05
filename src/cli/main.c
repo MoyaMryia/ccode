@@ -36,9 +36,9 @@ struct json_session_state {
 };
 
 static int field(const char *line, const char *name, char *out, size_t cap) {
+    size_t length;
     char needle[64];
     const char *start, *end;
-    size_t length;
     snprintf(needle, sizeof(needle), "\"%s\":\"", name);
     start = strstr(line, needle);
     if (!start) return -1;
@@ -201,16 +201,19 @@ static int json_permission_ask(struct ccode_permission_request *request,
 
 static int run_agent_prompt(const struct backend_options *options,
                             const char *workspace, const char *prompt) {
+                                const char * auto_approve;
+    const char * write_tools;
+    const char * read_only;
+    struct json_permission_context permission;
+    int result;
+    size_t length;
+    char output[65536];
+    FILE * capture;
     struct ccode_agent_config config;
     int saved_stdout, saved_stderr;
-    FILE *capture;
-    char output[65536];
-    size_t length;
-    int result;
-    struct json_permission_context permission;
-    const char *read_only = getenv("CCODE_READ_ONLY_TOOLS");
-    const char *write_tools = getenv("CCODE_WRITE_TOOLS");
-    const char *auto_approve = getenv("CCODE_AUTO_APPROVE");
+    read_only = getenv("CCODE_READ_ONLY_TOOLS");
+    write_tools = getenv("CCODE_WRITE_TOOLS");
+    auto_approve = getenv("CCODE_AUTO_APPROVE");
 
     if (!options->api_base || !options->api_key || !options->model || !options->model[0]) {
         json_print("error", "backend needs CCODE_API_BASE, CCODE_API_KEY and hello.model");
@@ -357,8 +360,8 @@ static void backend_command(struct json_session_state *state, const char *comman
             json_print("message", "Session renamed.");
         else json_print("error", "Usage: /sessions rename OLD NEW");
     } else if (strncmp(command, "/sessions export ", 17) == 0) {
+        char * exported;
         char name[256], format[32] = "json";
-        char *exported;
         if (sscanf(command + 17, "%255s %31s", name, format) < 1) {
             json_print("error", "Usage: /sessions export NAME FORMAT");
         } else if ((exported = ccode_session_export(name, format)) == NULL) {
@@ -454,10 +457,12 @@ static void backend_command(struct json_session_state *state, const char *comman
 }
 
 static int run_json_mode(const struct ccode_config *config) {
-    char line[8192], text[4096];
-    char model[256] = "";
-    char workspace[4096] = ".";
     struct json_session_state state;
+    char workspace[4096];
+    char model[256];
+    char line[8192], text[4096];
+    model[0] = '\0';
+    strcpy(workspace, ".");
 
     memset(&state, 0, sizeof(state));
     state.options.api_base = config->api_base;

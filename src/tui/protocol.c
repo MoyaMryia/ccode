@@ -22,8 +22,8 @@ static int write_all(int fd, const char *data, size_t length) {
 }
 
 static int json_escape(const char *text, char *out, size_t cap) {
-    size_t i, pos = 0;
     unsigned char c;
+    size_t i, pos = 0;
     if (!text || !out || cap == 0) return -1;
     for (i = 0; text[i] != '\0'; i++) {
         c = (unsigned char)text[i];
@@ -52,8 +52,8 @@ static int send_string_event(struct tui_protocol *protocol, const char *type,
 int tui_protocol_send_hello(struct tui_protocol *protocol, const char *model,
                             const char *workspace, int thinking_enabled,
                             const char *thinking_effort) {
-    char escaped_model[1024], escaped_workspace[4096], escaped_effort[64];
     char line[6000];
+    char escaped_model[1024], escaped_workspace[4096], escaped_effort[64];
     if (!protocol) return -1;
     if (json_escape(model ? model : "", escaped_model, sizeof(escaped_model)) != 0 ||
         json_escape(workspace ? workspace : ".", escaped_workspace,
@@ -73,11 +73,12 @@ int tui_protocol_start(struct tui_protocol *protocol, const char *path,
                        const char *model, const char *workspace,
                        int thinking_enabled, const char *thinking_effort,
                        int argc, char **argv) {
-    int to_child[2], from_child[2];
-    pid_t pid;
-    char *child_argv[64];
-    int child_argc = 0;
     int i;
+    int child_argc;
+    char * child_argv[64];
+    pid_t pid;
+    int to_child[2], from_child[2];
+    child_argc = 0;
     if (!protocol || !path || argc < 1 || !argv) return -1;
     child_argv[child_argc++] = (char *)path;
     child_argv[child_argc++] = "--json";
@@ -186,9 +187,10 @@ static int hex_value(char c) {
 }
 
 int tui_protocol_field(const char *line, const char *field, char *out, size_t cap) {
+    size_t pos;
     char needle[128];
     const char *start, *p;
-    size_t pos = 0;
+    pos = 0;
     if (!line || !field || !out || cap == 0) return -1;
     snprintf(needle, sizeof(needle), "\"%s\":\"", field);
     start = strstr(line, needle);

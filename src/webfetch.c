@@ -218,11 +218,12 @@ static int wf_resolve(const char *host, const char *port,
 
     close(pipefd[1]);
     while (count < max_addrs) {
+        long long remaining;
         struct pollfd pfd;
         ssize_t n;
         pfd.fd = pipefd[0];
         pfd.events = POLLIN;
-        long long remaining = deadline - wf_now_ms();
+        remaining = deadline - wf_now_ms();
         if (remaining <= 0) break;
         if (poll(&pfd, 1, (int)(remaining > 2147483647LL ? 2147483647LL : remaining)) <= 0) break;
         n = read(pipefd[0], &addrs[count], sizeof(addrs[count]));
@@ -472,10 +473,13 @@ static ssize_t wf_recv_until(struct wf_transport *transport, char *buf, size_t m
 /* ── HTML-to-text conversion ── */
 
 static void wf_strip_html(const char *html, char *out, size_t out_size) {
+    size_t len;
+    int last_space;
+    int in_tag;
     size_t i, o = 0;
-    int in_tag = 0;
-    int last_space = 1;
-    size_t len = strlen(html);
+    in_tag = 0;
+    last_space = 1;
+    len = strlen(html);
 
     for (i = 0; i < len && o + 2 < out_size; i++) {
         unsigned char c = (unsigned char)html[i];
@@ -732,11 +736,13 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             if (err_len > 200) err_len = 200;
             result = malloc(256 + err_len);
             if (result) {
+                char * esc;
+                size_t pos;
                 const char *prefix = "{\"error\":\"";
                 size_t prefix_len = strlen(prefix);
                 memcpy(result, prefix, prefix_len);
-                size_t pos = prefix_len;
-                char *esc = wf_json_escape(err_body);
+                pos = prefix_len;
+                esc = wf_json_escape(err_body);
                 if (esc) {
                     size_t el = strlen(esc);
                     if (pos + el + 32 > 256 + err_len)

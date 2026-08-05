@@ -155,9 +155,10 @@ static size_t estimate_tools_json_len(void) {
 static int append_str(char **buf, size_t *pos, size_t *cap,
                       const char *s, size_t len) {
     if (*pos + len + 1 > *cap) {
+        char * tmp;
         size_t new_cap = *cap * 2;
         if (new_cap < *pos + len + 1) new_cap = *pos + len + 1;
-        char *tmp = realloc(*buf, new_cap);
+        tmp = realloc(*buf, new_cap);
         if (!tmp) return -1;
         *buf = tmp;
         *cap = new_cap;
@@ -226,13 +227,14 @@ static int append_tool_def(char **buf, size_t *pos, size_t *cap,
 }
 
 char *ccode_build_readonly_tools_json(void) {
+    int first;
+    size_t i;
     size_t cap = 4096;
     size_t pos = 0;
     char *buf = malloc(cap);
     const char *readonly_names[] = {"read_file", "glob", "grep",
                                     "git_status", "git_diff", "git_stat"};
-    size_t i;
-    int first = 1;
+    first = 1;
 
     if (!buf) return NULL;
     buf[0] = '\0';
@@ -264,6 +266,8 @@ fail:
 }
 
 char *ccode_build_write_tools_json(void) {
+    int first;
+    size_t i;
     size_t cap = 8192;
     size_t pos = 0;
     char *buf = malloc(cap);
@@ -274,8 +278,7 @@ char *ccode_build_write_tools_json(void) {
                                    "git_status", "git_diff", "git_stat",
                                    "task_create", "task_update", "task_list",
                                    "web_fetch", "web_search", "agent_tool"};
-    size_t i;
-    int first = 1;
+    first = 1;
 
     if (!buf) return NULL;
     buf[0] = '\0';

@@ -679,6 +679,7 @@ static int accumulator_append_content(struct ccode_sse_accumulator *acc,
     if (acc->content_len > SIZE_MAX - len - 1) return -1;
     needed = acc->content_len + len + 1;
     if (needed > acc->content_cap) {
+        char * tmp;
         size_t new_cap;
         if (!acc->content_cap) new_cap = 256;
         else if (acc->content_cap > SIZE_MAX / 2) new_cap = needed;
@@ -690,7 +691,7 @@ static int accumulator_append_content(struct ccode_sse_accumulator *acc,
             }
             new_cap *= 2;
         }
-        char *tmp = realloc(acc->content, new_cap);
+        tmp = realloc(acc->content, new_cap);
         if (!tmp) return -1;
         acc->content = tmp;
         acc->content_cap = new_cap;
@@ -710,6 +711,7 @@ static int accumulator_append_reasoning(struct ccode_sse_accumulator *acc,
     if (acc->reasoning_len > SIZE_MAX - len - 1) return -1;
     needed = acc->reasoning_len + len + 1;
     if (needed > acc->reasoning_cap) {
+        char * tmp;
         size_t new_cap;
         if (!acc->reasoning_cap) new_cap = 256;
         else if (acc->reasoning_cap > SIZE_MAX / 2) new_cap = needed;
@@ -721,7 +723,7 @@ static int accumulator_append_reasoning(struct ccode_sse_accumulator *acc,
             }
             new_cap *= 2;
         }
-        char *tmp = realloc(acc->reasoning_content, new_cap);
+        tmp = realloc(acc->reasoning_content, new_cap);
         if (!tmp) return -1;
         acc->reasoning_content = tmp;
         acc->reasoning_cap = new_cap;

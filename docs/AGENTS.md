@@ -140,6 +140,15 @@ tests/*                本地回归套件和提供商/TTY 夹具
 
 ## 测试要求
 
+### BasicLinux 适配约定（retro）
+
+- 兼容层仅在 `RETRO=1` 时激活（`src/compat/`，libc5 目标）。改动 libc5 路径时宿主冒烟：`make RETRO=1 test-json test-agent test-permissions test-markdown`。
+- guest 原生构建必须 `RETRO_NATIVE=1`（老 gcc 不认 `-std=c99/-m32/-pedantic`），见 `docs/BASICLINUX.md`。
+- guest 自动化结果判定**只用抽出的文件**（`logs/guest/` 的 `.log/.rc` 与 `p2.img`）；VGA 屏幕只是活性信号——2.2 内核硬件滚动后偏移 0 是旧画面，曾长期伪装成"boot 偶发卡死"（复盘见 `ADAPT_STATUS.md`）。
+- 关 QEMU 前必须 guest 内 `sync`（`hmp quit` 不同步 guest 文件系统）。
+- 不要用 `pkill -f 'qemu...'` 清 QEMU 进程（会匹配 bash 自身命令行自杀）；用 `fuser -k <镜像>`。
+- 镜像与调试产物放仓库 `vm/`、`logs/`（均 gitignore），不要放 `/tmp`（重启被清）。
+
 每个工具变更需要适当的有效输入、格式错误的 JSON、重复、未知字段、Unicode、限制、遍历、符号链接、文件类型、清理和结构化错误的单元测试。
 
 额外的最小覆盖：

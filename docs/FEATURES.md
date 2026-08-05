@@ -334,6 +334,7 @@ Week 3+: 扩展功能
 
 | 功能 | 优先级 | 状态 | 备注 |
 |------|--------|------|------|
+| BasicLinux i386 兼容层 | P1 | guest 构建已跑通 | compat 层(openat/O_CLOEXEC/getaddrinfo/clock_gettime/stdint/sockaddr_in6/fdopendir/strcasestr)、%zu→%lu、C89 转换;egcs 1.1.2 guest 编译 rc=0 + `--help` 验证;gcc 2.7.2.3 与 guest 测试待跑 |
 | 会话管理 | P1 | 增强 | 列表/删除/重命名/导出/自动保存/元数据/清理策略/多会话/压缩 |
 | 上下文缓存 | P1 | 已实现 | 请求前缀字节稳定（去重摘要、resume 不重复 system）+ 前缀稳定性回归测试 |
 | WebFetch | P1 | 已完成 | HTTP/HTTPS 抓取、HTML 转文本、大小限制 |
@@ -390,6 +391,7 @@ Week 3+: 扩展功能
 1. CLI 模式下能用
 2. 有基本测试
 3. 通过现有测试套件（当前 132 个 agent 测试 + 38 json + 27 http + 12 tui + 21 markdown + 5 tty + 5 e2e 全通过）
+4. 涉及 libc5 兼容的改动须通过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟（glibc -m32 + 兼容层）
 
 ## 暂时不管的事
 

@@ -282,9 +282,9 @@ static size_t emit_inline_impl(struct ccode_md_renderer *r,
     emit_sgr(r, bold, italic, underline);
 
     while (pos < len) {
+        int is_bold;
         size_t inner_start, inner_end, nticks;
         size_t t_start, t_end, u_start, u_end;
-        int is_bold;
 
         if (text[pos] == '`' &&
             match_code(text, len, pos, &inner_start, &inner_end, &nticks)) {

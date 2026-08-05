@@ -3,15 +3,46 @@ CPPFLAGS ?=
 CFLAGS ?= -O2 -std=c99 -Wall -Wextra -Wpedantic
 LDFLAGS ?=
 override CPPFLAGS += -D_POSIX_C_SOURCE=200112L
+
+# ── Retro i386 / BasicLinux 3.5.1 (libc5 / kernel 2.2.26) build mode ──
+# Activated by RETRO=1. Targets i586, forces HTTP_ONLY (mbedTLS won't build
+# on gcc 2.7) and force-includes src/compat/compat.h to shim openat,
+# fstatat, O_CLOEXEC, getaddrinfo, clock_gettime and stdint.h.
+# Old gcc (2.7.2.3 / egcs 1.1.2) lacks -Wextra/-Wpedantic; use -pedantic.
+# See docs/BASICLINUX.md for the full target matrix and QEMU verification.
+ifeq ($(RETRO),1)
+override CPPFLAGS += -include src/compat/compat.h
+# compat/ holds shim headers (poll.h, stdint.h) for libc5.
+override CPPFLAGS += -Isrc/compat
+# gcc 2.7.2.3 / egcs 1.1.2 predate -std=c9x and -Wextra/-Wpedantic. The
+# sources use C99-style mid-block declarations heavily; egcs accepts these
+# as a GNU extension but -pedantic turns them into hard errors, so drop it
+# for the retro build. Drop -std=c99 too (unsupported by gcc 2.7).
+override CFLAGS  := -O2 $(filter-out -std=c99 -pedantic -march=x86-64 -mtune=generic -Wextra -Wpedantic,$(CFLAGS))
+# -m32/-march/-mtune are gcc 3.x+ multilib flags. A native i386 toolchain
+# (gcc 2.7.2.3 on BasicLinux) is already 32-bit and uses -m486/-mcpu=
+# instead, so set RETRO_NATIVE=1 there to skip them. The host smoke-test
+# build leaves RETRO_NATIVE unset and keeps the flags.
+ifneq ($(RETRO_NATIVE),1)
+override CFLAGS  += -m32 -march=i586 -mtune=i586
+# Host multilib (gcc -m32 on x86-64) needs the 32-bit-capable include dir
+# on PATH before /usr/include. Harmless on a native i386 toolchain.
+override CFLAGS  += -isystem /usr/include/x86_64-linux-gnu
+override LDFLAGS := -m32 $(filter-out -m64,$(LDFLAGS))
+else
+override LDFLAGS := $(filter-out -m64 -m32,$(LDFLAGS))
+endif
+else
 override CFLAGS += -m64 -march=x86-64 -mtune=generic
 override LDFLAGS += -m64
+endif
 
 SRC = src/main.c src/config.c src/tui/tui.c src/tui/term.c src/tui/render.c src/tui/input.c src/tui/messages.c src/tui/status.c src/tui/theme.c src/tui/protocol.c src/markdown.c
-TEST_JSON_SRC = tests/test_json.c src/json.c vendor/jsmn/jsmn.c
-TEST_AGENT_SRC = tests/test_agent.c src/agent/agent.c src/agent/message.c src/json.c src/http.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c
+TEST_JSON_SRC = tests/test_json.c src/json.c vendor/jsmn/jsmn.c $(RETRO_SRC)
+TEST_AGENT_SRC = tests/test_agent.c src/agent/agent.c src/agent/message.c src/json.c src/http.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c $(RETRO_SRC)
 TEST_PERMISSIONS_SRC = $(wildcard tests/test_permissions.c)
 TEST_TUI_SRC = tests/test_tui.c
-TEST_MD_SRC = tests/test_markdown.c src/markdown.c
+TEST_MD_SRC = tests/test_markdown.c src/markdown.c $(RETRO_SRC)
 TTY_TEST := $(shell python3 -c "import pty" 2>/dev/null && echo 1)
 TEST_TARGETS = test-json test-agent test-http
 TEST_TARGETS += test-tui
@@ -30,6 +61,24 @@ BUILD_MODE = https
 # mbedTLS 2.28.9 (LTS) vendored in vendor/mbedtls: no system libmbedtls needed.
 MBEDTLS_DIR = vendor/mbedtls
 override CPPFLAGS += -I$(MBEDTLS_DIR)/include
+endif
+
+# RETRO=1 wins over HTTP_ONLY/mbedTLS: force the libc5 / 2.2.26 build.
+ifeq ($(RETRO),1)
+BUILD_MODE = retro
+override CPPFLAGS += -DCCODE_HTTP_ONLY=1 -DCCODE_RETRO=1
+# On a glibc host, enable the shim so the retro path compiles and links
+# against a modern libc for smoke-testing. A native libc5 toolchain has
+# no __GLIBC__ and picks the shim up automatically, so don't define this
+# there (it would suppress the libc5-only stdint/socklen typedefs).
+ifneq ($(RETRO_NATIVE),1)
+override CPPFLAGS += -DCCODE_RETRO_HOST_TEST=1
+endif
+RETRO_COMPAT_OBJ = $(OBJDIR)/src/compat/compat.o
+RETRO_SRC = src/compat/compat.c
+CLI_SRC += src/compat/compat.c
+else
+RETRO_SRC =
 endif
 
 ifneq ($(TEST_PERMISSIONS_SRC),)
@@ -59,12 +108,12 @@ ccode: $(MODE_BIN)
 ccode-cli: $(CLI_BIN)
 	@tmp=$@.$$$$; cp $< $$tmp && mv -f $$tmp $@
 
-$(CLI_BIN): $(CLI_SRC) $(MBEDTLS_OBJ)
+$(CLI_BIN): $(CLI_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ)
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(CLI_SRC) $(MBEDTLS_OBJ) $(LDFLAGS) $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(CLI_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(LDFLAGS) $(LDLIBS)
 
-$(MODE_BIN): $(OBJ) $(MBEDTLS_OBJ)
-	$(CC) $(LDFLAGS) -o $@ $(OBJ) $(MBEDTLS_OBJ) $(LDLIBS)
+$(MODE_BIN): $(OBJ) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ)
+	$(CC) $(LDFLAGS) -o $@ $(OBJ) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(LDFLAGS) $(LDLIBS)
 
 $(OBJDIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -99,7 +148,7 @@ ifneq ($(TEST_PERMISSIONS_SRC),)
 test-permissions: tests/test_permissions
 	./tests/test_permissions
 
-tests/test_permissions: tests/test_permissions.c src/permissions/permissions.c
+tests/test_permissions: tests/test_permissions.c src/permissions/permissions.c $(RETRO_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 endif
 
@@ -109,7 +158,7 @@ test-http: ccode-cli
 test-tui: tests/test_tui
 	./tests/test_tui
 
-tests/test_tui: $(TEST_TUI_SRC) src/tui/input.c src/tui/messages.c src/tui/render.c src/tui/protocol.c src/markdown.c
+tests/test_tui: $(TEST_TUI_SRC) src/tui/input.c src/tui/messages.c src/tui/render.c src/tui/protocol.c src/markdown.c $(RETRO_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 
 test-markdown: tests/test_markdown
