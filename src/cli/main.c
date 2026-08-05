@@ -528,6 +528,10 @@ int main(int argc, char **argv) {
     struct ccode_agent_config agent;
     int result = ccode_parse_args(argc, argv, &config);
     if (result != 0) return result < 0 ? 2 : 0;
+    if (!config.prompt && !config.interactive) {
+        fprintf(stderr, "Either -p PROMPT or --interactive is required.\n");
+        return 2;
+    }
     /* The JSON Lines backend is a machine protocol: emit raw text and let
      * the consuming TUI decide how to render.  Only human-facing paths
      * (direct / interactive) apply markdown rendering. */

@@ -129,12 +129,12 @@ def run_ccode_with_tty(prompt, workspace, enable_tools=False,
 
 
 def test_deny_in_noninteractive():
-    """Without a TTY, tool calls should be denied by default."""
+    """Without a TTY, tool calls should be denied by default (read tools are
+    enabled by default now, but the non-interactive gate still refuses)."""
     env = os.environ.copy()
     env["CCODE_API_BASE"] = "http://127.0.0.1:%d/v1" % PORT
     env["CCODE_API_KEY"] = "test-key"
     env["CCODE_MODEL"] = "test-model"
-    # No CCODE_WRITE_TOOLS - tools not enabled
     env["CCODE_WORKSPACE"] = TEST_FIXTURE_DIR
 
     proc = subprocess.run(
@@ -143,8 +143,8 @@ def test_deny_in_noninteractive():
         capture_output=True,
         timeout=TIMEOUT)
     output = proc.stdout.decode() + proc.stderr.decode()
-    if "tools are not enabled" in output:
-        print("  PASS: tool call denied with no tool mode")
+    if "denied by default" in output:
+        print("  PASS: tool call denied in non-interactive mode")
         return True
     else:
         print("  FAIL: tool call was not denied (output: %s)" %

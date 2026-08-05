@@ -18,16 +18,17 @@ void ccode_print_usage(const char *program) {
         "Options:\n"
         "  -p, --prompt TEXT      Send one prompt then exit\n"
         "  -i, --interactive      Read prompts from stdin until EOF or /exit\n"
-        "      --tui              Run the ANSI terminal UI\n"
-        "      --backend PATH     Backend executable for --tui\n"
+        "      --tui              (ccode) Run the ANSI terminal UI (default)\n"
+        "      --backend PATH     Backend executable for the TUI\n"
         "      --json              Use JSON Lines protocol (ccode-cli)\n"
         "      --save-session P    Save conversation to PATH after each prompt\n"
         "      --resume P          Load conversation from PATH before the run\n"
         "      --api-base URL     OpenAI-compatible API base URL\n"
         "      --api-key KEY      API key (defaults to CCODE_API_KEY)\n"
         "      --model NAME       Model name (defaults to CCODE_MODEL)\n"
-        "      --read-only        Enable read-only tools (read, glob, grep)\n"
+        "      --read-only        Read-only tools (read, glob, grep; the default)\n"
         "      --write            Enable read and write_file tools with confirmation\n"
+        "      --default          Fast start: interactive + read/write tools + thinking (never auto-approve)\n"
         "      --auto-approve     Auto-approve all tool requests\n"
         "      --thinking         Enable thinking/reasoning mode\n"
         "      --thinking-effort L  Thinking effort: low, medium, high, xhigh, or max (default: medium)\n"
@@ -92,10 +93,15 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
     config->model = getenv("CCODE_MODEL");
 
     {
+        /* Read tools are the safe default: the agent can inspect/search the
+         * workspace without any flag. --write (or CCODE_WRITE_TOOLS=1)
+         * promotes to read-write; --read-only stays as an explicit
+         * declaration of the default. */
         const char *ro = getenv("CCODE_READ_ONLY_TOOLS");
-        config->read_only_tools = (ro && ro[0] == '1') ? 1 : 0;
-        ro = getenv("CCODE_WRITE_TOOLS");
-        config->tools_enabled = (ro && ro[0] == '1') ? 1 : 0;
+        const char *wo = getenv("CCODE_WRITE_TOOLS");
+        config->read_only_tools = 1;
+        if (ro && ro[0] == '0') config->read_only_tools = 0;
+        config->tools_enabled = (wo && wo[0] == '1') ? 1 : 0;
     }
     {
         const char *aa = getenv("CCODE_AUTO_APPROVE");
@@ -158,6 +164,15 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
         }
         if (strcmp(argv[i], "--write") == 0) {
             config->tools_enabled = 1;
+            continue;
+        }
+        if (strcmp(argv[i], "--default") == 0) {
+            /* Fast-start preset: interactive REPL + read/write tools +
+             * thinking. Never touches auto_approve (interactive
+             * confirmation stays on). */
+            config->interactive = 1;
+            config->tools_enabled = 1;
+            config->thinking_enabled = 1;
             continue;
         }
         if (strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--interactive") == 0) {
@@ -226,9 +241,12 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
         fprintf(stderr, "CCODE_API_BASE, CCODE_API_KEY, CCODE_MODEL are required.\n");
         return -1;
     }
-    if (!config->prompt && !config->interactive) {
-        fprintf(stderr, "Either -p PROMPT or --interactive is required.\n");
-        return -1;
+    if (config->interactive) {
+        /* Interactive mode wins: a stray -p/--prompt alongside -i is
+         * ignored instead of producing a half-interactive run. */
+        config->prompt = NULL;
     }
+    /* The "either -p or --interactive" requirement is enforced by the
+     * callers: ccode-cli needs it, the TUI frontend (ccode) does not. */
     return 0;
 }

@@ -12,6 +12,10 @@ int main(int argc, char **argv) {
 
     result = ccode_parse_args(argc, argv, &config);
     if (result != 0) return result < 0 ? 2 : 0;
+    /* ccode is the interactive TUI frontend: it is always interactive, so
+     * a bare `ccode --thinking` or `ccode --write` must not trip the
+     * CLI's "either -p or --interactive" requirement. */
+    config.interactive = 1;
 
     memset(&agent_cfg, 0, sizeof(agent_cfg));
     agent_cfg.api_base = config.api_base;
@@ -29,9 +33,7 @@ int main(int argc, char **argv) {
     agent_cfg.workspace = getenv("CCODE_WORKSPACE");
     if (!agent_cfg.workspace) agent_cfg.workspace = ".";
 
-    if (!config.tui) {
-        fprintf(stderr, "ccode is a TUI shell; use ccode-cli for CLI mode\n");
-        return 2;
-    }
+    (void)config.tui; /* ccode is the TUI frontend; --tui is accepted for
+                       * compatibility but not required. */
     return ccode_tui_run(&agent_cfg, config.backend, argc, argv);
 }

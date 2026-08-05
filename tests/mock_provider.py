@@ -250,6 +250,36 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                     })},
                 ]
 
+        elif test_mode == "tool-calls-write":
+            has_tool_result = any(msg.get("role") == "tool"
+                                  for msg in req.get("messages", []))
+            if has_tool_result:
+                events = [
+                    {"data": json.dumps({
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": "Tool result received."},
+                            "finish_reason": "stop"
+                        }]
+                    })}
+                ]
+            else:
+                events = [{"data": json.dumps({
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"tool_calls": [{
+                            "index": 0,
+                            "id": "call_write1",
+                            "type": "function",
+                            "function": {
+                                "name": "write_file",
+                                "arguments": '{"file_path":"test.txt","content":"x"}'
+                            }
+                        }]},
+                        "finish_reason": "tool_calls"
+                    }]
+                })}]
+
         elif test_mode == "write-calls":
             has_tool_result = any(msg.get("role") == "tool"
                                   for msg in req.get("messages", []))
