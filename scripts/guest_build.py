@@ -28,7 +28,7 @@ Usage:
   python3 scripts/guest_build.py [--disk vm/bl3-disk.img]
                                  [--fs vm/fs7.img]
                                  [--cc gcc-egcs-1.1.2]
-                                 [--targets 'ccode-cli test-json']
+                                 [--targets 'ccode ccode-cli']
                                  [--logdir logs/guest]
 """
 import argparse
@@ -275,7 +275,9 @@ def main():
     ap.add_argument('--workdir', default=os.path.expanduser('~/ccode'))
     ap.add_argument('--cc', default='gcc-egcs-1.1.2')
     ap.add_argument('--mem', type=int, default=64)
-    ap.add_argument('--targets', default='ccode-cli')
+    ap.add_argument('--targets', default='ccode ccode-cli',
+                    help='make targets built in the guest (default: both '
+                         'binaries, TUI + CLI)')
     ap.add_argument('--logdir', default=os.path.expanduser(
         '~/ccode/logs/guest'))
     ap.add_argument('--skip-prep', action='store_true',

@@ -91,8 +91,9 @@ static void tui_process_backend(struct tui_protocol *protocol,
                 if (tui_messages_add(messages, TUI_MSG_ASSISTANT, text) == 0)
                     *changed = 1;
                 if (strstr(text, "Thinking enabled") != NULL) {
+                    const char * eff;
                     *thinking_enabled = 1;
-                    const char *eff = strstr(text, "effort set to: ");
+                    eff = strstr(text, "effort set to: ");
                     if (eff) {
                         size_t i;
                         eff += 15;

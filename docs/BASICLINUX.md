@@ -213,7 +213,7 @@ make RETRO=1 RETRO_NATIVE=1 CC=gcc-egcs-1.1.2 ccode-cli   # guest 原生 i386 �
 |---|---|---|
 | `make_ghost_disk.sh` | 一键重建整盘镜像 | 无 root,见路径 A |
 | `guest_build.py` | 一键 guest 构建/测试(前台) | 每次完整 boot(~10s);结果以 `logs/guest/` 抽出文件为准 |
-| `qemu_diag.py` | 事件驱动 boot 监视器 | 阶段独立超时 + 现场诊断;`--disk-boot` 整盘模式;VGA 读 32KB 可见窗 |
+| `qemu_bootcheck.py` | 事件驱动 boot 监视/冒烟 | 阶段独立超时 + 现场诊断;`--disk-boot` 整盘模式;VGA 读 32KB 可见窗;banner 即成功 |
 | `c89ify.py` | C89 mid-block 声明转换器 | 迭代式,处理数组/static/多声明行 |
 
 > 旧脚本(qemu_vm/qemu_drive/qemu_vision/qmp_progress/ppm2txt)已删除:
