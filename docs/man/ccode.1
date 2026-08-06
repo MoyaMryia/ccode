@@ -69,6 +69,13 @@ Never enables
 Approve every tool request without asking. Equivalent to
 .BR CCODE_AUTO_APPROVE=1 .
 .TP
+.B \-\-allow-http
+Allow
+.BR http://
+API endpoints beyond loopback (also
+.BR CCODE_ALLOW_HTTP=1 ).
+Plaintext traffic, known risk. Loopback http is always allowed.
+.TP
 .B \-\-no-markdown
 Disable markdown rendering (raw output).
 .TP

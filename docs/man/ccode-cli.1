@@ -95,6 +95,14 @@ Implies reasoning on.
 Alias for
 .BR \-\-reasoning-effort .
 .TP
+.B \-\-allow-http
+Allow
+.BR http://
+API endpoints beyond loopback (also
+.BR CCODE_ALLOW_HTTP=1 ).
+Plaintext traffic, known risk. Loopback http is always allowed;
+remote http is refused otherwise.
+.TP
 .B \-\-no-markdown
 Disable markdown rendering in human-facing output.
 .TP
@@ -248,6 +256,12 @@ Overall request timeout in seconds (default 300).
 .TP
 .B CCODE_CA_FILE
 Custom CA bundle for TLS certificate verification.
+.TP
+.B CCODE_ALLOW_HTTP
+Set 1 to allow
+.BR http://
+API endpoints beyond loopback (plaintext, known risk). Loopback http
+is always allowed; remote http is refused otherwise.
 .TP
 .B CCODE_WEB_FETCH_BLACKLIST
 Comma-separated hostnames blacklisted for web_fetch (subdomains match).

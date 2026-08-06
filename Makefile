@@ -15,9 +15,9 @@ override CPPFLAGS += -include src/compat/compat.h
 # compat/ holds shim headers (poll.h, stdint.h) for libc5.
 override CPPFLAGS += -Isrc/compat
 # gcc 2.7.2.3 / egcs 1.1.2 predate -std=c9x and -Wextra/-Wpedantic. The
-# sources use C99-style mid-block declarations heavily; egcs accepts these
-# as a GNU extension but -pedantic turns them into hard errors, so drop it
-# for the retro build. Drop -std=c99 too (unsupported by gcc 2.7).
+# sources are C89 (mid-block declarations were hoisted by scripts/c89ify.py;
+# `long long` remains as a GNU extension), so only the flags need dropping:
+# -std=c99 (unsupported by gcc 2.7) and -pedantic (chokes on `long long`).
 override CFLAGS  := -O2 $(filter-out -std=c99 -pedantic -march=x86-64 -mtune=generic -Wextra -Wpedantic,$(CFLAGS))
 # -m32/-march/-mtune are gcc 3.x+ multilib flags. A native i386 toolchain
 # (gcc 2.7.2.3 on BasicLinux) is already 32-bit and uses -m486/-mcpu=

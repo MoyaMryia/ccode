@@ -282,6 +282,7 @@ export CCODE_MODEL="deepseek-v4-flash"           # 默认模型
 export CCODE_API_BASE="https://api.deepseek.com"  # API 基础 URL
 export CCODE_API_KEY_FILE="~/.ccode/api-key.txt"   # API 密钥文件
 export CCODE_MODEL_ALIASES="fast=deepseek-v4-flash,smart=deepseek-v4"
+export CCODE_ALLOW_HTTP=1   # 允许远程 http:// 端点（明文，已知风险；loopback http 始终放行）
 ```
 
 ### 4. MCP 集成
@@ -391,7 +392,7 @@ Week 3+: 扩展功能
 
 1. CLI 模式下能用
 2. 有基本测试
-3. 通过现有测试套件（当前 132 个 agent 测试 + 38 json + 27 http + 12 tui + 21 markdown + 5 tty + 5 e2e 全通过）
+3. 通过现有测试套件（当前 133 个 agent 测试 + 38 json + 28 http + 13 tui + 21 markdown + 5 tty + 5 e2e + 2 streaming 全通过）
 4. 涉及 libc5 兼容的改动须通过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟（glibc -m32 + 兼容层）
 
 ## 暂时不管的事
