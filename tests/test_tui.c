@@ -230,6 +230,37 @@ static int test_assistant_markdown_scrolls_wrapped_line(void) {
     return 1;
 }
 
+static int test_user_message_scrolls_wrapped_line(void) {
+    struct tui_messages messages;
+    FILE *capture;
+    int saved_stdout;
+    char output[1024];
+    size_t length;
+
+    tui_messages_init(&messages);
+    ASSERT(tui_messages_add(&messages, TUI_MSG_USER, "abcdefghij") == 0);
+    ASSERT(tui_messages_total_lines(&messages, 7) == 2);
+    capture = tmpfile();
+    ASSERT(capture != NULL);
+    fflush(stdout);
+    saved_stdout = dup(STDOUT_FILENO);
+    ASSERT(saved_stdout >= 0);
+    ASSERT(dup2(fileno(capture), STDOUT_FILENO) >= 0);
+    tui_messages_render(&messages, 0, 1, 7, 1);
+    fflush(stdout);
+    ASSERT(dup2(saved_stdout, STDOUT_FILENO) >= 0);
+    close(saved_stdout);
+    ASSERT(fseek(capture, 0, SEEK_SET) == 0);
+    length = fread(output, 1, sizeof(output) - 1, capture);
+    output[length] = '\0';
+    ASSERT(strstr(output, "abcde") == NULL);
+    ASSERT(strstr(output, "fghij") != NULL);
+    ASSERT(strchr(output, '\n') == NULL);
+    fclose(capture);
+    tui_messages_clear(&messages);
+    return 1;
+}
+
 static int test_protocol_recovers_after_oversized_line(void) {
     struct tui_protocol protocol;
     int pipefd[2];
@@ -301,6 +332,7 @@ int main(void) {
     TEST(assistant_markdown_respects_width);
     TEST(assistant_markdown_wraps_long_line);
     TEST(assistant_markdown_scrolls_wrapped_line);
+    TEST(user_message_scrolls_wrapped_line);
     TEST(protocol_recovers_after_oversized_line);
     TEST(protocol_hello_includes_thinking_state);
     TEST(protocol_hello_can_disable_thinking);

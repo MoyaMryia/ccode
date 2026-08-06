@@ -59,6 +59,36 @@ int tui_render_text_n(const char *text, size_t length, int max_cols) {
     return vlines;
 }
 
+void tui_render_text_part(const char *text, size_t length, int max_cols,
+                          int visual_line) {
+    int written = 0;
+    int vline = 0;
+    const unsigned char *p = (const unsigned char *)(text ? text : "");
+    size_t offset = 0;
+    if (max_cols <= 0 || visual_line < 0) return;
+    while (offset < length && p[offset]) {
+        unsigned char c = p[offset++];
+        if (c == '\n') {
+            vline++;
+            written = 0;
+            continue;
+        }
+        if (written >= max_cols) {
+            vline++;
+            written = 0;
+        }
+        if (vline > visual_line) break;
+        if (vline == visual_line) {
+            if (c == '\033' || c == '\r' || c == '\t' ||
+                c < 0x20U || c == 0x7fU)
+                fputc('?', stdout);
+            else
+                fputc(c, stdout);
+        }
+        written++;
+    }
+}
+
 void tui_render_cursor(int visible) {
     fputs(visible ? "\033[?25h" : "\033[?25l", stdout);
 }
