@@ -152,10 +152,7 @@ void tui_messages_render(const struct tui_messages *messages, int row, int rows,
                         markdown.fence_len = fence_len;
                         ccode_md_render_line_part(&markdown, text, seg_len, vl);
                     } else {
-                        if (vl == 0) {
-                            int rendered = tui_render_text_n(text, seg_len, avail);
-                            line += rendered - 1;
-                        }
+                        tui_render_text_part(text, seg_len, avail, vl);
                     }
                     line++;
                 }
