@@ -230,6 +230,10 @@ static int test_save_is_loadable_and_rejects_oversized_state(void) {
     ASSERT(ccode_conversation_save(&source, path, NULL, NULL, NULL) == 0);
     ASSERT(ccode_conversation_load(&loaded, path, NULL, NULL) == 0);
     ASSERT(loaded.count == 2);
+    /* NULL content is saved as content:"" (jsmn cannot parse null primitives
+     * adjacent to closing brackets), so it loads back as an empty string.
+     * The request serializer still emits content:null for NULL content. */
+    ASSERT(loaded.messages[0].content != NULL);
     ASSERT(strcmp(loaded.messages[0].content, "") == 0);
     ASSERT(strcmp(loaded.messages[1].content, "reply") == 0);
 
