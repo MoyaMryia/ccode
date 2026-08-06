@@ -34,6 +34,8 @@ void ccode_print_usage(const char *program) {
         "      --reasoning        Send the reasoning_effort field (default effort: medium)\n"
         "      --reasoning-effort L  Reasoning effort: low, medium, high, xhigh, max\n"
         "      --thinking-effort L  Alias for --reasoning-effort\n"
+        "      --allow-http       Allow http:// API endpoints beyond loopback\n"
+        "                         (plaintext, known risk; loopback http always allowed)\n"
         "      --no-markdown      Disable markdown rendering (raw output)\n"
         "      --session-dir DIR  Session storage directory\n"
         "  -h, --help             Show this help\n"
@@ -43,6 +45,7 @@ void ccode_print_usage(const char *program) {
         "  CCODE_SESSION_AUTO_SAVE    Auto-save session after each turn (default: 1)\n"
         "  CCODE_SESSION_MAX_SIZE     Max session file size (default: 10M)\n"
         "  CCODE_SESSION_KEEP_COUNT   Max sessions to keep (default: 10)\n"
+        "  CCODE_ALLOW_HTTP           Allow remote http:// endpoints (set 1; plaintext, known risk)\n"
         "  CCODE_MARKDOWN             Enable markdown rendering (default: 1, set 0 to disable)\n"
         "  CCODE_THINKING             Enable thinking/reasoning mode (set 1 to enable)\n"
         "  CCODE_THINKING_EFFORT      Thinking effort: low, medium, high, xhigh, or max (default: medium)\n"
@@ -223,6 +226,12 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
             }
             /* Setting a level implies sending the field. */
             config->thinking_effort = effort;
+            continue;
+        }
+        if (strcmp(argv[i], "--allow-http") == 0) {
+            /* http.c reads CCODE_ALLOW_HTTP at request time (like
+             * CCODE_CA_FILE), so bridge the flag through the environment. */
+            setenv("CCODE_ALLOW_HTTP", "1", 1);
             continue;
         }
         if (strcmp(argv[i], "--no-markdown") == 0) {
