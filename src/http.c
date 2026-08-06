@@ -645,7 +645,19 @@ static int process_response(char *response, size_t *used, int *headers_complete,
     return 0;
 }
 
-#if CCODE_TLS_BACKEND == CCODE_TLS_NONE
+static int http_allow_all(void) {
+    const char *allow = getenv("CCODE_ALLOW_HTTP");
+    return allow && allow[0] == '1';
+}
+
+static void warn_plain_http_once(void) {
+    static int warned;
+    if (warned) return;
+    warned = 1;
+    fprintf(stderr, "Warning: CCODE_ALLOW_HTTP=1, sending the API key over "
+                    "unencrypted http (known risk acknowledged).\n");
+}
+
 static int send_all(int fd, const char *data, size_t length,
                     long long total_deadline) {
     long long deadline = phase_deadline(total_deadline, IO_TIMEOUT_MS);
@@ -697,9 +709,10 @@ static int send_http_request(int fd, const struct parsed_url *url,
     return send_all(fd, body, strlen(body), total_deadline);
 }
 
-int ccode_stream_chat(const char *api_base, const char *api_key,
-                      const char *body, struct ccode_sse_accumulator *acc) {
-    struct parsed_url url;
+static int stream_chat_plain(const struct parsed_url *url, const char *api_key,
+                             const char *body,
+                             struct ccode_sse_accumulator *acc,
+                             long long total_deadline, int loopback_only) {
     struct sse_parser parser;
     char response[IO_BUF_SIZE];
     char error_body[ERROR_BODY_MAX + 1];
@@ -713,25 +726,22 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     size_t error_body_len = 0;
     int error_response = 0;
     int status_code = 0;
-    int total_timeout = DEFAULT_TOTAL_TIMEOUT_SEC;
     int socket_fd;
-    long long total_deadline;
 
-    const char *env = getenv("CCODE_REQUEST_TIMEOUT");
-    if (env) { int value = atoi(env); if (value > 0) total_timeout = value; }
-    total_deadline = now_ms() + (long long)total_timeout * 1000;
     memset(&parser, 0, sizeof(parser));
-    if (has_crlf(api_key) || parse_url(api_base, &url) != 0 || url.secure) {
-        fprintf(stderr, "HTTP_ONLY builds require a valid local http:// URL and key.\n");
-        return -1;
-    }
-    socket_fd = connect_tcp(url.host, url.port,
-                            phase_deadline(total_deadline, CONNECT_TIMEOUT_MS), 1);
+    socket_fd = connect_tcp(url->host, url->port,
+                            phase_deadline(total_deadline, CONNECT_TIMEOUT_MS),
+                            loopback_only);
     if (socket_fd < 0) {
-        fprintf(stderr, "HTTP_ONLY builds allow only reachable loopback endpoints.\n");
+        if (loopback_only)
+            fprintf(stderr, "http:// endpoints are restricted to loopback. "
+                            "Set CCODE_ALLOW_HTTP=1 to allow remote http "
+                            "(unencrypted, known risk).\n");
+        else
+            fprintf(stderr, "Could not connect to the http endpoint.\n");
         return -1;
     }
-    if (send_http_request(socket_fd, &url, api_key, body, total_deadline) != 0) {
+    if (send_http_request(socket_fd, url, api_key, body, total_deadline) != 0) {
         close(socket_fd);
         return -1;
     }
@@ -780,6 +790,24 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
         return -1;
     }
     return 0;
+}
+
+#if CCODE_TLS_BACKEND == CCODE_TLS_NONE
+int ccode_stream_chat(const char *api_base, const char *api_key,
+                      const char *body, struct ccode_sse_accumulator *acc) {
+    struct parsed_url url;
+    int total_timeout = DEFAULT_TOTAL_TIMEOUT_SEC;
+    long long total_deadline;
+    const char *env = getenv("CCODE_REQUEST_TIMEOUT");
+    if (env) { int value = atoi(env); if (value > 0) total_timeout = value; }
+    total_deadline = now_ms() + (long long)total_timeout * 1000;
+    if (has_crlf(api_key) || parse_url(api_base, &url) != 0 || url.secure) {
+        fprintf(stderr, "HTTP_ONLY builds require a valid local http:// URL and key.\n");
+        return -1;
+    }
+    if (http_allow_all()) warn_plain_http_once();
+    return stream_chat_plain(&url, api_key, body, acc, total_deadline,
+                             !http_allow_all());
 }
 #elif CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
 static int tls_send_no_signal(void *context, const unsigned char *data,
@@ -857,8 +885,10 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
         return -1;
     }
     if (!url.secure) {
-        fprintf(stderr, "Refusing http:// URL. Use an HTTPS endpoint.\n");
-        return -1;
+        int allow_all = http_allow_all();
+        if (allow_all) warn_plain_http_once();
+        return stream_chat_plain(&url, api_key, body, acc, total_deadline,
+                                 !allow_all);
     }
 
     mbedtls_net_init(&server);
@@ -1074,8 +1104,10 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
         return -1;
     }
     if (!url.secure) {
-        fprintf(stderr, "Refusing http:// URL. Use an HTTPS endpoint.\n");
-        return -1;
+        int allow_all = http_allow_all();
+        if (allow_all) warn_plain_http_once();
+        return stream_chat_plain(&url, api_key, body, acc, total_deadline,
+                                 !allow_all);
     }
 
     entropy_init(&entropy);
