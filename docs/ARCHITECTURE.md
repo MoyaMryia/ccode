@@ -44,10 +44,14 @@ src/
 │   └── message.c/h      # 对话管理、请求序列化、会话持久化 (v3 格式)
 ├── cli/
 │   └── main.c           # ccode-cli 入口 (JSON Lines 协议实现)
-├── http.c/h             # HTTP/TLS 传输、SSE 流式接收
+├── http.c/h             # HTTP/TLS 传输、SSE 流式接收（三态 TLS 后端）
 ├── json.c/h             # 流式 JSON 解析器
 ├── markdown.c/h         # 行式 Markdown→ANSI 流式渲染器
 ├── models.c/h           # API 模型列表查询
+├── websearch.c/h        # WebSearch 工具（Bing 端点可配置）
+├── sandbox.c/h          # Landlock 写沙箱（可用时）
+├── compat/              # libc5 兼容层（仅 RETRO=1 激活）：shim 头与
+│                        # openat/fstatat/getaddrinfo/clock_gettime 等
 ├── tools/
 │   └── tools.c/h        # 工具定义和 JSON schema 构建
 ├── permissions/
@@ -63,7 +67,9 @@ src/
 │   └── protocol.c/h     # JSON Lines 协议编解码
 ├── webfetch.c/h         # WebFetch 工具 (HTTP/HTTPS 内容抓取)
 vendor/
-└── jsmn/                # 轻量 JSON 解析器 (嵌入依赖)
+├── jsmn/                # 轻量 JSON 解析器 (嵌入依赖)
+├── mbedtls/             # mbedTLS 2.28.9 (LTS)，现代宿主默认 TLS 后端
+└── polarssl-1.3.9/      # PolarSSL 1.3.9 (GPLv2)，retro 构建 TLS 后端
 ```
 
 ---
@@ -79,8 +85,12 @@ vendor/
 | `--api-base` | `CCODE_API_BASE` | API 基础 URL |
 | `--api-key` | `CCODE_API_KEY` / `CCODE_API_KEY_FILE` | API 密钥 |
 | `--model` | `CCODE_MODEL` | 模型名称 |
-| `--read-only` / `--write` | `CCODE_READ_ONLY_TOOLS` / `CCODE_WRITE_TOOLS` | 工具权限 |
+| `--read-only` / `--write` | `CCODE_READ_ONLY_TOOLS` / `CCODE_WRITE_TOOLS` | 工具权限（只读是默认） |
+| `--default` | — | 交互 + 读写工具 + thinking 快速启动（不开自动审批） |
 | `--auto-approve` | `CCODE_AUTO_APPROVE` | 自动审批 |
+| `--thinking` | `CCODE_THINKING` | 发送 `"thinking"` 字段（type: enabled） |
+| `--reasoning` / `--reasoning-effort L` | `CCODE_THINKING_EFFORT` | 发送 `"reasoning_effort"` 字段；`--thinking-effort` 为别名 |
+| `--allow-http` | `CCODE_ALLOW_HTTP` | 放行 loopback 之外的 `http://` 端点（明文，已知风险；所有构建默认仅放行 loopback） |
 | `--save-session` | — | 自动保存会话路径 |
 | `--resume` | — | 恢复会话路径 |
 | `--session-dir` | `CCODE_SESSION_DIR` | 会话存储目录 |
@@ -107,10 +117,10 @@ vendor/
 
 ### http.c/h — HTTP/TLS 传输
 
-- 使用 POSIX socket + mbedTLS (HTTPS) 或纯 socket (HTTP)
+- 使用 POSIX socket + TLS（三态后端：mbedTLS 2.28 现代宿主默认 / PolarSSL 1.3.9 retro / NONE 纯 HTTP）
 - SSE 流式接收，逐行解析 `data:` 事件
 - 支持 URL 验证、重定向跟随、超时控制
-- http 策略：HTTPS 构建下 `http://` 仅放行 loopback（连接时按解析地址过滤）；远程 http 需 `CCODE_ALLOW_HTTP=1` / `--allow-http`（明文，已知风险），否则拒绝。HTTP_ONLY 构建同策略
+- http 策略（所有构建一致，含默认 HTTPS 构建）：`http://` 仅放行 loopback（连接时按解析地址过滤，`CCODE_TLS_NONE`/TLS 构建同样执行）；远程 http 需 `CCODE_ALLOW_HTTP=1` / `--allow-http`（明文，已知风险，首次放行时打一次性警告），否则拒绝
 - `ccode_stream_chat()` 是唯一的外部接口
 
 ### json.c/h — JSON 解析
@@ -151,6 +161,8 @@ vendor/
 | `delete_file` | 删除文件（工作区内）|
 | `move_file` | 移动/重命名文件（工作区内）|
 | `web_fetch` | HTTP/HTTPS 内容抓取 |
+| `web_search` | 搜索引擎查询（Bing 端点可配置）|
+| `agent_tool` | 子代理委派（独立 loop、默认只读、深度上限 3）|
 
 ### permissions/permissions.c/h — 权限控制
 
@@ -222,17 +234,26 @@ ccode (TUI)                      ccode-cli (后端)
 | 依赖 | 用途 | 可选 |
 |------|------|------|
 | C89 编译器 (gcc/clang；retro 链路 egcs 1.1.2) | 编译 | 必选 |
-| mbedTLS 2.28.9 (`vendor/mbedtls`) | HTTPS TLS 传输 | HTTP-only 可免 |
+| mbedTLS 2.28.9 (`vendor/mbedtls`) | HTTPS TLS 传输（现代宿主默认） | HTTP-only 构建可免 |
+| PolarSSL 1.3.9 (`vendor/polarssl-1.3.9`, GPLv2) | HTTPS TLS 传输（retro 构建自动启用） | HTTP-only 构建可免 |
 | POSIX 系统 (Linux) | 运行时 | 必选 |
 
 ### 构建
 
 ```sh
-# 生产构建 (HTTPS)
+# 生产构建 (HTTPS, mbedTLS)
 make clean && make
 
 # HTTP-only 构建 (开发/内网)
 make clean && make HTTP_ONLY=1
+
+# 宿主 PolarSSL 后端验证 (retro TLS 链路的快速宿主构建)
+make clean && make TLS=polarssl
+
+# retro i386 构建 (libc5 / BasicLinux; 宿主冒烟 = glibc -m32 + 兼容层)
+make clean && make RETRO=1 ccode-cli
+# guest 原生 i386 工具链构建（跳过宿主专属编译选项）
+make clean && make RETRO=1 RETRO_NATIVE=1 CC=gcc-egcs-1.1.2 ccode-cli
 
 # ASan/UBSan 调试构建
 make asan

@@ -146,8 +146,8 @@ make RETRO=1 ccode-cli                    # 宿主 glibc -m32 冒烟测试(兼�
 make RETRO=1 RETRO_NATIVE=1 CC=gcc-egcs-1.1.2 ccode-cli   # guest 原生 i386 工具链
 ```
 
-- `RETRO=1`:`-include src/compat/compat.h`、`-Isrc/compat`(shim 头)、强制 HTTP_ONLY、i586
-- `RETRO_NATIVE=1`:跳过 `-m32/-march/-isystem`(老 gcc 不认),去 `-std=c99/-pedantic/-Wextra/-Wpedantic`(egcs 无这些选项;mid-block 声明作为 GNU 扩展被接受,不用再严格 C89)
+- `RETRO=1`:`-include src/compat/compat.h`、`-Isrc/compat`(shim 头)、i586、PolarSSL 1.3.9 TLS 后端(不再强制 HTTP_ONLY;`CCODE_TLS_BACKEND` 由 `src/tls_backend.h` 按 `CCODE_RETRO/CCODE_HTTP_ONLY` 推导)
+- `RETRO_NATIVE=1`:跳过 `-m32/-march/-isystem`(老 gcc 不认),过滤 `-std=c99/-Wextra/-Wpedantic/-pedantic`(gcc 2.7 无前三者,`-pedantic` 会 choke GNU 扩展 `long long`;mid-block 声明已由 `scripts/c89ify.py` 上移,源码为 C89)
 - 宿主冒烟测试:`make RETRO=1 test-json test-agent ...`(glibc 下验证兼容层无回归)
 
 ## 已验证事实(适配时务必遵守)
@@ -156,7 +156,7 @@ make RETRO=1 RETRO_NATIVE=1 CC=gcc-egcs-1.1.2 ccode-cli   # guest 原生 i386 �
 |---|---|
 | `snprintf` 截断时 | 返回 **-1**(非 C99),NUL 结尾正常 |
 | `printf` 格式 `%zu`/`%lld`/`%llu` | **不支持** → 已全部改为 `%lu`/`%ld` + 显式强转(agent.c、message.c、http.c 等) |
-| mid-block 声明(函数中部 `char *x = ...`) | egcs 1.1.2 **不支持**(gcc 2.7 更不支持)→ 已用 `scripts/c89ify.py` 将 ~160 处全部上移到块顶;C89 转换后宿主 224 测试全绿验证无损 |
+| mid-block 声明(函数中部 `char *x = ...`) | egcs 1.1.2 **不支持**(gcc 2.7 更不支持)→ 已用 `scripts/c89ify.py` 将 ~160 处全部上移到块顶;C89 转换后宿主全套测试全绿验证无损(当前 133 agent + 38 json + 28 http + 13 tui + 21 markdown + 5 tty + 5 e2e + 2 streaming) |
 | `openat`/`fstatat`/`renameat`/`unlinkat` | 不存在 → `src/compat/compat.c` 经 `/proc/self/fd/<n>` 路径重构封装 |
 | `O_CLOEXEC` | 不存在 → 自定义位 0x80000 + `fcntl(FD_CLOEXEC)` 回退 |
 | `O_PATH` | 不存在 → `O_RDONLY` 回退 |
@@ -164,7 +164,7 @@ make RETRO=1 RETRO_NATIVE=1 CC=gcc-egcs-1.1.2 ccode-cli   # guest 原生 i386 �
 | `clock_gettime`/`CLOCK_MONOTONIC` | 不存在 → `gettimeofday` 回退 |
 | `<stdint.h>` / `<poll.h>` | 不存在 → `src/compat/` 自带 shim 头(`-Isrc/compat` 注入) |
 | `socklen_t`/`intptr_t`/`uintptr_t` | 缺失 → compat.h 补 typedef(仅 libc5,`__GLIBC__` 守卫) |
-| mbedTLS 2.28 | 老编译器编不了 → retro 构建强制 HTTP_ONLY |
+| mbedTLS 2.28 | 老编译器编不了 → retro 构建使用 vendored PolarSSL 1.3.9 提供 TLS(`CCODE_TLS_POLARSSL`;guest 构建流程含 `make -C vendor/polarssl-1.3.9/library` 步骤,见 `scripts/guest_build.py`) |
 | Landlock | 无 → `ccode_landlock_apply` 优雅降级 |
 | 编译器选项 | 老 gcc 只有 `-pedantic`,无 `-Wextra/-Wpedantic/-std=c99` |
 | `/proc/<pid>/stat` | 2.2 内核有 ✓ |
@@ -221,8 +221,8 @@ make RETRO=1 RETRO_NATIVE=1 CC=gcc-egcs-1.1.2 ccode-cli   # guest 原生 i386 �
 
 ## 验收标准
 
-1. ✅ `gcc-egcs-1.1.2` guest 内编译 ccode(HTTP_ONLY)+ `ccode-cli --help` 正常输出(`guest_build.py` rc=0,证据 `logs/guest/`);`gcc-2.7.2.3` 待跑
+1. ✅ `gcc-egcs-1.1.2` guest 内编译 ccode(HTTPS,PolarSSL 1.3.9 TLS 后端)+ `ccode-cli --help` 正常输出(`guest_build.py` rc=0,证据 `logs/guest/`);`gcc-2.7.2.3` 待跑
 2. ✅ guest 内 `ccode-cli --help` 正常输出(38 行,见 `logs/guest/help.log`)
-3. 宿主 `make RETRO=1 test` 冒烟全绿(兼容层无回归)
+3. 宿主 `make RETRO=1 test-json test-agent test-permissions test-markdown` 冒烟全绿(兼容层无回归)
 4. 宿主 `make HTTP_ONLY=1 test` 全绿(现代路径无回归)
 5. 24MB-64MB 内存下 boot + TUI 可启动(swap 分区兜底)

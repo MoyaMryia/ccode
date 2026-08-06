@@ -42,16 +42,28 @@ Model name (defaults to
 .BR CCODE_MODEL ).
 .TP
 .B \-\-thinking
-Enable thinking/reasoning mode.
+Send the
+.B "thinking"
+field
+.RB ( type:
+.BR enabled ).
+Independent of
+.BR \-\-reasoning .
 .TP
-.BI \-\-thinking-effort " LEVEL"
+.B \-\-reasoning
+Send the reasoning_effort field (default effort:
+.BR medium ).
+.TP
+.BI \-\-reasoning-effort " LEVEL"
 Reasoning effort:
 .BR low ", " medium ", " high ", " xhigh
 or
 .BR max .
-Independent of
-.BR \-\-thinking :
-it only sets the reasoning_effort field.
+Implies reasoning on.
+.TP
+.BI \-\-thinking-effort " LEVEL"
+Alias for
+.BR \-\-reasoning-effort .
 .TP
 .B \-\-write
 Enable read and write tools (write_file, edit_file, bash, run_command,

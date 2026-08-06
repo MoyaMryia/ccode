@@ -5,10 +5,13 @@ LDFLAGS ?=
 override CPPFLAGS += -D_POSIX_C_SOURCE=200112L
 
 # ── Retro i386 / BasicLinux 3.5.1 (libc5 / kernel 2.2.26) build mode ──
-# Activated by RETRO=1. Targets i586, forces HTTP_ONLY (mbedTLS won't build
-# on gcc 2.7) and force-includes src/compat/compat.h to shim openat,
-# fstatat, O_CLOEXEC, getaddrinfo, clock_gettime and stdint.h.
-# Old gcc (2.7.2.3 / egcs 1.1.2) lacks -Wextra/-Wpedantic; use -pedantic.
+# Activated by RETRO=1. Targets i586 and force-includes src/compat/compat.h
+# to shim openat, fstatat, O_CLOEXEC, getaddrinfo, clock_gettime and stdint.h.
+# TLS: mbedTLS 2.28 cannot build on gcc 2.7/egcs 1.1.2, so the retro build
+# links the vendored PolarSSL 1.3.9 backend (CCODE_TLS_POLARSSL) instead of
+# forcing HTTP_ONLY; see src/tls_backend.h.
+# Old gcc (2.7.2.3 / egcs 1.1.2) lacks -Wextra/-Wpedantic; -pedantic would
+# choke on the GNU-extension `long long`, so it is filtered too.
 # See docs/BASICLINUX.md for the full target matrix and QEMU verification.
 ifeq ($(RETRO),1)
 override CPPFLAGS += -include src/compat/compat.h
