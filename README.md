@@ -4,7 +4,7 @@
 
 ## 构建
 
-依赖：C99 编译器。mbedTLS 2.28.9 (LTS) 已内置在 `vendor/mbedtls`，无需安装系统库。
+依赖：C89 编译器（宿主用 gcc/clang，retro 链路可低至 egcs 1.1.2）。mbedTLS 2.28.9 (LTS) 已内置在 `vendor/mbedtls`，无需安装系统库。
 
 ```sh
 make          # HTTPS（默认）
@@ -37,10 +37,15 @@ export CCODE_MODEL="deepseek-v4-flash"
 - TUI 与 CLI 双模式
 - 本地优先，零遥测
 
+## 网络与 TLS
+
+默认只接受 `https://` 端点；`http://` 仅允许 loopback（本机 mock/开发）。远程 http 明文视为已知风险，需显式开启：`--allow-http` 或 `CCODE_ALLOW_HTTP=1`。
+
 ## 测试
 
 ```sh
-make HTTP_ONLY=1 test                          # 现代宿主全套
+make test                                      # 现代宿主全套（默认 HTTPS 构建，loopback http 自动放行）
+make HTTP_ONLY=1 test                          # HTTP-only 构建同样全套
 make RETRO=1 test-json test-agent test-permissions test-markdown  # libc5 兼容层冒烟
 bash scripts/make_ghost_disk.sh                # 重建 BasicLinux 整盘镜像
 make retro-test                               # QEMU 内构建冒烟（egcs 1.1.2 / ccode-cli）
@@ -55,4 +60,4 @@ make retro-test                               # QEMU 内构建冒烟（egcs 1.1.
 
 ## 许可证
 
-opencode 项目组成部分。
+[GNU AGPL v3](LICENSE)。

@@ -6,7 +6,7 @@
 
 ## 产品边界
 
-- 使用 C99 加保守的 POSIX 子集。
+- 使用 C89 加保守的 POSIX 子集（`long long` 作为 GNU 扩展例外；retro 链路须过 egcs 1.1.2）。
 - 支持 Linux x86-64-v1，直到其他目标有专门的构建和测试矩阵。
 - 只支持 OpenAI 兼容的 Chat Completions API。不添加供应商 SDK 或特定提供商的请求/响应格式。
 - 设置、凭证、执行和会话数据保持本地优先。
@@ -36,7 +36,7 @@
 完成前：
 
 1. 为每个修复的错误或新暴露的边界添加回归测试。
-2. 运行聚焦测试和 `make HTTP_ONLY=1 test` 测试共享行为。
+2. 运行聚焦测试和 `make test`（默认 HTTPS 构建即可，http:// loopback 自动放行；`make HTTP_ONLY=1 test` 覆盖 HTTP-only 构建）。
 3. 更新 `FEATURES.md` 中的功能、限制、选项、模式、测试计数或路线图状态变更。
 4. 只报告实际运行的命令及其结果。
 
@@ -166,7 +166,7 @@ tests/*                本地回归套件和提供商/TTY 夹具
 
 ```sh
 make clean
-make HTTP_ONLY=1 test
+make test
 ```
 
 在 mbedTLS 可用时运行 HTTPS 覆盖（mbedTLS 已内置，Python ssl 即可）：

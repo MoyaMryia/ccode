@@ -110,6 +110,7 @@ vendor/
 - 使用 POSIX socket + mbedTLS (HTTPS) 或纯 socket (HTTP)
 - SSE 流式接收，逐行解析 `data:` 事件
 - 支持 URL 验证、重定向跟随、超时控制
+- http 策略：HTTPS 构建下 `http://` 仅放行 loopback（连接时按解析地址过滤）；远程 http 需 `CCODE_ALLOW_HTTP=1` / `--allow-http`（明文，已知风险），否则拒绝。HTTP_ONLY 构建同策略
 - `ccode_stream_chat()` 是唯一的外部接口
 
 ### json.c/h — JSON 解析
@@ -220,7 +221,7 @@ ccode (TUI)                      ccode-cli (后端)
 
 | 依赖 | 用途 | 可选 |
 |------|------|------|
-| C99 编译器 (gcc/clang) | 编译 | 必选 |
+| C89 编译器 (gcc/clang；retro 链路 egcs 1.1.2) | 编译 | 必选 |
 | mbedTLS 2.28.9 (`vendor/mbedtls`) | HTTPS TLS 传输 | HTTP-only 可免 |
 | POSIX 系统 (Linux) | 运行时 | 必选 |
 
@@ -316,7 +317,10 @@ echo '{"type":"input","text":"hello"}' | ./ccode-cli --json
 ### 测试
 
 ```sh
-# 基线测试 (HTTP-only)
+# 基线测试（默认 HTTPS 构建即可；http:// loopback 自动放行，集成测试直连本地 mock）
+make clean && make test
+
+# HTTP-only 构建
 make clean && make HTTP_ONLY=1 test
 
 # HTTPS 覆盖测试 (mbedTLS 内置, 无需安装)
@@ -324,7 +328,7 @@ make clean && make
 CCODE_TEST_HTTPS=1 bash ./tests/run.sh
 ```
 
-测试组成（当前）：132 agent + 38 json + 27 http + 12 tui + 21 markdown + 5 tty + 5 e2e。
+测试组成（当前）：133 agent + 38 json + 28 http + 13 tui + 21 markdown + 5 tty + 5 e2e + 2 streaming。
 
 ---
 
