@@ -4372,7 +4372,11 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
         ccode_print_content_reset();
 
         {
-            const char *assistant_content = acc.content ? acc.content : "";
+            /* Preserve NULL content for assistant turns that only carry
+             * tool_calls: serializing it as content:null matches the
+             * OpenAI/DeepSeek wire shape and avoids provider 400s on the
+             * "content:\"\" + tool_calls" combination. */
+            const char *assistant_content = acc.content;
             if (ccode_conversation_add(conv, CCODE_ROLE_ASSISTANT,
                                        assistant_content) != 0) {
                 ccode_sse_accumulator_destroy(&acc);

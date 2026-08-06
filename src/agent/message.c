@@ -284,7 +284,13 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
             free(escaped);
             if (append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
         } else {
-            if (append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
+            /* OpenAI/DeepSeek require the content field to be present on
+             * user/tool messages (even when null) and expect assistant
+             * messages that carry tool_calls to use content:null rather
+             * than content:"". Emitting the field as JSON null satisfies
+             * both shapes and survives round-trips through the loader. */
+            if (append_cstr(&buf, &pos, &cap, "\",\"content\":null") != 0)
+                goto fail;
         }
 
         if (conv->messages[i].tool_call_count > 0) {
