@@ -283,6 +283,8 @@ export CCODE_API_BASE="https://api.deepseek.com"  # API 基础 URL
 export CCODE_API_KEY_FILE="~/.ccode/api-key.txt"   # API 密钥文件
 export CCODE_MODEL_ALIASES="fast=deepseek-v4-flash,smart=deepseek-v4"
 export CCODE_ALLOW_HTTP=1   # 允许远程 http:// 端点（明文，已知风险；loopback http 始终放行）
+export CCODE_THINKING=1     # 发送 "thinking" 字段
+export CCODE_THINKING_EFFORT="high"  # reasoning_effort: low/medium/high/xhigh/max（默认 medium）
 ```
 
 ### 4. MCP 集成
@@ -325,8 +327,9 @@ Week 2: 基础体验
 └── ✅ 模型管理
 
 Week 3+: 扩展功能
+├── ✅ AgentTool（子代理）
+├── ✅ WebSearch
 ├── MCP 集成
-├── AgentTool
 ├── 技能系统
 └── 其他
 ```
@@ -335,7 +338,7 @@ Week 3+: 扩展功能
 
 | 功能 | 优先级 | 状态 | 备注 |
 |------|--------|------|------|
-| BasicLinux i386 兼容层 | P1 | guest 构建已跑通 | compat 层(openat/O_CLOEXEC/getaddrinfo/clock_gettime/stdint/sockaddr_in6/fdopendir/strcasestr)、%zu→%lu、C89 转换;egcs 1.1.2 guest 编译 rc=0 + `--help` 验证;gcc 2.7.2.3 与 guest 测试待跑 |
+| BasicLinux i386 兼容层 | P1 | guest 构建已跑通 | compat 层(openat/O_CLOEXEC/getaddrinfo/clock_gettime/stdint/sockaddr_in6/fdopendir/strcasestr)、%zu→%lu、C89 转换(c89ify.py);retro TLS 后端=PolarSSL 1.3.9;egcs 1.1.2 guest 编译(HTTPS)rc=0 + `--help` 验证;gcc 2.7.2.3 与 guest 测试待跑 |
 | 会话管理 | P1 | 增强 | 列表/删除/重命名/导出/自动保存/元数据/清理策略/多会话/压缩 |
 | 上下文缓存 | P1 | 已实现 | 请求前缀字节稳定（去重摘要、resume 不重复 system）+ 前缀稳定性回归测试 |
 | WebFetch | P1 | 已完成 | HTTP/HTTPS 抓取、HTML 转文本、大小限制 |
@@ -351,7 +354,7 @@ Week 3+: 扩展功能
 以下功能已实现并通过测试：
 
 - ✅ BashTool（shell 字符串执行）
-- ✅ 斜杠命令（/help, /clear, /compact, /exit, /model, /history, /sessions, /resume）
+- ✅ 斜杠命令（/help, /clear, /compact, /exit, /model, /history, /sessions, /resume, /session new|switch|list, /thinking on|off, /reasoning on|off|effort）
 - ✅ delete_file / move_file（简单版本 + 工作区限制）
 - ✅ --auto-approve 标志 + CCODE_AUTO_APPROVE=1
 - ✅ grep/glob 正则支持（`regex: true` 参数启用 ERE）
@@ -385,6 +388,13 @@ Week 3+: 扩展功能
   - `rm -rf /` 特例解析（不误伤 `rm -rf /tmp/...`）
   - 非 bash 的 /bin/sh（如 BasicLinux 的 BusyBox ash）下，失败的命令结果附 `shell_note` 提示模型改用 POSIX 语法
   - Landlock 写沙箱（`ccode_landlock_apply`）：写操作仅限 workspace + /tmp，内核不可用时自动降级（`CCODE_DISABLE_SANDBOX` 语义见 sandbox.c）
+- ✅ Thinking/Reasoning 字段独立控制（`--thinking` 发 `"thinking"` 字段；`--reasoning`/`--reasoning-effort L` 发 `"reasoning_effort"` 字段；`--thinking-effort` 为别名；关闭时不传对应字段）
+- ✅ `--default` 快速启动（交互 + 读写工具 + thinking，不开自动审批）；只读工具为默认模式（`--write` 显式开启写工具，`--read-only`/`--write` 不互斥）
+- ✅ http 策略（HTTPS 构建下 `http://` 仅放行 loopback；远程 http 需 `--allow-http`/`CCODE_ALLOW_HTTP=1`）
+- ✅ TUI 非 markdown 长消息按可视行包装渲染（窄屏滚动不再重复/乱行）
+- ✅ 协议：tool_call-only 的 assistant 轮次输出 `content: null`（OpenAI 兼容）
+- ✅ C89 标准化（`scripts/c89ify.py` 上移 mid-block 声明；`long long` 保留为 GNU 扩展；retro 链路最低 egcs 1.1.2）
+- ✅ 许可：AGPL v3（LICENSE）；vendored PolarSSL 1.3.9（GPLv2）仅作 retro TLS 后端
 
 ## 完成标准
 

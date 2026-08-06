@@ -4,7 +4,7 @@
 
 ## 构建
 
-依赖：C89 编译器（宿主用 gcc/clang，retro 链路可低至 egcs 1.1.2）。mbedTLS 2.28.9 (LTS) 已内置在 `vendor/mbedtls`，无需安装系统库。
+依赖：C89 编译器（宿主用 gcc/clang，retro 链路可低至 egcs 1.1.2）。mbedTLS 2.28.9 (LTS) 已内置在 `vendor/mbedtls`（现代宿主默认 TLS 后端），retro 构建自动改用内置 PolarSSL 1.3.9，均无需安装系统库。
 
 ```sh
 make          # HTTPS（默认）
@@ -30,7 +30,8 @@ export CCODE_MODEL="deepseek-v4-flash"
 ## 特性
 
 - 交互式 REPL 与单次提示模式
-- 工具集：read / write_file / glob / grep / bash / run_command / delete_file / move_file / web_fetch
+- thinking / reasoning_effort 字段独立控制（`--thinking` / `--reasoning[-effort]`，REPL `/thinking` `/reasoning` 命令）
+- 工具集：read / write_file / glob / grep / bash / run_command / delete_file / move_file / web_fetch / web_search / agent_tool
 - Markdown→ANSI 流式渲染
 - 会话管理（自动保存、列表、恢复）
 - 模型管理（API 列表、搜索、切换）
@@ -39,7 +40,7 @@ export CCODE_MODEL="deepseek-v4-flash"
 
 ## 网络与 TLS
 
-默认只接受 `https://` 端点；`http://` 仅允许 loopback（本机 mock/开发）。远程 http 明文视为已知风险，需显式开启：`--allow-http` 或 `CCODE_ALLOW_HTTP=1`。
+默认只接受 `https://` 端点；`http://` 仅允许 loopback（本机 mock/开发）。远程 http 明文视为已知风险，需显式开启：`--allow-http` 或 `CCODE_ALLOW_HTTP=1`。该策略在所有构建下生效（默认 HTTPS 构建、HTTP_ONLY 构建、retro 构建一致）。
 
 ## 测试
 
