@@ -6,6 +6,7 @@
 #include "status.h"
 #include "term.h"
 #include "theme.h"
+#include "../platform/platform.h"
 
 #include <signal.h>
 #include <limits.h>
@@ -25,15 +26,12 @@ static void tui_handle_signal(int signo) {
 static const char *tui_find_backend(const char *requested) {
     static char same_dir[PATH_MAX];
     const char *env_path;
-    ssize_t length;
     char *slash;
 
     if (requested && requested[0]) return requested;
     env_path = getenv("CCODE_BACKEND");
     if (env_path && env_path[0]) return env_path;
-    length = readlink("/proc/self/exe", same_dir, sizeof(same_dir) - 1);
-    if (length > 0 && (size_t)length < sizeof(same_dir)) {
-        same_dir[length] = '\0';
+    if (ccode_platform_exe_path(same_dir, sizeof(same_dir)) == 0) {
         slash = strrchr(same_dir, '/');
         if (slash) {
             strcpy(slash + 1, "ccode-cli");

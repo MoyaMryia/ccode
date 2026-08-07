@@ -1,11 +1,20 @@
 # BasicLinux i386 适配 — 当前情况与后续计划
 
 分支: `retro/i386-basiclinux`
-最后更新: 2026-08-05
+最后更新: 2026-08-07
 
 ---
 
 ## 一、已完成(代码层适配,宿主回归全绿)
+
+### 0. 平台抽象层 `src/platform/`(新增,2026-08-07)
+- `platform.h` / `platform_linux.c`: 将 Linux 专有依赖从主源码收至一处
+- `ccode_platform_exe_path()`: 封装 `/proc/self/exe` readlink（原 tui.c）
+- `ccode_platform_detect_escaped()`: 封装 `/proc/<pid>/stat` 扫描（原 agent.c）
+- `ccode_platform_sandbox_apply()`: 封装 Landlock syscall（原 sandbox.c）
+- 主源码（agent.c/tui.c）调 `ccode_platform_*()`，不再直接碰 `/proc`/readlink/landlock
+- retro compat 层（src/compat/）与 platform 层正交：compat 补缺失 POSIX API，platform 收平台分歧；两套机制互不依赖，retro 构建叠加两者
+- 后续加 BSD/Darwin/Win32 只需新增 `platform_<os>.c`，主源码不动
 
 ### 1. 兼容层 `src/compat/`(新增文件,仅 `CCODE_RETRO` 激活)
 - `compat.h` / `compat.c`:

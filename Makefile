@@ -40,9 +40,10 @@ override CFLAGS += -m64 -march=x86-64 -mtune=generic
 override LDFLAGS += -m64
 endif
 
-SRC = src/main.c src/config.c src/tui/tui.c src/tui/term.c src/tui/render.c src/tui/input.c src/tui/messages.c src/tui/status.c src/tui/theme.c src/tui/protocol.c src/markdown.c
+PLATFORM_SRC = src/platform/platform_linux.c
+SRC = src/main.c src/config.c src/tui/tui.c src/tui/term.c src/tui/render.c src/tui/input.c src/tui/messages.c src/tui/status.c src/tui/theme.c src/tui/protocol.c src/markdown.c $(PLATFORM_SRC)
 TEST_JSON_SRC = tests/test_json.c src/json.c vendor/jsmn/jsmn.c $(RETRO_SRC)
-TEST_AGENT_SRC = tests/test_agent.c src/agent/agent.c src/agent/message.c src/json.c src/http.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c $(RETRO_SRC)
+TEST_AGENT_SRC = tests/test_agent.c src/agent/agent.c src/agent/message.c src/json.c src/http.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c $(PLATFORM_SRC) $(RETRO_SRC)
 TEST_PERMISSIONS_SRC = $(wildcard tests/test_permissions.c)
 TEST_TUI_SRC = tests/test_tui.c
 TEST_MD_SRC = tests/test_markdown.c src/markdown.c $(RETRO_SRC)
@@ -108,7 +109,7 @@ OBJDIR = .build/$(BUILD_MODE)
 OBJ = $(addprefix $(OBJDIR)/,$(SRC:.c=.o))
 MODE_BIN = $(OBJDIR)/ccode
 CLI_BIN = $(OBJDIR)/ccode-cli
-CLI_SRC = src/cli/main.c src/config.c src/http.c src/json.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/agent/message.c src/agent/agent.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c
+CLI_SRC = src/cli/main.c src/config.c src/http.c src/json.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/agent/message.c src/agent/agent.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c $(PLATFORM_SRC)
 
 # Vendored PolarSSL 1.3.9 (retro TLS backend; see
 # vendor/polarssl-1.3.9/README.ccode.md). Compiled into the binary via the
