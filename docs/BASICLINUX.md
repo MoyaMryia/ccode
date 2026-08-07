@@ -219,6 +219,48 @@ make RETRO=1 RETRO_NATIVE=1 CC=gcc-egcs-1.1.2 ccode-cli   # guest 原生 i386 �
 > 旧脚本(qemu_vm/qemu_drive/qemu_vision/qmp_progress/ppm2txt)已删除:
 > 屏幕抓取方式有缺陷(坑 12),有误导性。需要时从 git 历史找回。
 
+## 当前适配状态
+
+### 已完成
+
+- ✅ 平台抽象层 `src/platform/`（exe 路径、escaped 检测、Landlock 沙箱封装）
+- ✅ 兼容层 `src/compat/`（openat/O_CLOEXEC/O_PATH/getaddrinfo/clock_gettime 等适配）
+- ✅ 源码适配（printf 格式、~160 处 C89 mid-block 声明上移）
+- ✅ Makefile retro 模式（`RETRO=1`/`RETRO_NATIVE=1`）
+- ✅ QEMU ghost 式整盘镜像一键重建
+- ✅ guest 内 `gcc-egcs-1.1.2` 编译 ccode-cli（rc=0，`--help` 38 行输出）
+- ✅ 宿主 224 测试全绿（133 agent + 38 json + 28 http + 13 tui + 21 markdown + 5 tty + 5 e2e + 2 streaming）
+
+### 后续计划
+
+1. guest 内跑 `gcc-2.7.2.3` 编译
+2. guest 内跑测试二进制（test-json 等 `--targets`）
+3. guest 内 HTTP 请求验证（需网络：QEMU user-net + guest ppp/slip，未搭）
+4. 收尾：skill 清单（c89ify/QMP/debugfs 技巧打包）
+
+## 命令速查
+
+```sh
+# 重建整盘镜像（一键）
+bash scripts/make_ghost_disk.sh
+
+# guest 构建（一键；默认 egcs 1.1.2 构建 ccode(TUI)+ccode-cli，结果看 logs/guest/）
+python3 scripts/guest_build.py
+
+# boot 诊断/冒烟（32KB VGA 可见窗，不会假卡死；banner 即成功）
+python3 scripts/qemu_bootcheck.py --disk-boot --hda vm/bl3-disk.img
+
+# 宿主 retro 冒烟
+make RETRO=1 ccode-cli && make RETRO=1 test-json test-agent
+
+# 修改 fs7.img 后同步到磁盘
+dd if=vm/fs7.img of=vm/bl3-disk.img bs=512 seek=133120 conv=notrunc
+
+# 手工提取分区 2（guest_build 已自动产出 logs/guest/p2.img）
+dd if=vm/bl3-disk.img of=/tmp/p2.img bs=512 skip=133120 count=718847
+debugfs -R 'ls /root' /tmp/p2.img
+```
+
 ## 验收标准
 
 1. ✅ `gcc-egcs-1.1.2` guest 内编译 ccode(HTTPS,PolarSSL 1.3.9 TLS 后端)+ `ccode-cli --help` 正常输出(`guest_build.py` rc=0,证据 `logs/guest/`);`gcc-2.7.2.3` 待跑

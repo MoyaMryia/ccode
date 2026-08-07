@@ -6,7 +6,7 @@
 guest 内构建 → (需要时)C89 转换**。其它旧脚本(daemon 常驻 VM、
 视觉模型看屏、旧 ISO 驱动等)已删除——它们的屏幕抓取方式有缺陷
 (VGA 硬件滚动后读到旧画面),容易把人引向"boot 卡死"的错误结论,
-见 docs/BASICLINUX.md 坑 12 与 ADAPT_STATUS.md 复盘。
+见 docs/BASICLINUX.md 坑 12 及其复盘章节。
 
 ## 镜像构建与构建驱动(主流程,优先用这两个)
 

@@ -85,7 +85,7 @@ def read_vga_text(cmd):
     it via the CRTC start-address registers (0x3D4/0x3D5, idx 0x0C/0x0D).
     Reading only offset 0 yields a stale pre-scroll screen and once
     masqueraded as a "boot hang" (guest was actually idle at a shell
-    prompt). See ADAPT_STATUS.md.
+    prompt). See docs/BASICLINUX.md 踩坑记录 #12.
     """
     path = '/tmp/qemu_bootcheck_vram.bin'
     try:
