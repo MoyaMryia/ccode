@@ -56,6 +56,7 @@ make retro-test                               # QEMU 内构建冒烟（egcs 1.1.
 
 - [开发原则](docs/AGENTS.md)
 - [功能路线图](docs/FEATURES.md)
+- [架构与部署](docs/ARCHITECTURE.md)
 - [TUI 设计](docs/TUI_DESIGN.md)
 - [BasicLinux 3.5.1 适配与测试环境](docs/BASICLINUX.md)
 

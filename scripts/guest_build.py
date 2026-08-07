@@ -10,7 +10,7 @@ Flow:
   host:  debugfs-extract every NAME.log / NAME.rc into --logdir and
          judge the result from those FILES.
 
-Design rules (learned the hard way, see ADAPT_STATUS.md):
+Design rules (learned the hard way, see docs/BASICLINUX.md 踩坑记录 #12):
 
   * The VGA screen is a LIVENESS SIGNAL ONLY. The 2.2 kernel scrolls via
     hardware panning, so the visible window is not at 0xB8000+0; we read
