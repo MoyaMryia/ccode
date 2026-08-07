@@ -14,12 +14,13 @@
  * codebase.
  *
  * Currently implemented:
- *   platform_linux.c   Linux, Cygwin/MSYS2/Windows (shares /proc + Landlock fallback)
+ *   platform_linux.c   Linux (shares /proc + Landlock syscall ABI)
  *
  * Future implementations (interfaces only, not yet built):
- *   platform_bsd.c     FreeBSD/NetBSD/OpenBSD
- *   platform_darwin.c  macOS / PureDarwin
- *   platform_hurd.c    GNU Hurd (Mach microkernel)
+ *   platform_bsd.c     FreeBSD/NetBSD/OpenBSD (native POSIX)
+ *   platform_darwin.c  macOS / PureDarwin (native POSIX)
+ *   platform_hurd.c    GNU Hurd (native POSIX, Mach microkernel)
+ *   platform_win32.c   Windows NT 4.0+ via Cygwin (POSIX compatibility layer)
  *
  * Design rules:
  *   - Functions here are the ONLY place platform-specific headers appear.
@@ -44,7 +45,8 @@
  * OpenBSD:   sysctl(CTL_KERN, KERN_PROC_ARGV) + realpath  (TODO)
  * Darwin:    _NSGetExecutablePath                     (TODO)
  * Hurd:      /proc/self/exe readlink (compat layer)   (TODO)
- 
+ * Win32:     Cygwin: readlink("/proc/self/exe")        (TODO)
+ *
  */
 int ccode_platform_exe_path(char *buf, size_t cap);
 
@@ -70,7 +72,8 @@ int ccode_platform_detect_escaped(pid_t child);
  * as the only protection).
  *
  * Linux:  Landlock (syscall ABI, kernel 5.13+); degrades to no-op
- * Others: no-op returning -1 (TODO: pledge / Seatbelt / Job Object)
+ * Win32:  Cygwin: no-op returning -1 (command filter as fallback)
+ * Others: no-op returning -1 (TODO: pledge / Seatbelt)
  */
 int ccode_platform_sandbox_apply(const char *workspace_path);
 

@@ -53,7 +53,7 @@ agent/agent.c/h        代理循环、工具验证、本地执行、工作区、
 tools/tools.c/h        按启用模式的上游函数模式
 permissions/*          安全终端渲染和用户审批
 platform/platform.h    平台抽象接口（exe 路径、escaped 检测、写沙箱）
-platform/platform_*.c  每平台一个实现文件（当前：platform_linux.c；待加：bsd/darwin/hurd）
+platform/platform_*.c  每平台一个实现文件（当前：platform_linux.c；待加：bsd/darwin/hurd/win32(Cygwin)）
 vendor/jsmn/*          供应商解析器；避免随意更改
 tests/*                本地回归套件和提供商/TTY 夹具
 ```
