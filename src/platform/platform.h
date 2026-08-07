@@ -19,7 +19,7 @@
  * Future implementations (interfaces only, not yet built):
  *   platform_bsd.c     FreeBSD/NetBSD/OpenBSD
  *   platform_darwin.c  macOS / PureDarwin
- *   platform_win32.c   native Win32 (CreateProcess + Job Object)
+ *   platform_hurd.c    GNU Hurd (Mach microkernel)
  *
  * Design rules:
  *   - Functions here are the ONLY place platform-specific headers appear.
@@ -43,7 +43,8 @@
  * FreeBSD:   sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1)
  * OpenBSD:   sysctl(CTL_KERN, KERN_PROC_ARGV) + realpath  (TODO)
  * Darwin:    _NSGetExecutablePath                     (TODO)
- * Win32:     GetModuleFileNameW                       (TODO)
+ * Hurd:      /proc/self/exe readlink (compat layer)   (TODO)
+ 
  */
 int ccode_platform_exe_path(char *buf, size_t cap);
 
