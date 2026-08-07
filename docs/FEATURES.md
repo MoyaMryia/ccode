@@ -177,27 +177,94 @@ export CCODE_WEB_FETCH_BLACKLIST="evil.com,tracker.com"  # 域名黑名单
 - [x] `/model default <name>` — 设置默认模型
 
 #### 3.3 模型配置
-- [ ] 支持多 provider 配置
+
+ccode 仅支持 OpenAI Chat Completions 兼容协议（`/v1/chat/completions`）。以下列出所有已验证的 OpenAI 兼容 provider。
+
   ```json
   {
     "providers": {
       "openai": {
         "api_base": "https://api.openai.com/v1",
         "api_key": "sk-...",
-        "models": ["gpt-4", "gpt-3.5-turbo"]
+        "models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
       },
       "deepseek": {
-        "api_base": "https://api.deepseek.com",
+        "api_base": "https://api.deepseek.com/v1",
         "api_key": "sk-...",
-        "models": ["deepseek-v4-flash", "deepseek-v4"]
+        "models": ["deepseek-v4-flash", "deepseek-v4-pro"]
       }
+    }
+  }
+  ```
+
+> **不直接支持的 provider**：Anthropic（Messages API）、Google Gemini（原生格式）等不走 OpenAI 协议的 provider 需要通过兼容网关（如 OpenCode Zen、LiteLLM、OpenRouter）中转后才能接入。
+
+#### 国内提供商（均兼容 OpenAI Chat Completions 协议）
+
+  ```json
+  {
+    "providers": {
+      "qwen": {
+        "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "sk-...",
+        "models": ["qwen3.8-max", "qwen-plus", "qwen-turbo"]
+      },
+      "glm": {
+        "api_base": "https://open.bigmodel.cn/api/paas/v4/",
+        "api_key": "...",
+        "models": ["glm-5.2", "glm-4.7", "glm-4.7-flash"]
+      },
+      "doubao": {
+        "api_base": "https://ark.cn-beijing.volces.com/api/v3",
+        "api_key": "...",
+        "models": ["doubao-seed-2.0-pro", "doubao-seed-2.0-lite"]
+      },
+      "wenxin": {
+        "api_base": "https://qianfan.baidubce.com/v2",
+        "api_key": "...",
+        "models": ["ernie-5.1", "ernie-4.5-turbo-128k"]
+      },
+      "kimi": {
+        "api_base": "https://api.moonshot.cn/v1",
+        "api_key": "...",
+        "models": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6"]
+      },
+      "minimax": {
+        "api_base": "https://api.minimax.io/v1",
+        "api_key": "...",
+        "models": ["MiniMax-M3", "MiniMax-M2.7"]
+      }
+    }
+  }
+  ```
+
+#### OpenCode 网关
+
+  ```json
+  {
+    "providers": {
+      "opencode-zen": {
+        "api_base": "https://opencode.ai/zen/v1",
+        "api_key": "sk-...",
+        "models": ["gpt-5.6-sol", "claude-opus-4-8", "deepseek-v4-pro", "kimi-k3", "grok-4.5"]
+      },
+      "opencode-go": {
+        "api_base": "https://opencode.ai/zen/go/v1",
+        "api_key": "sk-...",
+        "models": ["deepseek-v4-flash", "deepseek-v4-pro", "glm-5.2", "kimi-k3", "kimi-k2.7-code"]
+      }
+    }
+  }
+  ```
+
+  > **注意**：OpenCode Go 中部分模型（MiniMax M3/M2.7、Qwen3.8/3.7/3.6）走 Anthropic `/messages` 接口而非 OpenAI `/chat/completions`。ccode 仅支持 OpenAI 兼容协议，上述模型需通过 OpenCode 的 OpenAI 兼容端点或第三方网关转换后才能使用。
     }
   }
   ```
 - [ ] 模型别名支持
   ```bash
   export CCODE_MODEL_ALIAS="fast=deepseek-v4-flash"
-  export CCODE_MODEL_ALIAS="smart=deepseek-v4-pro"
+  export CCODE_MODEL_ALIAS="smart=gpt-5.6-sol"
   ```
 
 #### 3.4 模型验证
@@ -219,32 +286,37 @@ export CCODE_WEB_FETCH_BLACKLIST="evil.com,tracker.com"  # 域名黑名单
 # 列出可用模型
 > /models
   Available models:
-    * deepseek-v4-flash (current) - Fast, 128K context
-      deepseek-v4-pro - Balanced, 128K context
-      gpt-4-turbo - Most capable, 128K context
-      gpt-3.5-turbo - Fast, 16K context
+    * deepseek-v4-flash (current) - Fast, 1M context
+      deepseek-v4-pro - Balanced, 1M context
+      gpt-5.6-sol - OpenAI frontier, 1M context
+      claude-opus-4-8 - Anthropic flagship, 1M context
+      qwen3.8-max - 阿里通义千问旗舰
+      glm-4.7-flash - 智谱 GLM 免费
+      kimi-k3 - 月之暗面 2.8T 参数
+      MiniMax-M3 - MiniMax 1M 上下文
 
 # 搜索模型
-> /models search deepseek
-  Models matching "deepseek":
-    1. deepseek-v4-flash - Fast, 128K context
-    2. deepseek-v4-pro - Balanced, 128K context
+> /models search claude
+  Models matching "claude":
+    1. claude-fable-5 - Mythos class, 1M context
+    2. claude-opus-4-8 - Flagship, 1M context
+    3. claude-sonnet-5 - Balanced, 1M context
 
 # 显示模型信息
-> /models info deepseek-v4-pro
-  Model: deepseek-v4-pro
-  Provider: DeepSeek
-  Context Window: 128K tokens
-  Description: Balanced performance and capability
-  Price: $0.14 / 1M input tokens, $0.28 / 1M output tokens
+> /models info claude-opus-4-8
+  Model: claude-opus-4-8
+  Provider: Anthropic
+  Context Window: 1M tokens
+  Description: Complex reasoning and agentic tasks
+  Price: $5.00 / 1M input tokens, $25.00 / 1M output tokens
 
 # 切换模型
-> /model deepseek-v4-pro
-  Model switched to: deepseek-v4-pro
+> /model gpt-5.6-sol
+  Model switched to: gpt-5.6-sol
 
 # 显示当前模型
 > /model
-  Current model: deepseek-v4-pro
+  Current model: gpt-5.6-sol
 
 # 设置默认模型
 > /model default deepseek-v4-flash
@@ -254,7 +326,8 @@ export CCODE_WEB_FETCH_BLACKLIST="evil.com,tracker.com"  # 域名黑名单
 > /models usage
   Model usage (last 7 days):
     deepseek-v4-flash: 1,234,567 tokens, 45 requests, $0.17
-    deepseek-v4-pro: 567,890 tokens, 12 requests, $0.16
+    gpt-5.6-sol: 567,890 tokens, 12 requests, $2.50
+    claude-opus-4-8: 234,567 tokens, 5 requests, $3.75
     Total: 1,802,457 tokens, 57 requests, $0.33
 ```
 
@@ -265,13 +338,22 @@ export CCODE_WEB_FETCH_BLACKLIST="evil.com,tracker.com"  # 域名黑名单
   "default_model": "deepseek-v4-flash",
   "providers": {
     "deepseek": {
-      "api_base": "https://api.deepseek.com",
+      "api_base": "https://api.deepseek.com/v1",
       "api_key_file": "~/.ccode/deepseek-key.txt"
+    },
+    "openai": {
+      "api_base": "https://api.openai.com/v1",
+      "api_key_file": "~/.ccode/openai-key.txt"
+    },
+    "qwen": {
+      "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_file": "~/.ccode/qwen-key.txt"
     }
   },
   "model_aliases": {
     "fast": "deepseek-v4-flash",
-    "smart": "deepseek-v4-pro"
+    "smart": "gpt-5.6-sol",
+    "cheap": "glm-4.7-flash"
   }
 }
 ```
@@ -327,8 +409,9 @@ Week 2: 基础体验
 └── ✅ 模型管理
 
 Week 3+: 扩展功能
-├── ✅ AgentTool（子代理）
+├── ✅ AgentTool（子代理，串行）
 ├── ✅ WebSearch
+├── 子代理并行化（工作区隔离，无锁设计）
 ├── MCP 集成
 ├── 技能系统
 └── 其他
@@ -339,14 +422,14 @@ Week 3+: 扩展功能
 | 功能 | 优先级 | 状态 | 备注 |
 |------|--------|------|------|
 | BasicLinux i386 兼容层 | P1 | guest 构建已跑通 | compat 层(openat/O_CLOEXEC/getaddrinfo/clock_gettime/stdint/sockaddr_in6/fdopendir/strcasestr)、%zu→%lu、C89 转换(c89ify.py);retro TLS 后端=PolarSSL 1.3.9;egcs 1.1.2 guest 编译(HTTPS)rc=0 + `--help` 验证;gcc 2.7.2.3 与 guest 测试待跑 |
-| 平台抽象层 | P1 | 已完成（Linux） | `src/platform/`：exe 路径/escaped 检测/写沙箱已收口至 `platform_linux.c`；retro compat（补缺 POSIX）与 platform（平台分歧）正交；后续加 BSD/Darwin/Hurd/Win32(Cygwin) 只需新增 `platform_<os>.c` |
+| 平台抽象层 | P1 | 已完成（Linux） | `src/platform/`：exe 路径/escaped 检测/写沙箱已收口至 `platform_linux.c`；retro compat（补缺 POSIX）与 platform（平台分歧）正交；后续加 BSD/Darwin/Hurd/Haiku/SysV/Win32(Cygwin) 只需新增 `platform_<os>.c` |
 | 会话管理 | P1 | 增强 | 列表/删除/重命名/导出/自动保存/元数据/清理策略/多会话/压缩 |
 | 上下文缓存 | P1 | 已实现 | 请求前缀字节稳定（去重摘要、resume 不重复 system）+ 前缀稳定性回归测试 |
 | WebFetch | P1 | 已完成 | HTTP/HTTPS 抓取、HTML 转文本、大小限制 |
 | 模型管理 | P1 | 已完成 | API 模型列表/搜索/详情/切换/默认模型 |
 | Markdown 渲染 | P2 | 已完成 | 标题/加粗/斜体/行内代码/代码围栏/列表/引用/链接，行式流式 |
 | MCP | P2 | 未开始 | 扩展工具 |
-| AgentTool | P2 | 已完成 | 子代理委派（只读默认、深度限制、独立上下文） |
+| AgentTool | P2 | 串行已实现，并行化待做 | 子代理委派（深度限制、独立上下文）；并行化需工作区隔离 + 父代理预分配文件范围 |
 | 技能系统 | P2 | 未开始 | 最佳实践 |
 | WebSearch | P2 | 已完成 | Bing 端点可配置、结构化结果、继承抓取安全策略 |
 
@@ -411,7 +494,7 @@ Week 3+: 扩展功能
 
 - 安全加固（先能用）
 - TUI 高级交互（多行粘贴编辑、历史导航和完整终端 PTY 回归套件）
-- 跨平台适配（BSD / Darwin / Hurd / Win32，平台抽象层已就绪，待新增 `platform_<os>.c`；Windows 通过 Cygwin 兼容层支持，需单独 `platform_win32.c`）
+- 跨平台适配（BSD / Darwin / Hurd / Haiku / System V / Win32，平台抽象层已就绪，待新增 `platform_<os>.c`；Windows 通过 Cygwin/MSYS2 兼容层支持，需单独 `platform_win32.c`）
 - 远程协作
 - 插件市场
 - 自动更新
