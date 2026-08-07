@@ -6,7 +6,7 @@
 
 ## 产品边界
 
-- 使用 C89 加保守的 POSIX 子集（`long long` 作为 GNU 扩展例外；retro 链路须过 egcs 1.1.2）。
+- 使用 C89 加保守的 POSIX 子集（`long long` 作为 GNU 扩展例外；retro 链路须过 egcs 1.1.2）。兼容 gcc（2.7+ ~ 14.x）和 clang（3.x+），`CC` 变量可切换。
 - 支持 Linux x86-64-v1，直到其他目标有专门的构建和测试矩阵。
 - 只支持 OpenAI 兼容的 Chat Completions API。不添加供应商 SDK 或特定提供商的请求/响应格式。
 - 设置、凭证、执行和会话数据保持本地优先。
@@ -53,7 +53,7 @@ agent/agent.c/h        代理循环、工具验证、本地执行、工作区、
 tools/tools.c/h        按启用模式的上游函数模式
 permissions/*          安全终端渲染和用户审批
 platform/platform.h    平台抽象接口（exe 路径、escaped 检测、写沙箱）
-platform/platform_*.c  每平台一个实现文件（当前：platform_linux.c；待加：bsd/darwin/hurd/haiku/sysv/win32(Cygwin)）
+platform/platform_*.c  每平台一个实现文件（当前：platform_linux.c；待加：platform_bsd.c(NetBSD/OpenBSD/FreeBSD/DragonFlyBSD)/platform_darwin.c/platform_hurd.c/platform_haiku.c(platform)/platform_sysv.c/platform_minix.c(platform)/platform_opensolaris.c/platform_win32.c(Cygwin/MinGW)）
 vendor/jsmn/*          供应商解析器；避免随意更改
 tests/*                本地回归套件和提供商/TTY 夹具
 ```

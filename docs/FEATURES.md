@@ -422,7 +422,7 @@ Week 3+: 扩展功能
 | 功能 | 优先级 | 状态 | 备注 |
 |------|--------|------|------|
 | BasicLinux i386 兼容层 | P1 | guest 构建已跑通 | compat 层(openat/O_CLOEXEC/getaddrinfo/clock_gettime/stdint/sockaddr_in6/fdopendir/strcasestr)、%zu→%lu、C89 转换(c89ify.py);retro TLS 后端=PolarSSL 1.3.9;egcs 1.1.2 guest 编译(HTTPS)rc=0 + `--help` 验证;gcc 2.7.2.3 与 guest 测试待跑 |
-| 平台抽象层 | P1 | 已完成（Linux） | `src/platform/`：exe 路径/escaped 检测/写沙箱已收口至 `platform_linux.c`；retro compat（补缺 POSIX）与 platform（平台分歧）正交；后续加 BSD/Darwin/Hurd/Haiku/SysV/Win32(Cygwin) 只需新增 `platform_<os>.c` |
+| 平台抽象层 | P1 | 已完成（Linux） | `src/platform/`：exe 路径/escaped 检测/写沙箱已收口至 `platform_linux.c`；retro compat（补缺 POSIX）与 platform（平台分歧）正交；后续加 FreeBSD/OpenBSD/NetBSD/DragonFlyBSD/MINIX 3/Darwin/Hurd/Haiku/System V/OpenSolaris/Win32(Cygwin/MinGW) 只需新增 `platform_<os>.c`；MINIX 3 理论 HTTP_ONLY 直接可编译（clang + NetBSD libc，无 `/proc` 需 sysctl 替代） |
 | 会话管理 | P1 | 增强 | 列表/删除/重命名/导出/自动保存/元数据/清理策略/多会话/压缩 |
 | 上下文缓存 | P1 | 已实现 | 请求前缀字节稳定（去重摘要、resume 不重复 system）+ 前缀稳定性回归测试 |
 | WebFetch | P1 | 已完成 | HTTP/HTTPS 抓取、HTML 转文本、大小限制 |
@@ -477,7 +477,7 @@ Week 3+: 扩展功能
 - ✅ http 策略（HTTPS 构建下 `http://` 仅放行 loopback；远程 http 需 `--allow-http`/`CCODE_ALLOW_HTTP=1`）
 - ✅ TUI 非 markdown 长消息按可视行包装渲染（窄屏滚动不再重复/乱行）
 - ✅ 协议：tool_call-only 的 assistant 轮次输出 `content: null`（OpenAI 兼容）
-- ✅ C89 标准化（`scripts/c89ify.py` 上移 mid-block 声明；`long long` 保留为 GNU 扩展；retro 链路最低 egcs 1.1.2）
+- ✅ C89 标准化（`scripts/c89ify.py` 上移 mid-block 声明；`long long` 保留为 GNU 扩展；retro 链路最低 egcs 1.1.2；已验证 gcc 2.7~14.x 和 clang 3.x~19.x 均可编译）
 - ✅ 平台抽象层（`src/platform/`：`ccode_platform_exe_path`/`ccode_platform_detect_escaped`/`ccode_platform_sandbox_apply`；主源码不再直接碰 `/proc`/`readlink`/Landlock；retro compat 与 platform 正交）
 - ✅ 许可：AGPL v3（LICENSE）；vendored PolarSSL 1.3.9（GPLv2）仅作 retro TLS 后端
 
@@ -494,7 +494,7 @@ Week 3+: 扩展功能
 
 - 安全加固（先能用）
 - TUI 高级交互（多行粘贴编辑、历史导航和完整终端 PTY 回归套件）
-- 跨平台适配（BSD / Darwin / Hurd / Haiku / System V / Win32，平台抽象层已就绪，待新增 `platform_<os>.c`；Windows 通过 Cygwin/MSYS2 兼容层支持，需单独 `platform_win32.c`）
+- 跨平台适配（FreeBSD / OpenBSD / NetBSD / DragonFlyBSD / MINIX 3 / Darwin / Hurd / Haiku / System V / OpenSolaris / Win32，平台抽象层已就绪，待新增 `platform_<os>.c`；Windows 通过 Cygwin/MSYS2/MinGW 兼容层支持，需单独 `platform_win32.c`；MINIX 3 使用 NetBSD libc + clang，理论上 HTTP_ONLY 模式直接可编译）
 - 远程协作
 - 插件市场
 - 自动更新

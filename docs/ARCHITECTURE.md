@@ -233,7 +233,7 @@ ccode (TUI)                      ccode-cli (后端)
 
 | 依赖 | 用途 | 可选 |
 |------|------|------|
-| C89 编译器 (gcc/clang；retro 链路 egcs 1.1.2) | 编译 | 必选 |
+| C89 编译器 (gcc 2.7+ ~ 14.x 或 clang 3.x+ ~ 19.x；retro 链路 egcs 1.1.2) | 编译 | 必选（`CC` 变量切换） |
 | mbedTLS 2.28.9 (`vendor/mbedtls`) | HTTPS TLS 传输（现代宿主默认） | HTTP-only 构建可免 |
 | PolarSSL 1.3.9 (`vendor/polarssl-1.3.9`, GPLv2) | HTTPS TLS 传输（retro 构建自动启用） | HTTP-only 构建可免 |
 | POSIX 系统 (Linux) | 运行时 | 必选 |
