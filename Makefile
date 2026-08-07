@@ -36,14 +36,20 @@ else
 override LDFLAGS := $(filter-out -m64 -m32,$(LDFLAGS))
 endif
 else
+# x86-specific flags: only when targeting x86. Cross-compilation (e.g.
+# CC=riscv64-linux-gnu-gcc) must not inherit -m64/-march=x86-64.
+# Detect via $(CC) -dumpmachine (returns x86_64-... for x86, riscv64-... etc).
+ifneq ($(findstring x86_64,$(shell $(CC) -dumpmachine 2>/dev/null)),)
 override CFLAGS += -m64 -march=x86-64 -mtune=generic
 override LDFLAGS += -m64
 endif
+endif
 
 PLATFORM_SRC = src/platform/platform_linux.c
+AGENT_SRC = src/agent/agent.c src/agent/agent_cancel.c src/agent/agent_fs.c src/agent/agent_args.c src/agent/agent_prepare.c src/agent/agent_exec.c src/agent/agent_output.c src/agent/message.c
 SRC = src/main.c src/config.c src/tui/tui.c src/tui/term.c src/tui/render.c src/tui/input.c src/tui/messages.c src/tui/status.c src/tui/theme.c src/tui/protocol.c src/markdown.c $(PLATFORM_SRC)
 TEST_JSON_SRC = tests/test_json.c src/json.c vendor/jsmn/jsmn.c $(RETRO_SRC)
-TEST_AGENT_SRC = tests/test_agent.c src/agent/agent.c src/agent/message.c src/json.c src/http.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c $(PLATFORM_SRC) $(RETRO_SRC)
+TEST_AGENT_SRC = tests/test_agent.c $(AGENT_SRC) src/json.c src/http.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c $(PLATFORM_SRC) $(RETRO_SRC)
 TEST_PERMISSIONS_SRC = $(wildcard tests/test_permissions.c)
 TEST_TUI_SRC = tests/test_tui.c
 TEST_MD_SRC = tests/test_markdown.c src/markdown.c $(RETRO_SRC)
@@ -109,7 +115,7 @@ OBJDIR = .build/$(BUILD_MODE)
 OBJ = $(addprefix $(OBJDIR)/,$(SRC:.c=.o))
 MODE_BIN = $(OBJDIR)/ccode
 CLI_BIN = $(OBJDIR)/ccode-cli
-CLI_SRC = src/cli/main.c src/config.c src/http.c src/json.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/agent/message.c src/agent/agent.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c $(PLATFORM_SRC)
+CLI_SRC = src/cli/main.c src/config.c src/http.c src/json.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c $(AGENT_SRC) src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c $(PLATFORM_SRC)
 
 # Vendored PolarSSL 1.3.9 (retro TLS backend; see
 # vendor/polarssl-1.3.9/README.ccode.md). Compiled into the binary via the
@@ -121,7 +127,7 @@ ifeq ($(BUILD_MODE),https)
 # Compiled with relaxed flags: third-party code, keep it quiet.
 MBEDTLS_SRC = $(wildcard $(MBEDTLS_DIR)/library/*.c)
 MBEDTLS_OBJ = $(addprefix $(OBJDIR)/,$(MBEDTLS_SRC:.c=.o))
-MBEDTLS_CFLAGS = -O2 -std=c99 -w -m64 -march=x86-64 -mtune=generic
+MBEDTLS_CFLAGS = -O2 -std=c99 -w $(if $(findstring x86_64,$(shell $(CC) -dumpmachine 2>/dev/null)),-m64 -march=x86-64 -mtune=generic)
 endif
 
 all: ccode ccode-cli
