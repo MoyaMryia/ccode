@@ -13,6 +13,7 @@
 #include "../tools/tools.h"
 #include "../permissions/permissions.h"
 #include "../markdown.h"
+#include "../platform/platform.h"
 #include "../../vendor/jsmn/jsmn.h"
 
 #include <stdio.h>
@@ -3341,58 +3342,8 @@ static void consume_command_output(int *fd, char *buffer, size_t *length,
 /* Scan /proc for descendants of child that escaped the process group via
  * setsid() or similar. Returns 1 if any surviving descendant is found whose
  * process group differs from the child's. This is a best-effort detection:
- * the executor is not a sandbox and cannot guarantee complete cleanup. */
-static int detect_escaped_descendants(pid_t child) {
-    DIR *dir;
-    struct dirent *entry;
-    pid_t child_pgid;
-    int escaped = 0;
-
-    child_pgid = getpgid(child);
-    if (child_pgid < 0) return 0;
-
-    dir = opendir("/proc");
-    if (!dir) return 0;
-
-    while ((entry = readdir(dir)) != NULL) {
-        char stat_path[320];
-        char stat_buf[8192];
-        int fd;
-        ssize_t n;
-        char *paren;
-        char *close_paren;
-        char *fields;
-        char state_c;
-        int ppid, pgid;
-
-        if (entry->d_name[0] < '0' || entry->d_name[0] > '9') continue;
-        {
-            long pid_val = atol(entry->d_name);
-            if (pid_val <= 0 || pid_val == (long)child) continue;
-        }
-        snprintf(stat_path, sizeof(stat_path), "/proc/%s/stat", entry->d_name);
-        fd = open(stat_path, O_RDONLY | O_CLOEXEC);
-        if (fd < 0) continue;
-        n = read(fd, stat_buf, sizeof(stat_buf) - 1);
-        close(fd);
-        if (n <= 0) continue;
-        stat_buf[n] = '\0';
-
-        paren = strchr(stat_buf, '(');
-        if (!paren) continue;
-        close_paren = strrchr(paren, ')');
-        if (!close_paren) continue;
-        fields = close_paren + 1;
-        if (sscanf(fields, " %c %d %d", &state_c, &ppid, &pgid) != 3) continue;
-
-        if (ppid == (int)child && pgid != (int)child_pgid) {
-            escaped = 1;
-            break;
-        }
-    }
-    closedir(dir);
-    return escaped;
-}
+ * the executor is not a sandbox and cannot guarantee complete cleanup.
+ * (Moved to platform_linux.c as ccode_platform_detect_escaped.) */
 
 /* Detect whether /bin/sh is actually bash (vs ash/dash/busybox on the
  * retro guest). Cached after the first probe. The retro target runs
@@ -3527,7 +3478,7 @@ static char *exec_run_command_ex(const char *workspace,
         /* Enforce the write sandbox before exec. When Landlock is
          * unavailable this is a no-op and the command filter above remains
          * the only path protection. */
-        (void)ccode_landlock_apply(workspace_root);
+        (void)ccode_platform_sandbox_apply(workspace_root);
         for (i = 0; i < argc; i++) exec_argv[i] = argv[i];
         exec_argv[argc] = NULL;
         execve(executable, exec_argv, exec_env);
@@ -3632,7 +3583,7 @@ static char *exec_run_command_ex(const char *workspace,
     if (stderr_pipe[0] >= 0) close(stderr_pipe[0]);
     ccode_cancel_child_unregister();
     if (timed_out)
-        incomplete_cleanup = detect_escaped_descendants(child);
+        incomplete_cleanup = ccode_platform_detect_escaped(child);
     stdout_buf[stdout_len] = '\0';
     stderr_buf[stderr_len] = '\0';
 

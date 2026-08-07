@@ -339,6 +339,7 @@ Week 3+: 扩展功能
 | 功能 | 优先级 | 状态 | 备注 |
 |------|--------|------|------|
 | BasicLinux i386 兼容层 | P1 | guest 构建已跑通 | compat 层(openat/O_CLOEXEC/getaddrinfo/clock_gettime/stdint/sockaddr_in6/fdopendir/strcasestr)、%zu→%lu、C89 转换(c89ify.py);retro TLS 后端=PolarSSL 1.3.9;egcs 1.1.2 guest 编译(HTTPS)rc=0 + `--help` 验证;gcc 2.7.2.3 与 guest 测试待跑 |
+| 平台抽象层 | P1 | 已完成（Linux） | `src/platform/`：exe 路径/escaped 检测/写沙箱已收口至 `platform_linux.c`；retro compat（补缺 POSIX）与 platform（平台分歧）正交；后续加 BSD/Darwin/Win32 只需新增 `platform_<os>.c` |
 | 会话管理 | P1 | 增强 | 列表/删除/重命名/导出/自动保存/元数据/清理策略/多会话/压缩 |
 | 上下文缓存 | P1 | 已实现 | 请求前缀字节稳定（去重摘要、resume 不重复 system）+ 前缀稳定性回归测试 |
 | WebFetch | P1 | 已完成 | HTTP/HTTPS 抓取、HTML 转文本、大小限制 |
@@ -394,6 +395,7 @@ Week 3+: 扩展功能
 - ✅ TUI 非 markdown 长消息按可视行包装渲染（窄屏滚动不再重复/乱行）
 - ✅ 协议：tool_call-only 的 assistant 轮次输出 `content: null`（OpenAI 兼容）
 - ✅ C89 标准化（`scripts/c89ify.py` 上移 mid-block 声明；`long long` 保留为 GNU 扩展；retro 链路最低 egcs 1.1.2）
+- ✅ 平台抽象层（`src/platform/`：`ccode_platform_exe_path`/`ccode_platform_detect_escaped`/`ccode_platform_sandbox_apply`；主源码不再直接碰 `/proc`/`readlink`/Landlock；retro compat 与 platform 正交）
 - ✅ 许可：AGPL v3（LICENSE）；vendored PolarSSL 1.3.9（GPLv2）仅作 retro TLS 后端
 
 ## 完成标准

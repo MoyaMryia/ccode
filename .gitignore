@@ -3,6 +3,7 @@ ccode
 ccode-cli
 .build/
 *.o
+ansi-style-demo
 
 # Test binaries
 tests/test_json
