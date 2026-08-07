@@ -14,7 +14,7 @@
  * codebase.
  *
  * Currently implemented:
- *   platform_linux.c   Linux, Cygwin (shares /proc + Landlock syscall ABI)
+ *   platform_linux.c   Linux, Cygwin/MSYS2/Windows (shares /proc + Landlock fallback)
  *
  * Future implementations (interfaces only, not yet built):
  *   platform_bsd.c     FreeBSD/NetBSD/OpenBSD

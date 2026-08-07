@@ -411,7 +411,7 @@ Week 3+: 扩展功能
 
 - 安全加固（先能用）
 - TUI 高级交互（多行粘贴编辑、历史导航和完整终端 PTY 回归套件）
-- 跨平台适配（BSD / Darwin / Hurd，平台抽象层已就绪，待新增 `platform_<os>.c`；Windows 用户请用 WSL2/Cygwin，不做原生 Win32 适配）
+- 跨平台适配（BSD / Darwin / Hurd，平台抽象层已就绪，待新增 `platform_<os>.c`；Windows 走 Cygwin/MSYS2 兼容层，无需单独适配）
 - 远程协作
 - 插件市场
 - 自动更新
