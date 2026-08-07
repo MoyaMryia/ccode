@@ -18,7 +18,30 @@ make HTTP_ONLY=1 ccode  # HTTP-only
 ## 快速开始
 
 ```sh
+# DeepSeek
 export CCODE_API_BASE="https://api.deepseek.com"
+export CCODE_API_KEY="sk-..."
+export CCODE_MODEL="deepseek-v4-flash"
+
+# 阿里通义千问
+export CCODE_API_BASE="https://dashscope.aliyuncs.com/compatible-mode/v1"
+export CCODE_API_KEY="sk-..."
+export CCODE_MODEL="qwen3.8-max"
+
+# 智谱 GLM
+export CCODE_API_BASE="https://open.bigmodel.cn/api/paas/v4/"
+export CCODE_API_KEY="..."
+export CCODE_MODEL="glm-5.2"
+
+# OpenAI / Anthropic / Google 等任意兼容 API 同理
+
+# MiniMax
+export CCODE_API_BASE="https://api.minimax.io/v1"
+export CCODE_API_KEY="..."
+export CCODE_MODEL="MiniMax-M3"
+
+# OpenCode Zen / Go 网关
+export CCODE_API_BASE="https://opencode.ai/zen/go/v1"
 export CCODE_API_KEY="sk-..."
 export CCODE_MODEL="deepseek-v4-flash"
 

@@ -53,7 +53,7 @@ agent/agent.c/h        代理循环、工具验证、本地执行、工作区、
 tools/tools.c/h        按启用模式的上游函数模式
 permissions/*          安全终端渲染和用户审批
 platform/platform.h    平台抽象接口（exe 路径、escaped 检测、写沙箱）
-platform/platform_*.c  每平台一个实现文件（当前：platform_linux.c；待加：bsd/darwin/hurd/win32(Cygwin)）
+platform/platform_*.c  每平台一个实现文件（当前：platform_linux.c；待加：bsd/darwin/hurd/haiku/sysv/win32(Cygwin)）
 vendor/jsmn/*          供应商解析器；避免随意更改
 tests/*                本地回归套件和提供商/TTY 夹具
 ```
@@ -128,6 +128,17 @@ tests/*                本地回归套件和提供商/TTY 夹具
 - 允许 shell 字符串（通过 `sh -c`）
 - 不要求命令黑名单/白名单
 - 不要求沙箱隔离
+
+## 子代理 (agent_tool) 规则
+
+- 子代理默认支持并行执行。父代理在同一 turn 中发出多个 `agent_tool` 调用时，应并行启动子代理，而非串行等待。
+- 子代理可以执行调查和写入操作，不区分"调查型"和"干活型"。
+- **工作区隔离**：父代理在启动子代理前，必须为每个子代理分配独立的文件范围或子目录工作区，确保各子代理的写入路径不重叠。
+- **冲突避免**：同一文件在同一 turn 中只能由一个子代理写入。父代理负责预判冲突，对可能写入相同文件的子代理降级为串行执行。
+- **无锁设计**：子代理之间不共享内存，通过 fork/pthread 隔离。文件冲突通过父代理预分配避免，不需要运行时文件锁。
+- 子代理深度限制 `MAX_SUBAGENT_DEPTH=3`（当前值），防止递归爆炸。
+- 子代理结果上限 `SUBAGENT_RESULT_MAX`，超出截断。
+- 子代理失败/无回复返回结构化错误，不静默。
 
 ## 资源和失败策略
 

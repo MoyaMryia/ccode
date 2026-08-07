@@ -20,7 +20,9 @@
  *   platform_bsd.c     FreeBSD/NetBSD/OpenBSD (native POSIX)
  *   platform_darwin.c  macOS / PureDarwin (native POSIX)
  *   platform_hurd.c    GNU Hurd (native POSIX, Mach microkernel)
- *   platform_win32.c   Windows NT 4.0+ via Cygwin (POSIX compatibility layer)
+ *   platform_haiku.c   HaikuOS (BeOS descendant, POSIX layer)
+ *   platform_sysv.c    System V / illumos (POSIX with legacy quirks)
+ *   platform_win32.c   Windows NT 4.0+ via Cygwin/MSYS2 (POSIX compatibility layer)
  *
  * Design rules:
  *   - Functions here are the ONLY place platform-specific headers appear.
@@ -45,6 +47,8 @@
  * OpenBSD:   sysctl(CTL_KERN, KERN_PROC_ARGV) + realpath  (TODO)
  * Darwin:    _NSGetExecutablePath                     (TODO)
  * Hurd:      /proc/self/exe readlink (compat layer)   (TODO)
+ * Haiku:     find_path(B_APP_IMAGE_SYMBOL)            (TODO)
+ * SysV:      /proc/self/exe readlink or argv[0]+PATH  (TODO)
  * Win32:     Cygwin: readlink("/proc/self/exe")        (TODO)
  *
  */
