@@ -32,6 +32,7 @@ initfs.gz
 *.swp
 *.swo
 *~
+reference/
 
 # OS
 .DS_Store

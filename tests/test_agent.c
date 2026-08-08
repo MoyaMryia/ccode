@@ -2909,6 +2909,11 @@ static int test_coding_agent_prompt_contract(void) {
     ASSERT(strstr(prompt, "edit_file") != NULL);
     ASSERT(strstr(prompt, "Ask for approval before side effects") != NULL);
     ASSERT(strstr(prompt, "GitHub-flavored Markdown") != NULL);
+    ASSERT(strstr(prompt, "task_create") != NULL);
+    ASSERT(strstr(prompt, "agent_tool") != NULL);
+    ASSERT(strstr(prompt, "Never commit") != NULL);
+    ASSERT(strstr(prompt, "file_path:line_number") != NULL);
+    ASSERT(strstr(prompt, "AGENTS.md") != NULL);
     return 1;
 }
 
