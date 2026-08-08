@@ -46,65 +46,94 @@
 
 static int subagent_depth = 0;
 
+/* Cache of the last change-log / task summaries appended to the conversation.
+ * The summaries are only appended when their content changed since the last
+ * turn, keeping the request prefix byte-stable for upstream context caching
+ * (DeepSeek and OpenAI cache the request prefix and discount cached tokens).
+ * run_subagent saves and restores these around a delegated run so the
+ * delegate's dedup state never suppresses a summary the parent still needs
+ * to append. */
+static char *last_change_summary = NULL;
+static char *last_task_summary = NULL;
+
 static const char *subagent_system_prompt(void) {
     return
         "You are a delegate sub-agent of ccode, the terminal coding agent. "
         "You are given a single focused task inside the current workspace. "
-        "Inspect the relevant files first, then answer the task directly and "
-        "concisely. Prefer read-only tools (read_file, glob, grep, git_*) to "
-        "gather information. Never claim something was verified unless a "
-        "check actually ran. If a tool result was denied or failed, say so "
-        "instead of assuming success. Your final message is the only thing "
-        "returned to the calling agent, so make it self-contained.";
+        "Inspect the relevant files first: use glob to find paths, grep to "
+        "search content, and read_file when you know the path. Prefer "
+        "read-only tools (read_file, glob, grep, git_*) and make no changes "
+        "unless the task explicitly asks for them. Match your thoroughness "
+        "to what the caller requested. Never claim something was verified "
+        "unless a check actually ran. If a tool result was denied or "
+        "failed, say so instead of assuming success. Your final message is "
+        "the only thing returned to the calling agent, so make it "
+        "self-contained: state findings with file_path:line_number "
+        "references, list every change you made, and name anything left "
+        "unverified.";
 }
 
-struct subagent_collector {
-    char *buf;
-    size_t cap;
-    size_t len;
-};
+/* A delegate's streamed content and reasoning are sinks: only the final
+ * assistant message is returned to the parent, everything else is dropped
+ * so narration between tool calls never pollutes the parent's context. */
+static void subagent_discard(const char *content, void *context) {
+    (void)content;
+    (void)context;
+}
 
-static void subagent_collect(const char *content, void *context) {
-    struct subagent_collector *col = context;
-    size_t add = content ? strlen(content) : 0;
-    size_t needed;
-    if (add == 0) return;
-    if (col->len > SUBAGENT_RESULT_MAX ||
-        add > SUBAGENT_RESULT_MAX - col->len)
-        return;
-    needed = col->len + add + 1;
-    if (needed > col->cap) {
-        size_t new_cap = col->cap ? col->cap : 512;
-        char *tmp;
-        while (new_cap < needed && new_cap < SUBAGENT_RESULT_MAX * 2)
-            new_cap *= 2;
-        if (new_cap < needed) new_cap = needed;
-        tmp = realloc(col->buf, new_cap);
-        if (!tmp) return;
-        col->buf = tmp;
-        col->cap = new_cap;
+/* Extract the last non-empty assistant message from the sub-agent's
+ * conversation. That message is the delegate's report to its caller. */
+static char *subagent_final_answer(const struct ccode_conversation *conv) {
+    size_t i;
+    for (i = conv->count; i > 0; i--) {
+        const struct ccode_message *m = &conv->messages[i - 1];
+        if (m->role == CCODE_ROLE_ASSISTANT && m->content && m->content[0])
+            return ccode_strdup(m->content);
     }
-    memcpy(col->buf + col->len, content, add + 1);
-    col->len += add;
+    return NULL;
+}
+
+/* Cap the returned report at SUBAGENT_RESULT_MAX bytes, backing off to a
+ * UTF-8 character boundary and marking the truncation explicitly so the
+ * parent does not mistake a partial report for a complete one. */
+static char *subagent_truncate(char *answer) {
+    size_t len = answer ? strlen(answer) : 0;
+    size_t cut;
+    char *tmp;
+    if (len <= SUBAGENT_RESULT_MAX) return answer;
+    cut = SUBAGENT_RESULT_MAX;
+    while (cut > 0 && ((unsigned char)answer[cut] & 0xC0) == 0x80)
+        cut--;
+    answer[cut] = '\0';
+    tmp = realloc(answer, cut + sizeof("\n... [truncated]"));
+    if (!tmp) return answer;
+    memcpy(tmp + cut, "\n... [truncated]", sizeof("\n... [truncated]"));
+    return tmp;
 }
 
 static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
-                                         struct ccode_conversation *conv);
+                                          struct ccode_conversation *conv);
 
 static char *run_subagent(const struct ccode_agent_config *cfg,
-                          const char *task, int read_only) {
+                           const char *task, int read_only) {
     struct ccode_conversation sub;
     struct ccode_agent_config sub_cfg;
-    struct subagent_collector col;
+    char *saved_change_summary = last_change_summary;
+    char *saved_task_summary = last_task_summary;
+    char *answer;
     int rc;
 
     if (subagent_depth >= MAX_SUBAGENT_DEPTH)
-        return ccode_strdup("{\"error\":\"Sub-agent depth limit reached\"}");
+        return ccode_strdup("{\"error\":\"Sub-agent depth limit "
+                            "(3) reached\"}");
 
     subagent_depth++;
-    memset(&col, 0, sizeof(col));
+    last_change_summary = NULL;
+    last_task_summary = NULL;
     if (ccode_conversation_init(&sub, CCODE_MAX_MESSAGES) != 0) {
         subagent_depth--;
+        last_change_summary = saved_change_summary;
+        last_task_summary = saved_task_summary;
         return ccode_strdup("{\"error\":\"Out of memory\"}");
     }
     if (ccode_conversation_add(&sub, CCODE_ROLE_SYSTEM,
@@ -112,31 +141,52 @@ static char *run_subagent(const struct ccode_agent_config *cfg,
         ccode_conversation_add(&sub, CCODE_ROLE_USER, task) != 0) {
         ccode_conversation_destroy(&sub);
         subagent_depth--;
+        last_change_summary = saved_change_summary;
+        last_task_summary = saved_task_summary;
         return ccode_strdup("{\"error\":\"Out of memory\"}");
     }
 
     sub_cfg = *cfg;
-    sub_cfg.on_content = subagent_collect;
-    sub_cfg.on_content_context = &col;
+    sub_cfg.quiet = 1;
+    sub_cfg.on_content = subagent_discard;
+    sub_cfg.on_content_context = NULL;
+    sub_cfg.on_reasoning = subagent_discard;
+    sub_cfg.on_reasoning_context = NULL;
+    /* A delegate must never overwrite or fork the parent's session file. */
+    sub_cfg.save_session = NULL;
+    sub_cfg.resume_session = NULL;
     if (read_only) {
         sub_cfg.read_only_tools = 1;
         sub_cfg.tools_enabled = 0;
     }
 
+    fprintf(stderr, "  \033[2m[sub-agent] depth %d, %s\033[0m\n",
+            subagent_depth, read_only ? "read-only" : "read-write");
+
     rc = ccode_agent_process_turn_loop(&sub_cfg, &sub);
+    answer = subagent_final_answer(&sub);
     ccode_conversation_destroy(&sub);
     subagent_depth--;
 
-    if (rc != 0) {
-        free(col.buf);
+    /* The sub-agent ran with its own summary dedup state; discard it and
+     * restore the parent's so the parent re-appends any summary the
+     * delegate advanced past. */
+    free(last_change_summary);
+    free(last_task_summary);
+    last_change_summary = saved_change_summary;
+    last_task_summary = saved_task_summary;
+
+    if (rc == 130) {
+        free(answer);
+        return ccode_strdup("{\"error\":\"Sub-agent cancelled\"}");
+    }
+    if (rc != 0 && !answer) {
         return ccode_strdup("{\"error\":\"Sub-agent failed\"}");
     }
-    if (!col.buf || col.len == 0) {
-        free(col.buf);
+    if (!answer) {
         return ccode_strdup("{\"error\":\"Sub-agent returned no answer\"}");
     }
-    if (col.len > SUBAGENT_RESULT_MAX) col.buf[SUBAGENT_RESULT_MAX] = '\0';
-    return col.buf;
+    return subagent_truncate(answer);
 }
 
 static char *execute_prepared_tool(const struct ccode_agent_config *cfg,
@@ -244,13 +294,6 @@ static int append_tool_error(struct ccode_conversation *conv, const char *id,
     return status;
 }
 
-/* Cache of the last change-log / task summaries appended to the conversation.
- * The summaries are only appended when their content changed since the last
- * turn, keeping the request prefix byte-stable for upstream context caching
- * (DeepSeek and OpenAI cache the request prefix and discount cached tokens). */
-static char *last_change_summary = NULL;
-static char *last_task_summary = NULL;
-
 static int append_summary_if_changed(struct ccode_conversation *conv,
                                      const char *summary,
                                      char **last_summary) {
@@ -340,11 +383,11 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
             }
         }
 
-        {
+        if (!cfg->quiet) {
             struct timespec now_ts;
             const char *mode_label = cfg->tools_enabled    ? "read-write"
-                                : cfg->read_only_tools ? "read-only"
-                                                       : "none";
+                                 : cfg->read_only_tools ? "read-only"
+                                                        : "none";
             (void)clock_gettime(CLOCK_MONOTONIC, &now_ts);
             {
                 long el = (long)(now_ts.tv_sec - turn0_ts.tv_sec);
@@ -437,7 +480,7 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
 
                 if (cfg->on_content && acc.content && acc.content[0])
                     cfg->on_content("\n", cfg->on_content_context);
-                putchar('\n');
+                if (!cfg->quiet) putchar('\n');
 
                 for (i = 0; i < acc.tool_call_count; i++) {
                     char *tool_result;
