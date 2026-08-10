@@ -14,19 +14,16 @@ itself here (line mode), so commands that print a lot will scroll off.
 Redirect output to files inside the guest for anything important.
 
 By default the guest CPU is throttled to roughly a Pentium 133:
-`-icount shift=6,align=on,sleep=on` charges 64ns of virtual time per guest
-instruction. Note QEMU's align throttle undershoots badly: the nominal
-2^N ns/insn rate is ~8x faster than observed on QEMU 6.2 (shift=3, nominal
-125 MIPS, lands near 1 GHz in the guest). shift=6 empirically lands near
-~125 MHz ~ Pentium 133. CPU-bound work (boot, tar, make) is ~32x slower
-than unthrottled TCG, and waits that depend on guest CPU work are scaled
-accordingly. Pass --icount-shift -1 to disable the limit, or another shift
-to tune (each +1 halves the speed).
+`-icount shift=3,align=on,sleep=on` charges 8ns of virtual time per guest
+instruction (~125 MIPS, about 1 IPC at 133MHz) and aligns virtual time to
+wall-clock time. CPU-bound work (boot, tar, make) is ~8x slower than
+unthrottled TCG, and all waits that depend on guest CPU work are scaled
+accordingly. Pass --icount-shift -1 to disable the limit.
 
 Usage:
   python3 scripts/guest_lab.py [--skip-prep] [--cc gcc-egcs-1.1.2]
                                [--targets 'ccode ccode-cli']
-                               [--icount-shift 6]
+                               [--icount-shift 3]
 """
 import argparse
 import json
@@ -283,21 +280,17 @@ def main():
                     help='host->guest inbound port forwards, comma separated '
                          '"HOSTPORT-GUESTPORT" (default "2222-22,8080-80" maps '
                          'host:2222 -> guest:22, host:8080 -> guest:80).')
-    ap.add_argument('--icount-shift', type=int, default=6,
+    ap.add_argument('--icount-shift', type=int, default=3,
                     help='QEMU -icount shift: one guest instruction costs '
-                         '2^N ns of virtual time. Default 6 (nominal 64ns/'
-                         'insn) empirically lands near ~125 MHz ~ Pentium '
-                         '133 on QEMU 6.2 (the align throttle undershoots '
-                         '~8x; shift=3 lands near 1 GHz). -1 disables '
-                         'throttling.')
+                         '2^N ns of virtual time. Default 3 = 8ns/insn ~ '
+                         '125 MIPS ~ Pentium 133. -1 disables throttling.')
     args = ap.parse_args()
 
     # Wall-clock multiplier for waits that depend on guest CPU work.
-    # Unthrottled TCG on a modern host is ~4 GHz effective; the throttled
-    # guest lands near ~125 MHz, i.e. ~32x slower. Interactive wall-clock
-    # sleeps stay unscaled: icount aligns virtual time to real time, so
-    # guest `sleep 1` is still 1s.
-    scale = 32 if args.icount_shift >= 0 else 1
+    # Unthrottled TCG on a modern host is ~1 GHz effective; 125 MIPS is
+    # ~8x slower. Interactive wall-clock sleeps stay unscaled: icount
+    # aligns virtual time to real time, so guest `sleep 1` is still 1s.
+    scale = 8 if args.icount_shift >= 0 else 1
 
     if not args.skip_prep:
         prep_sources(args.workdir, args.fs, args.disk)
