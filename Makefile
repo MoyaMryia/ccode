@@ -205,9 +205,19 @@ tests/test_json: $(TEST_JSON_SRC)
 test-agent: tests/test_agent
 	./tests/test_agent
 
+# RETRO: tls_backend.h lets CCODE_RETRO win the backend derivation, so the
+# agent unit tests build against the PolarSSL (HTTPS) backend and must link
+# the vendored PolarSSL objects; other modes keep the tests HTTP-only
+# (CCODE_HTTP_ONLY -> CCODE_TLS_NONE) so no TLS objects are needed.
+ifeq ($(RETRO),1)
+tests/test_agent: override CPPFLAGS += -DCCODE_UNIT_TEST=1
+tests/test_agent: $(TEST_AGENT_SRC) $(POLARSSL_OBJ)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(TEST_AGENT_SRC) $(POLARSSL_OBJ)
+else
 tests/test_agent: override CPPFLAGS += -DCCODE_UNIT_TEST=1 -DCCODE_HTTP_ONLY=1
 tests/test_agent: $(TEST_AGENT_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(TEST_AGENT_SRC)
+endif
 
 ifneq ($(TEST_PERMISSIONS_SRC),)
 test-permissions: tests/test_permissions
