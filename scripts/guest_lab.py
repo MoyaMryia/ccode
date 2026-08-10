@@ -13,9 +13,17 @@ Screen output is a LIVENESS signal; command output is on the screen
 itself here (line mode), so commands that print a lot will scroll off.
 Redirect output to files inside the guest for anything important.
 
+By default the guest CPU is throttled to roughly a Pentium 133:
+`-icount shift=3,align=on,sleep=on` charges 8ns of virtual time per guest
+instruction (~125 MIPS, about 1 IPC at 133MHz) and aligns virtual time to
+wall-clock time. CPU-bound work (boot, tar, make) is ~8x slower than
+unthrottled TCG, and all waits that depend on guest CPU work are scaled
+accordingly. Pass --icount-shift -1 to disable the limit.
+
 Usage:
   python3 scripts/guest_lab.py [--skip-prep] [--cc gcc-egcs-1.1.2]
                                [--targets 'ccode ccode-cli']
+                               [--icount-shift 3]
 """
 import argparse
 import json
@@ -272,7 +280,17 @@ def main():
                     help='host->guest inbound port forwards, comma separated '
                          '"HOSTPORT-GUESTPORT" (default "2222-22,8080-80" maps '
                          'host:2222 -> guest:22, host:8080 -> guest:80).')
+    ap.add_argument('--icount-shift', type=int, default=3,
+                    help='QEMU -icount shift: one guest instruction costs '
+                         '2^N ns of virtual time. Default 3 = 8ns/insn ~ '
+                         '125 MIPS ~ Pentium 133. -1 disables throttling.')
     args = ap.parse_args()
+
+    # Wall-clock multiplier for waits that depend on guest CPU work.
+    # Unthrottled TCG on a modern host is ~1 GHz effective; 125 MIPS is
+    # ~8x slower. Interactive wall-clock sleeps stay unscaled: icount
+    # aligns virtual time to real time, so guest `sleep 1` is still 1s.
+    scale = 8 if args.icount_shift >= 0 else 1
 
     if not args.skip_prep:
         prep_sources(args.workdir, args.fs, args.disk)
@@ -284,14 +302,17 @@ def main():
     qmp = '/tmp/qmp.sock'
     if os.path.exists(qmp):
         os.unlink(qmp)
-    q = QEMU(['qemu-system-i386', '-m', str(args.mem),
-              '-hda', args.disk,
-              '-netdev', netdev,
-              '-device', 'pcnet,netdev=n1',
-              '-qmp', 'unix:%s,server,nowait' % qmp], qmp)
+    argv = ['qemu-system-i386', '-m', str(args.mem),
+            '-hda', args.disk,
+            '-netdev', netdev,
+            '-device', 'pcnet,netdev=n1',
+            '-qmp', 'unix:%s,server,nowait' % qmp]
+    if args.icount_shift >= 0:
+        argv += ['-icount', 'shift=%d,align=on,sleep=on' % args.icount_shift]
+    q = QEMU(argv, qmp)
     print('qemu up, waiting for boot...', flush=True)
 
-    if not q.wait_screen(needle='/<#', timeout=180):
+    if not q.wait_screen(needle='/<#', timeout=180 * scale):
         print('BOOT FAILED. last screen:')
         print('\n'.join(q.lines[-20:]))
         q.quit()
@@ -299,20 +320,22 @@ def main():
     print('shell up', flush=True)
     time.sleep(3)
     q.run_cmd('cd /root && echo warmup > warmup.log 2>&1; '
-              'echo $? > warmup.rc', settle_timeout=15)
+              'echo $? > warmup.rc', settle_timeout=15 * scale)
 
     # Every step redirects its output to /root/NAME.log and its exit
     # code to /root/NAME.rc. The screen is only used to notice when the
-    # guest is idle again.
+    # guest is idle again. Timeouts are scaled for the CPU throttle.
     steps = [
         ('probe', 'cd /root && which gcc gcc-egcs-1.1.2 gcc-2.7.2.3 '
-                  'make tar sh ar', 30),
-        ('unpack', 'cd /root && tar xf ccode-src.tar && ls Makefile src', 60),
+                  'make tar sh ar', 30 * scale),
+        ('unpack', 'cd /root && tar xf ccode-src.tar && ls Makefile src',
+         60 * scale),
         ('tls', 'cd /root && make -C vendor/polarssl-1.3.9/library '
                 'CC=gcc-egcs-1.1.2 CFLAGS="-O2 -I../include '
-                '-include /root/src/compat/compat.h -I/root/src/compat"', 900),
+                '-include /root/src/compat/compat.h -I/root/src/compat"',
+         900 * scale),
         ('build', 'cd /root && make RETRO=1 RETRO_NATIVE=1 '
-                  'CC=%s %s' % (args.cc, args.targets), 900),
+                  'CC=%s %s' % (args.cc, args.targets), 900 * scale),
     ]
     for name, cmd, settle in steps:
         full = '%s > %s.log 2>&1; echo $? > %s.rc; echo DONE_%s' % (
@@ -356,7 +379,7 @@ def main():
 
     # hmp quit does NOT sync the guest fs - sync or all files above vanish.
     print('>> sync', flush=True)
-    q.run_cmd('sync', settle_timeout=60)
+    q.run_cmd('sync', settle_timeout=60 * scale)
     time.sleep(2)
     q.quit()
     return 0
