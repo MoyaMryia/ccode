@@ -1,6 +1,7 @@
 #include "http.h"
 #include "json.h"
 #include "permissions/permissions.h"
+#include "platform/platform.h"
 #include "tls_backend.h"
 
 #include <arpa/inet.h>
@@ -310,6 +311,11 @@ static int connect_tcp(const char *host, const char *port, long long deadline,
         }
         close(socket_fd);
         socket_fd = -1;
+    }
+    if (socket_fd >= 0) {
+        /* Suppress SIGPIPE on sends to this socket (SO_NOSIGPIPE on Darwin;
+         * no-op on Linux where MSG_NOSIGNAL is used per-send). Best-effort. */
+        ccode_platform_socket_nosigpipe(socket_fd);
     }
     return socket_fd;
 }
@@ -662,7 +668,7 @@ static int send_all(int fd, const char *data, size_t length,
                     long long total_deadline) {
     long long deadline = phase_deadline(total_deadline, IO_TIMEOUT_MS);
     while (length > 0) {
-        ssize_t sent = send(fd, data, length, MSG_NOSIGNAL);
+        ssize_t sent = send(fd, data, length, ccode_platform_send_flags());
         if (sent > 0) {
             data += (size_t)sent;
             length -= (size_t)sent;
@@ -813,7 +819,7 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
 static int tls_send_no_signal(void *context, const unsigned char *data,
                               size_t length) {
     mbedtls_net_context *server = context;
-    ssize_t sent = send(server->fd, data, length, MSG_NOSIGNAL);
+    ssize_t sent = send(server->fd, data, length, ccode_platform_send_flags());
     if (sent >= 0) return (int)sent;
     if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
         return MBEDTLS_ERR_SSL_WANT_WRITE;
@@ -1025,7 +1031,7 @@ cleanup:
 static int polarssl_send_no_signal(void *context, const unsigned char *data,
                                    size_t length) {
     const int *fd = context;
-    ssize_t sent = send(*fd, data, length, MSG_NOSIGNAL);
+    ssize_t sent = send(*fd, data, length, ccode_platform_send_flags());
     if (sent >= 0) return (int)sent;
     if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
         return POLARSSL_ERR_NET_WANT_WRITE;

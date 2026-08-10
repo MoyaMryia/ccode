@@ -14,11 +14,13 @@
  * codebase.
  *
  * Currently implemented:
- *   platform_linux.c   Linux (shares /proc + Landlock syscall ABI)
+ *   platform_linux.c   Linux + Cygwin (/proc readlink, Landlock, MSG_NOSIGNAL)
+ *   platform_darwin.c  macOS / PureDarwin (_NSGetExecutablePath, SO_NOSIGPIPE;
+ *                      detect/sandbox best-effort no-op)
+ *   platform_bsd.c     FreeBSD/NetBSD/OpenBSD/DragonFlyBSD (sysctl exe path;
+ *                      detect/sandbox best-effort no-op)
  *
  * Future implementations (interfaces only, not yet built):
- *   platform_bsd.c     FreeBSD/NetBSD/OpenBSD (native POSIX)
- *   platform_darwin.c  macOS / PureDarwin (native POSIX)
  *   platform_hurd.c    GNU Hurd (native POSIX, Mach microkernel)
  *   platform_haiku.c   HaikuOS (BeOS descendant, POSIX layer)
  *   platform_sysv.c    System V / illumos (POSIX with legacy quirks)
@@ -44,8 +46,9 @@
  *
  * Linux:     readlink("/proc/self/exe")
  * FreeBSD:   sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1)
- * OpenBSD:   sysctl(CTL_KERN, KERN_PROC_ARGV) + realpath  (TODO)
- * Darwin:    _NSGetExecutablePath                     (TODO)
+ * NetBSD:    sysctl(CTL_KERN, KERN_PROC_ARGS, KERN_PROC_PATHNAME, -1)
+ * OpenBSD:   no exe-path sysctl (deliberately); returns -1 (argv[0]/PATH)
+ * Darwin:    _NSGetExecutablePath + realpath
  * Hurd:      /proc/self/exe readlink (compat layer)   (TODO)
  * Haiku:     find_path(B_APP_IMAGE_SYMBOL)            (TODO)
  * SysV:      /proc/self/exe readlink or argv[0]+PATH  (TODO)
@@ -64,7 +67,7 @@ int ccode_platform_exe_path(char *buf, size_t cap);
  * usable procfs return 0.
  *
  * Linux:  scan /proc/<pid>/stat for ppid==child && pgid!=child_pgid
- * Others: return 0 (TODO: kvm/procfs equivalents where available)
+ * Darwin/BSD: return 0 (TODO: sysctl/libproc/libkvm process-tree walk)
  */
 int ccode_platform_detect_escaped(pid_t child);
 
@@ -77,8 +80,32 @@ int ccode_platform_detect_escaped(pid_t child);
  *
  * Linux:  Landlock (syscall ABI, kernel 5.13+); degrades to no-op
  * Win32:  Cygwin: no-op returning -1 (command filter as fallback)
- * Others: no-op returning -1 (TODO: pledge / Seatbelt)
+ * Darwin: no-op returning -1 (TODO: Seatbelt)
+ * BSD:    no-op returning -1 (TODO: pledge/unveil, cap_enter)
  */
 int ccode_platform_sandbox_apply(const char *workspace_path);
+
+/*
+ * Best-effort SIGPIPE suppression for a connected socket. Call once after
+ * connect() succeeds, before any send(). Returns 0 on success, -1 on
+ * failure (callers proceed: a stray SIGPIPE on a closed socket is the
+ * pre-existing behavior on platforms without this).
+ *
+ * Linux:  no-op (MSG_NOSIGNAL is used per-send instead)
+ * Darwin: setsockopt(SO_NOSIGPIPE) - the Darwin equivalent of MSG_NOSIGNAL
+ * Others: no-op returning -1
+ */
+int ccode_platform_socket_nosigpipe(int fd);
+
+/*
+ * send() flags that suppress SIGPIPE on the current platform. OR this into
+ * the flags argument of every send() on a socket that may be closed by the
+ * peer.
+ *
+ * Linux:  MSG_NOSIGNAL
+ * Darwin: 0 (SO_NOSIGPIPE set via ccode_platform_socket_nosigpipe)
+ * Others: 0
+ */
+int ccode_platform_send_flags(void);
 
 #endif /* CCODE_PLATFORM_H */

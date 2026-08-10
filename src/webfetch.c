@@ -4,6 +4,7 @@
 
 #include "webfetch.h"
 #include "permissions/permissions.h"
+#include "platform/platform.h"
 #include "tls_backend.h"
 
 #include <arpa/inet.h>
@@ -269,7 +270,10 @@ static int wf_connect(const char *host, const char *port, long long deadline) {
         if (fd < 0) continue;
         flags = fcntl(fd, F_GETFL, 0);
         if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) { close(fd); continue; }
-        if (connect(fd, sa, addrs[i].addrlen) == 0) return fd;
+        if (connect(fd, sa, addrs[i].addrlen) == 0) {
+            ccode_platform_socket_nosigpipe(fd);
+            return fd;
+        }
         if (errno == EINPROGRESS) {
             struct pollfd pfd;
             long long rem = deadline - wf_now_ms();
@@ -277,7 +281,10 @@ static int wf_connect(const char *host, const char *port, long long deadline) {
             if (poll(&pfd, 1, rem > 0 ? (int)(rem > 2147483647LL ? 2147483647LL : rem) : 0) == 1) {
                 int err = 0;
                 socklen_t elen = sizeof(err);
-                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen) == 0 && err == 0) return fd;
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen) == 0 && err == 0) {
+                    ccode_platform_socket_nosigpipe(fd);
+                    return fd;
+                }
             }
         }
         close(fd);
@@ -316,7 +323,7 @@ static int wf_tls_wait(struct wf_transport *transport, int tls_result,
 static int wf_polarssl_send(void *context, const unsigned char *data,
                             size_t length) {
     const int *fd = context;
-    ssize_t sent = send(*fd, data, length, MSG_NOSIGNAL);
+    ssize_t sent = send(*fd, data, length, ccode_platform_send_flags());
     if (sent >= 0) return (int)sent;
     if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
         return POLARSSL_ERR_NET_WANT_WRITE;
@@ -533,7 +540,7 @@ static int wf_send_all(struct wf_transport *transport, const char *data,
             }
         } else
 #endif
-            n = send(transport->fd, data, len, MSG_NOSIGNAL);
+            n = send(transport->fd, data, len, ccode_platform_send_flags());
         if (n > 0) { data += n; len -= (size_t)n; }
         else if (n < 0 && errno != EINTR && errno != EAGAIN) return -1;
     }
