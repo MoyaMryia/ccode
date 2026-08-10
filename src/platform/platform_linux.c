@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -199,4 +200,17 @@ int ccode_platform_sandbox_apply(const char *workspace_path) {
     }
     close(ruleset_fd);
     return 0;
+}
+
+/* ── SIGPIPE-safe send ──
+ *
+ * Linux suppresses SIGPIPE per-send via the MSG_NOSIGNAL flag, so the
+ * socket-level no-op leaves the flag do the work. */
+int ccode_platform_socket_nosigpipe(int fd) {
+    (void)fd;
+    return 0; /* MSG_NOSIGNAL is used per-send instead. */
+}
+
+int ccode_platform_send_flags(void) {
+    return MSG_NOSIGNAL;
 }

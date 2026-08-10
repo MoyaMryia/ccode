@@ -4,6 +4,19 @@ CFLAGS ?= -O2 -std=c99 -Wall -Wextra -Wpedantic
 LDFLAGS ?=
 override CPPFLAGS += -D_POSIX_C_SOURCE=200112L
 
+# Host triplet from the toolchain (e.g. x86_64-linux-gnu, x86_64-apple-darwin23,
+# aarch64-apple-darwin23, x86_64-portbld-freebsd14, riscv64-linux-gnu). Used to
+# pick the platform implementation and gate x86/Apple-specific flags below.
+HOST_MACH := $(shell $(CC) -dumpmachine 2>/dev/null)
+
+# Darwin: _POSIX_C_SOURCE alone hides BSD/POSIX.1-2008 extensions that the
+# sources use (strcasestr, memmem, fdopendir). _GNU_SOURCE (a glibc-only
+# macro) does not rescue them on Darwin, so define _DARWIN_C_SOURCE which
+# re-enables the full Darwin namespace. Harmless on other platforms.
+ifneq ($(findstring apple,$(HOST_MACH)),)
+override CPPFLAGS += -D_DARWIN_C_SOURCE
+endif
+
 # ── Retro i386 / BasicLinux 3.5.1 (libc5 / kernel 2.2.26) build mode ──
 # Activated by RETRO=1. Targets i586 and force-includes src/compat/compat.h
 # to shim openat, fstatat, O_CLOEXEC, getaddrinfo, clock_gettime and stdint.h.
@@ -36,16 +49,37 @@ else
 override LDFLAGS := $(filter-out -m64 -m32,$(LDFLAGS))
 endif
 else
-# x86-specific flags: only when targeting x86. Cross-compilation (e.g.
-# CC=riscv64-linux-gnu-gcc) must not inherit -m64/-march=x86-64.
-# Detect via $(CC) -dumpmachine (returns x86_64-... for x86, riscv64-... etc).
-ifneq ($(findstring x86_64,$(shell $(CC) -dumpmachine 2>/dev/null)),)
+# x86-specific flags: only when targeting x86_64 with a GNU/Linux toolchain.
+# -m64/-march=x86-64/-mtune=generic pin the Linux x86-64-v1 baseline; they are
+# meaningless or rejected elsewhere:
+#   - Apple clang (Intel or Apple Silicon arm64) rejects -march=x86-64 and
+#     errors on -m64 under arm64; the arch is default anyway.
+#   - BSD / Cygwin use their own baselines.
+#   - Cross builds (CC=riscv64-linux-gnu-gcc) must not inherit them.
+# X86_GNU_FLAGS is reused by the mbedTLS rule and the asan/repro convenience
+# targets so they stay in sync (empty on non-Linux-x86 hosts).
+X86_GNU_FLAGS =
+ifneq ($(findstring x86_64,$(HOST_MACH)),)
+ifneq ($(findstring linux,$(HOST_MACH)),)
+X86_GNU_FLAGS = -m64 -march=x86-64 -mtune=generic
 override CFLAGS += -m64 -march=x86-64 -mtune=generic
 override LDFLAGS += -m64
 endif
 endif
+endif
 
+# Per-OS platform implementation. Linux shares /proc + Landlock; Darwin
+# uses _NSGetExecutablePath + best-effort; the BSDs use sysctl for the exe
+# path. See src/platform/platform.h. HOST_MACH (defined near the top) carries
+# the vendor token (e.g. *-apple-darwin*, x86_64-portbld-freebsd14.0,
+# x86_64--netbsd); version suffixes mean substring match, not word filter.
 PLATFORM_SRC = src/platform/platform_linux.c
+ifneq ($(findstring apple,$(HOST_MACH)),)
+PLATFORM_SRC = src/platform/platform_darwin.c
+endif
+ifneq (,$(findstring freebsd,$(HOST_MACH))$(findstring dragonfly,$(HOST_MACH))$(findstring netbsd,$(HOST_MACH))$(findstring openbsd,$(HOST_MACH)))
+PLATFORM_SRC = src/platform/platform_bsd.c
+endif
 AGENT_SRC = src/agent/agent.c src/agent/agent_cancel.c src/agent/agent_fs.c src/agent/agent_args.c src/agent/agent_prepare.c src/agent/agent_exec.c src/agent/agent_output.c src/agent/message.c
 SRC = src/main.c src/config.c src/tui/tui.c src/tui/term.c src/tui/render.c src/tui/input.c src/tui/messages.c src/tui/status.c src/tui/theme.c src/tui/protocol.c src/markdown.c $(PLATFORM_SRC)
 TEST_JSON_SRC = tests/test_json.c src/json.c vendor/jsmn/jsmn.c $(RETRO_SRC)
@@ -127,7 +161,7 @@ ifeq ($(BUILD_MODE),https)
 # Compiled with relaxed flags: third-party code, keep it quiet.
 MBEDTLS_SRC = $(wildcard $(MBEDTLS_DIR)/library/*.c)
 MBEDTLS_OBJ = $(addprefix $(OBJDIR)/,$(MBEDTLS_SRC:.c=.o))
-MBEDTLS_CFLAGS = -O2 -std=c99 -w $(if $(findstring x86_64,$(shell $(CC) -dumpmachine 2>/dev/null)),-m64 -march=x86-64 -mtune=generic)
+MBEDTLS_CFLAGS = -O2 -std=c99 -w $(X86_GNU_FLAGS)
 endif
 
 all: ccode ccode-cli
@@ -240,12 +274,13 @@ clean:
 
 # ASan + UBSan build (for debugging/fuzzing). Override CFLAGS to remove
 # -O2 (ASan works best with -O0 or -O1) and inject the sanitizer flags.
+# X86_GNU_FLAGS is empty on non-Linux-x86 hosts so the build stays portable.
 asan: clean
-	@$(MAKE) HTTP_ONLY=1 CFLAGS="-O1 -std=c99 -Wall -Wextra -Wpedantic -m64 -march=x86-64 -mtune=generic -fsanitize=address,undefined -fno-omit-frame-pointer -g" LDFLAGS="-m64 -fsanitize=address,undefined"
+	@$(MAKE) HTTP_ONLY=1 CFLAGS="-O1 -std=c99 -Wall -Wextra -Wpedantic $(X86_GNU_FLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer -g" LDFLAGS="$(if $(X86_GNU_FLAGS),-m64) -fsanitize=address,undefined"
 	@echo "ASan/UBSan binary ready. Run individual test targets to exercise."
 
 # Reproducible build: honour SOURCE_DATE_EPOCH and strip unstable paths.
 repro: clean
-	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic -m64 -march=x86-64 -mtune=generic -ffile-prefix-map=$(PWD)=."
+	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic $(X86_GNU_FLAGS) -ffile-prefix-map=$(PWD)=."
 
 .PHONY: ccode ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-markdown test-tty test-e2e test-streaming retro-test asan repro test-sandbox

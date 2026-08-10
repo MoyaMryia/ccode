@@ -4,6 +4,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# sha256sum on GNU; shasum -a 256 on macOS / BSD. Probe once.
+if command -v sha256sum >/dev/null 2>&1; then
+    SHA256="sha256sum"
+else
+    SHA256="shasum -a 256"
+fi
+
 RESULT=0
 echo "=== ccode CI ==="
 echo
@@ -36,10 +43,19 @@ fi
 # ── ASan/UBSan build (smoke only) ──
 echo
 echo "--- ASan/UBSan (smoke build) ---"
+# GNU x86 flags only apply on Linux-x86; Apple clang rejects -march=x86-64.
+X86_FLAGS=""
+case "$(uname -s 2>/dev/null)" in
+    Linux)
+        case "$(uname -m 2>/dev/null)" in
+            x86_64) X86_FLAGS="-m64 -march=x86-64 -mtune=generic" ;;
+        esac
+        ;;
+esac
 if make clean >/dev/null 2>&1 && \
    make HTTP_ONLY=1 \
-        CFLAGS="-O1 -std=c99 -Wall -Wextra -Wpedantic -m64 -march=x86-64 -mtune=generic -fsanitize=address,undefined -fno-omit-frame-pointer -g" \
-        LDFLAGS="-m64 -fsanitize=address,undefined" \
+        CFLAGS="-O1 -std=c99 -Wall -Wextra -Wpedantic $X86_FLAGS -fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+        LDFLAGS="${X86_FLAGS:+-m64 }-fsanitize=address,undefined" \
         test-json test-agent 2>/dev/null; then
     echo "  PASS: ASan/UBSan smoke"
 else
@@ -52,10 +68,10 @@ echo
 echo "--- Reproducible build ---"
 make clean >/dev/null 2>&1 || true
 SOURCE_DATE_EPOCH=0 make HTTP_ONLY=1 >/dev/null 2>&1
-HASH1=$(sha256sum ccode | cut -d' ' -f1)
+HASH1=$("$SHA256" ccode | cut -d' ' -f1)
 make clean >/dev/null 2>&1 || true
 SOURCE_DATE_EPOCH=0 make HTTP_ONLY=1 >/dev/null 2>&1
-HASH2=$(sha256sum ccode | cut -d' ' -f1)
+HASH2=$("$SHA256" ccode | cut -d' ' -f1)
 if [ "$HASH1" = "$HASH2" ] && [ -n "$HASH1" ]; then
     echo "  PASS: reproducible build ($HASH1)"
 else
