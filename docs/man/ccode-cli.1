@@ -207,7 +207,7 @@ read_file, glob, grep, git_status, git_diff, git_stat.
 Read-write (with
 .BR \-\-write ):
 write_file, edit_file, delete_file, move_file, run_command, bash,
-web_fetch, web_search, agent_tool.
+web_fetch, web_search, agent_tool, task_create, task_update, task_list.
 .SH ENVIRONMENT
 .SS API
 .TP
@@ -326,11 +326,11 @@ pipeline is
 .BR ccode (1),
 .PD 0
 .TP
-.I docs/FEATURES.md
-Feature checklist and roadmap
-.TP
 .I docs/ARCHITECTURE.md
 Architecture and deployment notes
+.TP
+.I docs/FEATURES.md
+Feature status and roadmap
 .TP
 .I docs/BASICLINUX.md
 Retro i386 / BasicLinux port and QEMU guest builds

@@ -1,32 +1,29 @@
 .TH CCODE 1 "August 2026" "ccode v0.1" "User Commands"
 .SH NAME
-ccode \- terminal AI coding assistant (TUI frontend)
+ccode \- terminal AI coding assistant (single binary: TUI + CLI)
 .SH SYNOPSIS
 .B ccode
-[\fIoptions\fR]
+[\fIoptions\fR] [\fB\-p\fR \fIPROMPT\fR | \fB\-i\fR | \fB\-\-json\fR]
 .SH DESCRIPTION
 .B ccode
-is the interactive terminal UI for the
+is a single binary that carries both the interactive TUI and the CLI
+backend in one process. A bare
 .B ccode
-coding agent.
-It renders the conversation in an ANSI terminal, streams assistant output
-as it arrives, shows tool permission prompts, and manages input history.
-All agent work is delegated to the backend executable
-.BR ccode-cli (1),
-which is spawned automatically (override with
-.B \-\-backend
-or
-.BR CCODE_BACKEND ).
+starts the in-process TUI (the agent runs in the same process, no child
+is forked); it renders the conversation in an ANSI terminal, streams
+assistant output as it arrives, and shows tool permission prompts.
 .PP
+With
+.B \-p
+(one-shot prompt),
+.B \-i
+(interactive REPL) or
+.B \-\-json
+(JSON Lines backend for other frontends) it behaves exactly like
+.BR ccode-cli (1).
 The TUI is always interactive: no
 .B \-i
-or prompt flag is required. A bare
-.B ccode
-starts the UI, and options such as
-.B \-\-thinking
-or
-.B \-\-write
-are forwarded to the backend.
+or prompt flag is required to start it.
 .SH OPTIONS
 .TP
 .BI \-\-api-base " URL"
@@ -144,8 +141,8 @@ Conversation session files (JSON).
 .BR ccode-cli (1),
 .PD 0
 .TP
-.I docs/FEATURES.md
-Feature checklist and roadmap
+.I docs/ARCHITECTURE.md
+Architecture and deployment notes
 .TP
-.I docs/BASICLINUX.md
-Retro i386 / BasicLinux port (gcc 2.7, libc5, QEMU guest builds)
+.I docs/FEATURES.md
+Feature status and roadmap

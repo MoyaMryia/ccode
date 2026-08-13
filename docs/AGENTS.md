@@ -1,205 +1,184 @@
 # ccode 开发原则
 
-这是 `ccode/` 的权威开发契约。修改源码、测试、构建文件或工具策略前必须阅读本文档。
-
-`FEATURES.md` 负责功能状态和实现路线图。本文档负责工程规则、安全不变量、模块边界和完成标准。
+这是 `ccode/` 的权威开发契约。改代码、测试、构建文件或工具策略前，先读这一篇。`FEATURES.md` 管"做了什么、接下来做什么"，本文管"怎么改、别踩哪些坑"。
 
 ## 产品边界
 
-- 使用 C89 加保守的 POSIX 子集（`long long` 作为 GNU 扩展例外；retro 链路须过 egcs 1.1.2）。兼容 gcc（2.7+ ~ 14.x）和 clang（3.x+），`CC` 变量可切换。
-- 支持 Linux x86-64-v1，直到其他目标有专门的构建和测试矩阵。
-- 只支持 OpenAI 兼容的 Chat Completions API。不添加供应商 SDK 或特定提供商的请求/响应格式。
-- 设置、凭证、执行和会话数据保持本地优先。
-- 不添加遥测、远程配置、远程会话同步、自动更新、插件下载、市场行为或后台自治。
-- Python 只允许用于本地测试模拟，不作为可执行运行时依赖。
-- 不在源码输出、错误、测试夹具、诊断、会话数据或文档中记录 API 密钥。
+- 用 C89 加保守的 POSIX 子集（`long long` 是唯一的 GNU 扩展例外；retro 链路要能过 egcs 1.1.2）。兼容 gcc 2.7+ 到 14.x、clang 3.x+，用 `CC` 变量切换。
+- 官方构建/测试矩阵是 Linux x86-64-v1。Darwin/BSD/Haiku/Hurd/Solaris/MINIX/Cygwin 的 `src/platform/platform_*.c` 代码已就位，但还没在真机上建构建/测试矩阵。
+- 只支持 OpenAI 兼容的 Chat Completions API。不加任何供应商 SDK 或私有请求格式。
+- 设置、凭证、执行、会话数据都留在本地。
+- 不加遥测、远程配置、远程同步、自动更新、插件下载、市场行为、后台自治。
+- Python 只用来写本地测试 mock，不能成为运行时依赖。
+- 任何地方（源码、错误信息、测试夹具、诊断、会话、文档）都不许出现 API 密钥。
 
-### 安全规则（已部分收紧）
+### 安全：先能用，再安全
 
-当前优先级是**先能用，再安全**，但命令级防护已落地（2026-08）：敏感路径过滤、破坏性命令拒绝、子进程最小环境、Landlock 写沙箱（可用时）。以下规则仍然放宽：
+命令级防护已经落地（2026-08）：敏感路径过滤、破坏性命令拒绝、子进程最小环境、Landlock 写沙箱（可用时）。下面几条仍然放宽：
 
-- 允许 shell 字符串执行（通过 `sh -c`，但命令内容经敏感路径/破坏性命令过滤）
-- 允许 `delete_file` 和 `move_file`（简单版本，工作区限制内）
-- 允许 `--auto-approve` 跳过交互式审批
-- 不要求完整沙箱隔离（Landlock 不可用时自动降级到命令过滤）
+- 允许 shell 字符串执行（`sh -c`，但内容过敏感路径/破坏性命令过滤）
+- 允许 `delete_file` / `move_file`（简单版，限工作区内）
+- 允许 `--auto-approve` 跳过审批
+- 不要求完整沙箱隔离（Landlock 不可用就退回命令过滤）
 
 ## 工作流程
 
-编辑前：
+**动手前：**
 
-1. 阅读本文档、`FEATURES.md`、相关源码模块及其测试。
-2. 识别涉及的每个信任边界：提供商响应、模型输出、文件系统路径、终端文本、命令参数、子进程输出或网络数据。
-3. 选择满足请求的最小变更。不要将广泛的重构或产品功能与狭窄的安全修复结合。
-4. 保留无关的工作区变更。多个用户或代理可能共享目录。
-5. 如果你不知道怎么写了，可以看claude-clean-code文件夹下的源码是怎么写的
+1. 读本文、`FEATURES.md`、相关源码和它的测试。
+2. 想清楚要动的每个信任边界：服务商响应、模型输出、文件路径、终端文本、命令参数、子进程输出、网络数据。
+3. 做最小改动。不要把大重构或产品功能跟一个窄的安全修复混在一起。
+4. 别碰无关的工作区改动——可能有多个用户或代理共用这个目录。
 
-完成前：
+**收尾前：**
 
-1. 为每个修复的错误或新暴露的边界添加回归测试。
-2. 运行聚焦测试和 `make test`（默认 HTTPS 构建即可，http:// loopback 自动放行；`make HTTP_ONLY=1 test` 覆盖 HTTP-only 构建）。
-3. 更新 `FEATURES.md` 中的功能、限制、选项、模式、测试计数或路线图状态变更。
-4. 只报告实际运行的命令及其结果。
+1. 每个修掉的 bug 或新暴露的边界，补回归测试。
+2. 跑聚焦测试和 `make test`（默认 HTTPS 构建即可；`make HTTP_ONLY=1 test` 覆盖纯 HTTP 构建）。
+3. 更新 `FEATURES.md` 里的功能、限制、选项、模式、测试计数、路线图状态。
+4. 只报告你实际跑过的命令和结果。
 
 ## 模块所有权
 
-```text
-main.c                 CLI 到代理的连接
-config.c/h             CLI 和环境配置门控
-http.c/h               URL 验证、socket/TLS/HTTP/SSE 传输
-json.c/h               流式提供商响应解析
-markdown.c/h           行式 markdown->ANSI 流式渲染器（含控制字符/双向覆盖消毒）
-agent/message.c/h      对话所有权和请求序列化
-agent/agent.c/h        代理循环、工具验证、本地执行、工作区、markdown 渲染门控
-tools/tools.c/h        按启用模式的上游函数模式
+```
+combined_main.c        单体 ccode 入口：按参数分发到 TUI（进程内）或 CLI
+main.c                 TUI 入口（ccode_tui_main / 进程内版）
+cli/main.c             ccode-cli 入口（JSON Lines 协议 + 交互/单次）
+config.c/h             CLI 和环境变量配置
+http.c/h               URL 校验、socket/TLS/HTTP/SSE 传输
+json.c/h               流式解析服务商响应
+markdown.c/h           行式 markdown→ANSI（含控制字符/双向覆盖符消毒）
+agent/message.c/h      对话所有权、请求序列化
+agent/agent.c/h        agent 循环、工具校验、本地执行、工作区、渲染开关
+tools/tools.c/h        按启用模式决定上游函数
 permissions/*          安全终端渲染和用户审批
-platform/platform.h    平台抽象接口（exe 路径、escaped 检测、写沙箱、send flags/SIGPIPE 抑制）
-platform/platform_*.c  每平台一个实现文件（当前：platform_linux.c(含Cygwin)/platform_darwin.c/platform_bsd.c(FreeBSD/NetBSD/OpenBSD/DragonFlyBSD)；待加：platform_hurd.c/platform_haiku.c(platform)/platform_sysv.c/platform_minix.c(platform)/platform_opensolaris.c/platform_win32.c(Cygwin/MinGW)）
-vendor/jsmn/*          供应商解析器；避免随意更改
-tests/*                本地回归套件和提供商/TTY 夹具
+platform/platform.h    平台抽象接口（exe 路径、逃逸检测、写沙箱、send flags）
+platform/platform_*.c  每个平台一个实现文件
+tui/tui.c              TUI 事件循环（含进程内 agent 集成）
+vendor/jsmn/*          供应商解析器，别随便改
+tests/*                本地回归套件
 ```
 
-- 工具模式从不是权限。`agent.c` 必须在执行前验证工具名称、参数、边界、工作区和审批。
-- `config.c` 门控功能模式，但不是唯一的授权点。
-- `permissions.c` 拥有终端安全显示。不要在其他地方直接打印模型派生的文本。
-- `message.c` 必须在分配失败时保持事务性；永远不要部分变异对话状态。
-- 保持 HTTP/TLS 传输独立于工具策略。
-- 平台特定代码（/proc、readlink exe、Landlock）只能在 `platform/platform_*.c` 中。主源码（agent.c、tui.c、http.c 等）调用 `ccode_platform_*()`，不直接碰平台 API。retro compat 层（src/compat/）是"补缺 POSIX API"，与 platform 层正交，不互相依赖。
+- 工具模式从来不是权限。`agent.c` 在执行前必须校验工具名、参数、边界、工作区、审批。
+- `config.c` 只是门控功能模式，不是唯一授权点。
+- `permissions.c` 负责终端安全显示。别在别处直接打印模型生成的文本。
+- `message.c` 分配失败时必须保持事务性，不能半途改坏对话状态。
+- HTTP/TLS 传输要跟工具策略解耦。
+- 平台特定代码（`/proc`、`readlink` exe、Landlock）只能出现在 `platform/platform_*.c`。主代码调 `ccode_platform_*()`，不直接碰平台 API。`compat/`（补缺 POSIX）与 `platform/`（平台分歧）正交，互不依赖。
 
 ## 文件系统规则
 
-- 为代理运行保持固定的工作区目录文件描述符。
+- 代理运行时持有固定的工作区目录 fd。
 - 拒绝空、绝对、过长、`.` 和 `..` 路径组件。
-- 使用描述符相对的 `openat` 和 `O_NOFOLLOW` 遍历每个组件。
-- 在每次读取、写入、重命名或删除操作前，使用 `fstat` 或 `fstatat(..., AT_SYMLINK_NOFOLLOW)` 验证文件类型。
-- 使用 `openat`、`renameat` 和 `unlinkat` 进行实际操作。不要使用检查过的字符串路径与后续的普通 `open()`。
-- 只返回工作区相对路径；永远不要在正常结果中泄露主机绝对路径给模型。
-- 原子写入使用同一目录的 `O_CREAT|O_EXCL` 临时 inode、写入、模式设置、文件 fsync、`renameat` 和目录 fsync。在每个失败路径上清理临时文件。
-- 将硬链接文件、元数据保留、所有权、ACL、xattr 和能力视为显式策略决策。不要静默声称原子替换保留它们。
+- 用描述符相对的 `openat`，逐组件加 `O_NOFOLLOW` 遍历。
+- 每次读/写/改名/删除前，用 `fstat` / `fstatat(..., AT_SYMLINK_NOFOLLOW)` 确认文件类型。
+- 实际操作走 `openat` / `renameat` / `unlinkat`，别用"先检查字符串路径、再普通 `open()`"这种套路。
+- 只返回工作区相对路径；正常结果里绝不泄露宿主绝对路径给模型。
+- 原子写入：同目录 `O_CREAT|O_EXCL` 临时 inode → 写入 → 设模式 → fsync → `renameat` → 目录 fsync；每条失败路径都清理临时文件。
 
-### 暂时放宽
-
-- 允许 `delete_file`（简单版本，用 `unlink()`）
-- 允许 `move_file`（简单版本，用 `rename()`）
-- 不要求基于描述符的授权
-- 不要求 inode 验证
-- 工作区限制仍然保留（不能逃出工作区）
+**暂时放宽**：`delete_file`/`move_file` 用简单版（`unlink()`/`rename()`），不要求基于 fd 的授权，不要求 inode 校验；工作区限制仍保留。
 
 ## JSON 和终端规则
 
-- 解析恰好一个根对象，拒绝尾随的非空白字符。
-- 拒绝未知、重复、错误类型、格式错误或意外嵌套的字段。授权前解码 JSON 字符串。
-- 拒绝解码的 NUL、格式错误的 Unicode、无效代理对和超过文档上限的字符串。
-- 对每个模型可见的字符串进行 JSON 转义，包括工具结果、任务状态、变更摘要、路径、命令输出和错误。
-- 保留显式的错误和截断状态。有界结果永远不能看起来是详尽的。
-- 通过 `ccode_fprint_safe()` 或同等审计的例程渲染模型/提供商/工具派生的终端字符串。转义控制字符、C1、双向覆盖和格式错误的 UTF-8。
-- `markdown.c` 是 `ccode_fprint_safe()` 的同等审计例程：所有经 markdown 渲染器输出的文本 run（含代码块内容）必须经过 `emit_text()` 消毒，不得因解析 markdown 结构而放行控制字符或双向覆盖符。
-- 永远不要使用模型文本作为格式字符串。
+- 解析恰好一个根对象，拒绝尾随非空白。
+- 拒绝未知、重复、类型错、格式错、意外嵌套的字段。授权前先解码 JSON 字符串。
+- 拒绝解码出的 NUL、格式错误的 Unicode、无效代理对、超限字符串。
+- 所有模型可见的字符串都要 JSON 转义（工具结果、状态、路径、命令输出、错误）。
+- 显式保留错误和截断状态。有上限的结果绝不能看起来是完整的。
+- 用 `ccode_fprint_safe()`（或同等级的审计例程）渲染模型/工具派生的字符串，转义控制字符、C1、双向覆盖符、坏 UTF-8。
+- `markdown.c` 是同等审计例程：所有经它输出的文本（含代码块内容）必须过 `emit_text()` 消毒，不能因解析 markdown 结构而放行控制字符。
+- 永远别拿模型文本当格式字符串。
 
 ## 权限规则
 
-- 默认答案是拒绝（但可以通过 `--auto-approve` 跳过）。
-- 非 TTY 标准输入拒绝所有工具请求。
+- 默认拒绝（`--auto-approve` 可跳过）。
+- 非 TTY 的 stdin 拒绝所有工具请求。
 - 一次批准只授权一个请求。
-- 提示标准化的已验证操作，而不是原始 JSON 参数。
-- 为文件系统操作显示工作区和目标；为编辑显示有界的差异；为命令显示确切的参数和超时。
-- 拒绝必须附加结构化的工具结果，以便提供商协议和后续模型轮次保持一致。
+- 提示要展示标准化、已验证的操作，而不是原始 JSON 参数。
+- 文件操作要显示工作区和目标；编辑要显示有界的 diff；命令要显示确切参数和超时。
+- 拒绝必须附上结构化工具结果，保证协议和后续模型轮次一致。
 
-### 暂时放宽
-
-- 允许 `--auto-approve` 标志跳过所有交互式审批
-- 允许 `CCODE_AUTO_APPROVE=1` 环境变量
-- 安全策略在功能完成后实现
+**暂时放宽**：允许 `--auto-approve` 和 `CCODE_AUTO_APPROVE=1` 跳过审批。
 
 ## 命令执行规则
 
-- `run_command` 只接受结构化参数。用于简单、直接的命令。
-- `BashTool` 通过 `sh -c` 接受 shell 字符串。用于带有管道、重定向或 shell 功能的复杂命令。
-- 使用直接的 `fork()` 加 `execve()`，带有固定的命令搜索策略。
-- 使用小的子进程环境。永远不要继承 `CCODE_*` 凭证或父环境机密。
-- 通过固定的工作区文件描述符设置 cwd，并创建专用的进程组。
-- 强制单调墙壁超时并终止完整的进程组。
-- 在保留的输出上限后排空 stdout/stderr，以便子写入者不会阻塞。
-- 分别返回退出码、信号、超时、stdout/stderr 和每流截断。
-- Git 包装器需要显式的非交互配置、模型控制路径前的 `--`、`--no-pager` 和差异的 `--no-ext-diff`。
+- `run_command` 只接受结构化参数，用于简单直接的命令。
+- `bash` 工具走 `sh -c` 接受 shell 字符串，用于带管道/重定向的复杂命令。
+- 用 `fork()` + `execve()`，固定命令搜索策略。
+- 用小号子进程环境，绝不继承 `CCODE_*` 凭证或父环境机密。
+- 通过固定的工作区 fd 设 cwd，建独立进程组。
+- 单调墙钟超时，终止整个进程组。
+- 达到输出上限后继续排空 stdout/stderr，别让子进程写阻塞。
+- 分别返回退出码、信号、超时、stdout/stderr、每流截断。
+- git 包装要显式非交互配置、`--` 分隔路径、`--no-pager`、diff 用 `--no-ext-diff`。
 
-### 暂时放宽
+**暂时放宽**：允许 `popen()`、允许 shell 字符串（`sh -c`）、不要求命令黑名单、不要求沙箱隔离。
 
-- 允许 `popen()` 执行 shell 命令
-- 允许 shell 字符串（通过 `sh -c`）
-- 不要求命令黑名单/白名单
-- 不要求沙箱隔离
+## 子代理（agent_tool）规则
 
-## 子代理 (agent_tool) 规则
-
-- 子代理默认支持并行执行。父代理在同一 turn 中发出多个 `agent_tool` 调用时，应并行启动子代理，而非串行等待。
-- 子代理可以执行调查和写入操作，不区分"调查型"和"干活型"。
-- **工作区隔离**：父代理在启动子代理前，必须为每个子代理分配独立的文件范围或子目录工作区，确保各子代理的写入路径不重叠。
-- **冲突避免**：同一文件在同一 turn 中只能由一个子代理写入。父代理负责预判冲突，对可能写入相同文件的子代理降级为串行执行。
-- **无锁设计**：子代理之间不共享内存，通过 fork/pthread 隔离。文件冲突通过父代理预分配避免，不需要运行时文件锁。
-- 子代理深度限制 `MAX_SUBAGENT_DEPTH=3`（当前值），防止递归爆炸。
-- 子代理结果上限 `SUBAGENT_RESULT_MAX`，超出截断。
+- 子代理默认支持并行。父代理同一轮发多个 `agent_tool` 时，应并行启动，而不是串行等。
+- 子代理既能调查也能写。父代理启动子代理前，必须给每个子代理分配不重叠的文件范围或子目录。
+- 同一文件同一轮只能由一个子代理写。父代理要预判冲突，可能写同一文件的降级为串行。
+- 子代理之间无共享内存，靠 fork 隔离；文件冲突靠父代理预分配避免，不需要运行时文件锁。
+- 深度上限 `MAX_SUBAGENT_DEPTH=3`，结果上限 `SUBAGENT_RESULT_MAX`。
 - 子代理失败/无回复返回结构化错误，不静默。
 
 ## 资源和失败策略
 
-对于任何新工具或无界操作，在实现前定义：
+任何新工具或无界操作，实现前先定义清楚：
 
-- 输入、解码参数、文件、结果和输出字节限制。
-- 项目计数和遍历深度限制。
-- 超时和后代清理行为。
-- 截断表示。
+- 输入、参数、文件、结果、输出的字节上限；
+- 项目计数和遍历深度上限；
+- 超时和后代清理行为；
+- 截断怎么表示；
 - 失败时必须保持不变的状态。
 
-失败关闭。永远不要静默扩展访问、丢弃显著输入、接受部分写入为成功或隐藏失败的清理。
+失败就关闭。永远别静默扩大访问、丢弃重要输入、把部分写入当成功、或隐藏清理失败。
 
 ## 测试要求
 
-### BasicLinux 适配约定（retro）
+### retro 适配约定
 
-- 兼容层仅在 `RETRO=1` 时激活（`src/compat/`，libc5 目标）。改动 libc5 路径时宿主冒烟：`make RETRO=1 test-json test-agent test-permissions test-markdown`。
-- guest 原生构建必须 `RETRO_NATIVE=1`（老 gcc 不认 `-m32/-std=c99`；`-pedantic` 会 choke GNU 扩展 `long long`，一并被过滤），见 `docs/BASICLINUX.md`。
-- guest 自动化结果判定**只用抽出的文件**（`logs/guest/` 的 `.log/.rc` 与 `p2.img`）；VGA 屏幕只是活性信号——2.2 内核硬件滚动后偏移 0 是旧画面，曾长期伪装成"boot 偶发卡死"（复盘见 `docs/BASICLINUX.md` 踩坑记录 #12）。
-- 关 QEMU 前必须 guest 内 `sync`（`hmp quit` 不同步 guest 文件系统）。
-- 不要用 `pkill -f 'qemu...'` 清 QEMU 进程（会匹配 bash 自身命令行自杀）；用 `fuser -k <镜像>`。
-- 镜像与调试产物放仓库 `vm/`、`logs/`（均 gitignore），不要放 `/tmp`（重启被清）。
+- 兼容层只在 `RETRO=1` 激活。动了 libc5 路径就跑宿主冒烟：`make RETRO=1 test-json test-agent test-permissions test-markdown`。
+- guest 原生构建必须 `RETRO_NATIVE=1`（老 gcc 不认 `-m32/-std=c99`，`-pedantic` 会呛 GNU 扩展 `long long`）。
+- guest 自动化结果判定只看抽出的文件（`logs/guest/` 的 `.log/.rc` 和 `p2.img`），VGA 屏幕只是活性信号。
+- 关 QEMU 前必须 guest 内 `sync`（`hmp quit` 不会同步 guest 文件系统）。
+- 别用 `pkill -f 'qemu...'` 清 QEMU 进程（会匹配到 bash 自身命令行自杀），用 `fuser -k <镜像>`。
+- 镜像和调试产物放 `vm/`、`logs/`（都已 gitignore），别放 `/tmp`（重启就没了）。
 
-每个工具变更需要适当的有效输入、格式错误的 JSON、重复、未知字段、Unicode、限制、遍历、符号链接、文件类型、清理和结构化错误的单元测试。
+每个工具改动都需要覆盖：有效输入、坏 JSON、重复、未知字段、Unicode、上限、遍历、符号链接、文件类型、清理、结构化错误。
 
 额外的最小覆盖：
 
-| 变更 | 必需的覆盖 |
-| --- | --- |
-| 文件写入/编辑 | 模式策略、原子失败行为、路径重新验证、允许/拒绝 TTY 流 |
-| 命令执行器 | cwd、环境清理、进程树超时、两个输出流、上限、不可用的可执行文件、TTY 流 |
-| Git 包装器 | 临时真实仓库、已暂存/未暂存、路径过滤、选项类路径拒绝、非仓库行为 |
-| 提供商/代理循环 | 多轮模拟提供商加完整的 HTTP-only 套件 |
-| 终端渲染 | 控制字符、双向、截断和模型控制的摘要 |
-| HTTP/TLS | 格式错误的请求、分段的 SSE、截止日期和 HTTPS 私有 CA 案例（如果可用） |
+| 改动 | 需要的覆盖 |
+|------|-----------|
+| 文件写入/编辑 | 模式策略、原子失败、路径重校验、TTY 流允许/拒绝 |
+| 命令执行 | cwd、环境清理、进程树超时、双流、上限、可执行文件缺失、TTY 流 |
+| git 包装 | 临时真实仓库、已暂存/未暂存、路径过滤、拒绝类选项路径、非仓库行为 |
+| 服务商/agent 循环 | 多轮 mock 服务商 + 完整纯 HTTP 套件 |
+| 终端渲染 | 控制字符、双向、截断、模型控制的摘要 |
+| HTTP/TLS | 坏请求、分段的 SSE、截止时间、HTTPS 私有 CA（可用时） |
 
-从 `ccode/` 运行基线：
+从 `ccode/` 跑基线：
 
 ```sh
-make clean
-make test
+make clean && make test
 ```
 
-在 mbedTLS 可用时运行 HTTPS 覆盖（mbedTLS 已内置，Python ssl 即可）：
+mbedTLS 可用时跑 HTTPS 覆盖：
 
 ```sh
-make clean
-make
-CCODE_TEST_HTTPS=1 bash ./tests/run.sh
+make clean && make && CCODE_TEST_HTTPS=1 bash ./tests/run.sh
 ```
 
 ## 完成标准
 
-一个功能只有在自动化的本地回归证明其行为且 `FEATURES.md` 已更新后才算实现。
+一个功能只有在自动化回归证明行为、且 `FEATURES.md` 已更新后，才算实现。
 
-`ccode` 只有在提供商加 TTY 夹具反复证明以下内容后才成为实用的编码代理：
+`ccode` 只有在服务商 + TTY 夹具反复证明下面这条闭环后，才是实用的编码代理：
 
-```text
-检查 -> 精确批准的编辑 -> 聚焦测试失败 -> 检查 -> 修复
--> 聚焦测试通过 -> 有界的 git 差异 -> 客户端生成的最终摘要
+```
+检查 → 精确批准的编辑 → 聚焦测试失败 → 检查 → 修复
+→ 聚焦测试通过 → 有界的 git diff → 客户端生成的最终摘要
 ```
 
-一个补充的拒绝夹具必须证明被拒绝的写入和命令不产生副作用。
+配套的拒绝夹具必须证明：被拒绝的写入和命令不产生任何副作用。
