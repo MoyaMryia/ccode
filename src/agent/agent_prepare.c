@@ -841,7 +841,7 @@ const char *prepare_tool(const char *name, const char *arguments,
  * for old_string, computes its line number, and writes a compact diff with
  * up to CONTEXT_LINES surrounding lines into display (bounded by its size). */
 #define EDIT_DIFF_CONTEXT 2
-void generate_edit_diff(struct prepared_tool *prepared) {
+void generate_edit_diff(struct agent_context *ctx, struct prepared_tool *prepared) {
     size_t display_size;
     char * display;
     int fd;
@@ -856,7 +856,7 @@ void generate_edit_diff(struct prepared_tool *prepared) {
     if (prepared->kind != PREPARED_EDIT_FILE) return;
     if (prepared->value[0] == '\0') return;
 
-    fd = open_regular_at_workspace(prepared->value);
+    fd = open_regular_at_workspace(ctx, prepared->value);
     if (fd < 0) { snprintf(display, display_size, "file_path=%s", prepared->value); return; }
     f = fdopen(fd, "rb");
     if (!f) { close(fd); snprintf(display, display_size, "file_path=%s", prepared->value); return; }

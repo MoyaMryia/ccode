@@ -25,6 +25,7 @@
 
 #include "../src/agent/message.h"
 #include "../src/agent/agent.h"
+#include "../src/agent/agent_internal.h"
 #include "../src/webfetch.h"
 #include "../src/websearch.h"
 #include "../src/models.h"
@@ -1975,6 +1976,39 @@ static int test_duplicate_tool_call_id_detected(void) {
     return 1;
 }
 
+/* A sub-agent derives its own agent_context (see run_subagent): mutations to
+ * the derived change log / task list must never leak into the parent's. */
+static int test_agent_context_isolation(void) {
+    struct agent_context parent;
+    struct agent_context sub;
+
+    ccode_agent_context_init(&parent);
+    ASSERT(parent.workspace_dir_fd == -1);
+    change_log_add(&parent, "write", "a.txt", 0, 0);
+    ASSERT(parent.change_count == 1);
+
+    sub = parent;
+    sub.last_change_summary = NULL;
+    sub.last_task_summary = NULL;
+    change_log_add(&sub, "command", "echo hi", 0, 0);
+    ASSERT(sub.change_count == 2);
+    ASSERT(parent.change_count == 1);
+    ASSERT(strstr(change_log_serialize(&parent), "a.txt") != NULL);
+    ASSERT(strstr(change_log_serialize(&parent), "echo hi") == NULL);
+    ASSERT(strstr(change_log_serialize(&sub), "echo hi") != NULL);
+
+    task_list_reset(&parent);
+    parent.task_count = 0;
+    parent.task_next_id = 1;
+    {
+        char *r = exec_task_create(&sub, "subtask");
+        free(r);
+        ASSERT(sub.task_count == 1);
+        ASSERT(parent.task_count == 0);
+    }
+    return 1;
+}
+
 /* ccode_conversation_compact scans dropped tool results for markers. The
  * scan must be key-based (not substring-based): "exit=0" without the stray
  * colon that used to appear from "exit_code"+10, plus the denial/truncation
@@ -3346,6 +3380,7 @@ int main(void) {
     TEST(change_log_retains_truncation_and_denials);
     TEST(duplicate_tool_call_id_detected);
     TEST(compact_scans_tool_results);
+    TEST(agent_context_isolation);
     TEST(load_rejects_strict_schema_and_is_transactional);
     TEST(content_limit_is_exact);
     TEST(save_is_loadable_and_rejects_oversized_state);

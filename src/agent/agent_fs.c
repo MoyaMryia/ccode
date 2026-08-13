@@ -89,10 +89,8 @@ static int verify_file_identity_at(int parent_fd, const char *leaf,
     return 0;
 }
 
-static int workspace_root_initialized = 0;
-char workspace_root[4096];
-static size_t workspace_root_len = 0;
-int workspace_dir_fd = -1;
+/* All mutable agent state (workspace, change log, task list, gitignore
+ * cache) lives in struct agent_context; see agent_internal.h. */
 
 
 #define CCODE_MAX_TRAVERSAL_DEPTH 16
@@ -280,45 +278,43 @@ int append_json_escaped_fixed(char *buf, size_t cap, size_t *pos,
 
 /* ── Change tracking ── */
 
-struct ccode_change change_log[CCODE_MAX_CHANGES];
-int change_count = 0;
-
-void change_log_reset(void) {
-    change_count = 0;
+void change_log_reset(struct agent_context *ctx) {
+    ctx->change_count = 0;
 }
 
-void change_log_add_ex(const char *type, const char *target,
-                              int exit_code, int timed_out, int denied,
+void change_log_add_ex(struct agent_context *ctx, const char *type,
+                              const char *target, int exit_code,
+                              int timed_out, int denied,
                               int stdout_truncated, int stderr_truncated) {
-    if (change_count >= CCODE_MAX_CHANGES) return;
-    snprintf(change_log[change_count].type, sizeof(change_log[change_count].type),
+    if (ctx->change_count >= CCODE_MAX_CHANGES) return;
+    snprintf(ctx->change_log[ctx->change_count].type, sizeof(ctx->change_log[ctx->change_count].type),
              "%s", type);
-    snprintf(change_log[change_count].target,
-             sizeof(change_log[change_count].target), "%s",
+    snprintf(ctx->change_log[ctx->change_count].target,
+             sizeof(ctx->change_log[ctx->change_count].target), "%s",
              target ? target : "");
-    change_log[change_count].exit_code = exit_code;
-    change_log[change_count].timed_out = timed_out;
-    change_log[change_count].denied = denied;
-    change_log[change_count].stdout_truncated = stdout_truncated;
-    change_log[change_count].stderr_truncated = stderr_truncated;
-    change_count++;
+    ctx->change_log[ctx->change_count].exit_code = exit_code;
+    ctx->change_log[ctx->change_count].timed_out = timed_out;
+    ctx->change_log[ctx->change_count].denied = denied;
+    ctx->change_log[ctx->change_count].stdout_truncated = stdout_truncated;
+    ctx->change_log[ctx->change_count].stderr_truncated = stderr_truncated;
+    ctx->change_count++;
 }
 
-void change_log_add(const char *type, const char *target,
-                           int exit_code, int timed_out) {
-    change_log_add_ex(type, target, exit_code, timed_out, 0, 0, 0);
+void change_log_add(struct agent_context *ctx, const char *type,
+                          const char *target, int exit_code, int timed_out) {
+    change_log_add_ex(ctx, type, target, exit_code, timed_out, 0, 0, 0);
 }
 
-void change_log_add_denied(const char *tool_name) {
-    change_log_add_ex("denied", tool_name, 0, 0, 1, 0, 0);
+void change_log_add_denied(struct agent_context *ctx, const char *tool_name) {
+    change_log_add_ex(ctx, "denied", tool_name, 0, 0, 1, 0, 0);
 }
 
-const char *change_log_serialize(void) {
+const char *change_log_serialize(struct agent_context *ctx) {
     static char buf[4096];
     size_t pos = 0;
     int i;
     pos = (size_t)snprintf(buf, sizeof(buf), "{\"changes\":[");
-    for (i = 0; i < change_count; i++) {
+    for (i = 0; i < ctx->change_count; i++) {
         size_t entry_start = pos;
         if (i > 0) {
             if (pos + 1 >= sizeof(buf)) goto truncated;
@@ -326,26 +322,26 @@ const char *change_log_serialize(void) {
         }
         if (pos + 15 >= sizeof(buf) ||
             append_fixed_cstr(buf, sizeof(buf), &pos, "{\"op\":\"") != 0 ||
-            append_json_escaped_fixed(buf, sizeof(buf), &pos, change_log[i].type) != 0 ||
+            append_json_escaped_fixed(buf, sizeof(buf), &pos, ctx->change_log[i].type) != 0 ||
             append_fixed_cstr(buf, sizeof(buf), &pos, "\",\"target\":\"") != 0 ||
-            append_json_escaped_fixed(buf, sizeof(buf), &pos, change_log[i].target) != 0 ||
+            append_json_escaped_fixed(buf, sizeof(buf), &pos, ctx->change_log[i].target) != 0 ||
             append_fixed_cstr(buf, sizeof(buf), &pos, "\"") != 0)
             goto truncate_entry;
-        if (strcmp(change_log[i].type, "command") == 0) {
+        if (strcmp(ctx->change_log[i].type, "command") == 0) {
             char number[32];
             int n = snprintf(number, sizeof(number), ",\"exit_code\":%d",
-                             change_log[i].exit_code);
+                             ctx->change_log[i].exit_code);
             if (n <= 0 || (size_t)n >= sizeof(number) ||
                 append_fixed_cstr(buf, sizeof(buf), &pos, number) != 0 ||
-                (change_log[i].timed_out && append_fixed_cstr(
+                (ctx->change_log[i].timed_out && append_fixed_cstr(
                     buf, sizeof(buf), &pos, ",\"timed_out\":true") != 0) ||
-                (change_log[i].stdout_truncated && append_fixed_cstr(
+                (ctx->change_log[i].stdout_truncated && append_fixed_cstr(
                     buf, sizeof(buf), &pos, ",\"stdout_truncated\":true") != 0) ||
-                (change_log[i].stderr_truncated && append_fixed_cstr(
+                (ctx->change_log[i].stderr_truncated && append_fixed_cstr(
                     buf, sizeof(buf), &pos, ",\"stderr_truncated\":true") != 0))
                 goto truncate_entry;
         }
-        if (change_log[i].denied && append_fixed_cstr(buf, sizeof(buf), &pos,
+        if (ctx->change_log[i].denied && append_fixed_cstr(buf, sizeof(buf), &pos,
                 ",\"denied\":true") != 0)
             goto truncate_entry;
         if (append_fixed_cstr(buf, sizeof(buf), &pos, "}") != 0 ||
@@ -367,21 +363,17 @@ truncated:
 
 /* ── In-memory task list ── */
 
-struct ccode_task task_list[CCODE_MAX_TASKS];
-int task_count = 0;
-static int task_next_id = 1;
-
-void task_list_reset(void) {
-    task_count = 0;
-    task_next_id = 1;
+void task_list_reset(struct agent_context *ctx) {
+    ctx->task_count = 0;
+    ctx->task_next_id = 1;
 }
 
-const char *task_list_serialize(void) {
+const char *task_list_serialize(struct agent_context *ctx) {
     static char buf[4096];
     size_t pos = 0;
     int i;
     pos = (size_t)snprintf(buf, sizeof(buf), "{\"tasks\":[");
-    for (i = 0; i < task_count; i++) {
+    for (i = 0; i < ctx->task_count; i++) {
         size_t entry_start = pos;
         if (i > 0) {
             if (pos + 1 >= sizeof(buf)) goto truncated;
@@ -389,11 +381,11 @@ const char *task_list_serialize(void) {
         }
         if (pos + 12 >= sizeof(buf) ||
             append_fixed_cstr(buf, sizeof(buf), &pos, "{\"id\":\"") != 0 ||
-            append_json_escaped_fixed(buf, sizeof(buf), &pos, task_list[i].id) != 0 ||
+            append_json_escaped_fixed(buf, sizeof(buf), &pos, ctx->task_list[i].id) != 0 ||
             append_fixed_cstr(buf, sizeof(buf), &pos, "\",\"content\":\"") != 0 ||
-            append_json_escaped_fixed(buf, sizeof(buf), &pos, task_list[i].content) != 0 ||
+            append_json_escaped_fixed(buf, sizeof(buf), &pos, ctx->task_list[i].content) != 0 ||
             append_fixed_cstr(buf, sizeof(buf), &pos, "\",\"status\":\"") != 0 ||
-            append_json_escaped_fixed(buf, sizeof(buf), &pos, task_list[i].status) != 0 ||
+            append_json_escaped_fixed(buf, sizeof(buf), &pos, ctx->task_list[i].status) != 0 ||
             append_fixed_cstr(buf, sizeof(buf), &pos, "\"}") != 0)
             goto truncate_entry;
         if (pos >= sizeof(buf) - 100) goto truncate_entry;
@@ -412,60 +404,68 @@ truncated:
     return buf;
 }
 
-char *exec_task_create(const char *content) {
-    if (task_count >= CCODE_MAX_TASKS)
+char *exec_task_create(struct agent_context *ctx, const char *content) {
+    if (ctx->task_count >= CCODE_MAX_TASKS)
         return ccode_strdup("{\"error\":\"Task list full\"}");
     if (!content || content[0] == '\0')
         return ccode_strdup("{\"error\":\"Missing task content\"}");
-    snprintf(task_list[task_count].id, sizeof(task_list[task_count].id),
-             "%d", task_next_id++);
-    snprintf(task_list[task_count].content,
-             sizeof(task_list[task_count].content), "%.*s",
-             (int)sizeof(task_list[task_count].content) - 1, content);
-    snprintf(task_list[task_count].status,
-             sizeof(task_list[task_count].status), "%s", "pending");
-    task_count++;
+    snprintf(ctx->task_list[ctx->task_count].id, sizeof(ctx->task_list[ctx->task_count].id),
+             "%d", ctx->task_next_id++);
+    snprintf(ctx->task_list[ctx->task_count].content,
+             sizeof(ctx->task_list[ctx->task_count].content), "%.*s",
+             (int)sizeof(ctx->task_list[ctx->task_count].content) - 1, content);
+    snprintf(ctx->task_list[ctx->task_count].status,
+             sizeof(ctx->task_list[ctx->task_count].status), "%s", "pending");
+    ctx->task_count++;
     {
         char result[128];
         snprintf(result, sizeof(result),
                  "{\"ok\":true,\"id\":\"%s\"}",
-                 task_list[task_count - 1].id);
+                 ctx->task_list[ctx->task_count - 1].id);
         return ccode_strdup(result);
     }
 }
 
-char *exec_task_update(const char *id, const char *status) {
+char *exec_task_update(struct agent_context *ctx, const char *id,
+                             const char *status) {
     int i;
     if (!id || !status) return ccode_strdup("{\"error\":\"Missing arguments\"}");
-    for (i = 0; i < task_count; i++) {
-        if (strcmp(task_list[i].id, id) == 0) {
+    for (i = 0; i < ctx->task_count; i++) {
+        if (strcmp(ctx->task_list[i].id, id) == 0) {
             if (strcmp(status, "pending") != 0 &&
                 strcmp(status, "in_progress") != 0 &&
                 strcmp(status, "completed") != 0 &&
                 strcmp(status, "blocked") != 0)
                 return ccode_strdup("{\"error\":\"Invalid status\"}");
-            snprintf(task_list[i].status, sizeof(task_list[i].status),
-                     "%.*s", (int)sizeof(task_list[i].status) - 1, status);
+            snprintf(ctx->task_list[i].status, sizeof(ctx->task_list[i].status),
+                     "%.*s", (int)sizeof(ctx->task_list[i].status) - 1, status);
             return ccode_strdup("{\"ok\":true}");
         }
     }
     return ccode_strdup("{\"error\":\"Task not found\"}");
 }
 
-char *exec_task_list(void) {
-    return ccode_strdup(task_list_serialize());
+char *exec_task_list(struct agent_context *ctx) {
+    return ccode_strdup(task_list_serialize(ctx));
 }
 
 /* ── end task list ── */
 
-void reset_workspace_state(void) {
-    if (workspace_dir_fd >= 0) close(workspace_dir_fd);
-    workspace_dir_fd = -1;
-    workspace_root_initialized = 0;
-    workspace_root[0] = '\0';
-    workspace_root_len = 0;
-    task_list_reset();
-    change_log_reset();
+void reset_workspace_state(struct agent_context *ctx) {
+    if (ctx->workspace_dir_fd >= 0) close(ctx->workspace_dir_fd);
+    ctx->workspace_dir_fd = -1;
+    ctx->workspace_initialized = 0;
+    ctx->workspace_root[0] = '\0';
+    ctx->workspace_root_len = 0;
+    task_list_reset(ctx);
+    change_log_reset(ctx);
+}
+
+/* Initialize the fixed-size portion of a context. Summary-cache pointers are
+ * owned by whoever derives the context and are left untouched. */
+void ccode_agent_context_init(struct agent_context *ctx) {
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->workspace_dir_fd = -1;
 }
 
 static int open_absolute_directory(const char *path) {
@@ -499,39 +499,40 @@ static int open_absolute_directory(const char *path) {
     return dir_fd;
 }
 
-int init_workspace(const char *workspace) {
+int init_workspace(struct agent_context *ctx, const char *workspace) {
     int fd;
     struct stat st;
     size_t len;
 
-    if (workspace_root_initialized) return 0;
+    if (ctx->workspace_initialized) return 0;
     if (!workspace) workspace = ".";
-    if (!realpath(workspace, workspace_root)) return -1;
+    if (!realpath(workspace, ctx->workspace_root)) return -1;
 
-    fd = open_absolute_directory(workspace_root);
+    fd = open_absolute_directory(ctx->workspace_root);
     if (fd < 0) return -1;
     if (fstat(fd, &st) != 0 || !S_ISDIR(st.st_mode)) {
         close(fd);
         return -1;
     }
 
-    len = strlen(workspace_root);
-    if (len > 1 && workspace_root[len - 1] == '/') workspace_root[len - 1] = '\0';
-    workspace_root_len = strlen(workspace_root);
-    workspace_dir_fd = fd;
-    workspace_root_initialized = 1;
+    len = strlen(ctx->workspace_root);
+    if (len > 1 && ctx->workspace_root[len - 1] == '/') ctx->workspace_root[len - 1] = '\0';
+    ctx->workspace_root_len = strlen(ctx->workspace_root);
+    ctx->workspace_dir_fd = fd;
+    ctx->workspace_initialized = 1;
     return 0;
 }
 
 /* Resolve a workspace-relative path to a directory fd using the same
  * component-by-component, no-symlink traversal as regular files.
  * The returned fd must be closed by the caller. Returns -1 on failure. */
-void cleanup_residual_temp_files(void) {
+void cleanup_residual_temp_files(struct agent_context *ctx) {
     /* Atomic writes unlink their own known temporary inode on every failure.
      * Prefix-based cleanup could delete a preexisting user file. */
+    (void)ctx;
 }
 
-static int open_directory_at_workspace(const char *rel_path) {
+static int open_directory_at_workspace(struct agent_context *ctx, const char *rel_path) {
     char path[4096];
     char *component;
     char *next;
@@ -543,7 +544,7 @@ static int open_directory_at_workspace(const char *rel_path) {
     if (strlen(rel_path) >= sizeof(path)) return -1;
     memcpy(path, rel_path, strlen(rel_path) + 1);
 
-    dir_fd = dup(workspace_dir_fd);
+    dir_fd = dup(ctx->workspace_dir_fd);
     if (dir_fd < 0) return -1;
 
     component = path;
@@ -569,7 +570,7 @@ static int open_directory_at_workspace(const char *rel_path) {
     }
 }
 
-int open_regular_at_workspace(const char *file_path) {
+int open_regular_at_workspace(struct agent_context *ctx, const char *file_path) {
     char path[4096];
     char *component;
     char *next;
@@ -581,7 +582,7 @@ int open_regular_at_workspace(const char *file_path) {
     if (strlen(file_path) >= sizeof(path)) return -1;
     memcpy(path, file_path, strlen(file_path) + 1);
 
-    dir_fd = dup(workspace_dir_fd);
+    dir_fd = dup(ctx->workspace_dir_fd);
     if (dir_fd < 0) return -1;
     component = path;
     for (;;) {
@@ -614,7 +615,7 @@ int open_regular_at_workspace(const char *file_path) {
     }
 }
 
-static int open_parent_at_workspace(const char *file_path, char *leaf,
+static int open_parent_at_workspace(struct agent_context *ctx, const char *file_path, char *leaf,
                                     size_t leaf_size) {
     char path[4096];
     char *component;
@@ -624,7 +625,7 @@ static int open_parent_at_workspace(const char *file_path, char *leaf,
     if (!file_path || file_path[0] == '\0' || file_path[0] == '/') return -1;
     if (strlen(file_path) >= sizeof(path)) return -1;
     memcpy(path, file_path, strlen(file_path) + 1);
-    dir_fd = dup(workspace_dir_fd);
+    dir_fd = dup(ctx->workspace_dir_fd);
     if (dir_fd < 0) return -1;
 
     component = path;
@@ -749,7 +750,7 @@ static char *atomic_write_at_parent(int parent_fd, const char *leaf,
     return (char *)"ok";
 }
 
-char *exec_write_file(const char *workspace, const char *file_path,
+char *exec_write_file(struct agent_context *ctx, const char *workspace, const char *file_path,
                              const char *content) {
     char leaf[256];
     int parent_fd;
@@ -759,9 +760,9 @@ char *exec_write_file(const char *workspace, const char *file_path,
 
     if (!file_path || !content)
         return ccode_strdup("{\"error\":\"Missing write_file argument\"}");
-    if (init_workspace(workspace) != 0)
+    if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
-    parent_fd = open_parent_at_workspace(file_path, leaf, sizeof(leaf));
+    parent_fd = open_parent_at_workspace(ctx, file_path, leaf, sizeof(leaf));
     if (parent_fd < 0)
         return ccode_strdup("{\"error\":\"Path outside workspace or parent not found\"}");
 
@@ -843,16 +844,16 @@ char *exec_write_file(const char *workspace, const char *file_path,
         if (!wr)
             return ccode_strdup("{\"error\":\"Could not atomically replace file\"}");
         if (strcmp(wr, "committed_not_durable") == 0) {
-            change_log_add("write", file_path, 0, 0);
+            change_log_add(ctx, "write", file_path, 0, 0);
             return ccode_strdup("{\"ok\":true,\"committed_not_durable\":true}");
         }
     }
-    change_log_add("write", file_path, 0, 0);
+    change_log_add(ctx, "write", file_path, 0, 0);
     return ccode_strdup("{\"ok\":true}");
 }
 
 
-char *exec_edit_file(const char *workspace, const char *file_path,
+char *exec_edit_file(struct agent_context *ctx, const char *workspace, const char *file_path,
                             const char *old_string, const char *new_string) {
     int fd;
     FILE *f;
@@ -875,10 +876,10 @@ char *exec_edit_file(const char *workspace, const char *file_path,
 
     if (!file_path || !old_string || !new_string)
         return ccode_strdup("{\"error\":\"Missing edit_file argument\"}");
-    if (init_workspace(workspace) != 0)
+    if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
 
-    fd = open_regular_at_workspace(file_path);
+    fd = open_regular_at_workspace(ctx, file_path);
     if (fd < 0)
         return ccode_strdup("{\"error\":\"Path outside workspace or not found\"}");
 
@@ -966,7 +967,7 @@ char *exec_edit_file(const char *workspace, const char *file_path,
     result[result_len] = '\0';
     free(source);
 
-    parent_fd = open_parent_at_workspace(file_path, leaf, sizeof(leaf));
+    parent_fd = open_parent_at_workspace(ctx, file_path, leaf, sizeof(leaf));
     if (parent_fd < 0) { free(result); return ccode_strdup("{\"error\":\"Parent not found\"}"); }
 
     if (fstatat(parent_fd, leaf, &st, AT_SYMLINK_NOFOLLOW) != 0) {
@@ -994,11 +995,11 @@ char *exec_edit_file(const char *workspace, const char *file_path,
         if (!wr)
             return ccode_strdup("{\"error\":\"Could not atomically replace file\"}");
         if (strcmp(wr, "committed_not_durable") == 0) {
-            change_log_add("edit", file_path, 0, 0);
+            change_log_add(ctx, "edit", file_path, 0, 0);
             return ccode_strdup("{\"ok\":true,\"committed_not_durable\":true}");
         }
     }
-    change_log_add("edit", file_path, 0, 0);
+    change_log_add(ctx, "edit", file_path, 0, 0);
     return ccode_strdup("{\"ok\":true}");
 }
 
@@ -1100,7 +1101,7 @@ int is_binary_content(const unsigned char *buf, size_t len) {
     return 0;
 }
 
-char *exec_read_file(const char *workspace, const char *file_path) {
+char *exec_read_file(struct agent_context *ctx, const char *workspace, const char *file_path) {
     char * output;
     int fd;
     FILE *f;
@@ -1112,10 +1113,10 @@ char *exec_read_file(const char *workspace, const char *file_path) {
     if (!file_path)
         return ccode_strdup("{\"error\":\"Missing file_path argument\"}");
 
-    if (init_workspace(workspace) != 0)
+    if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
 
-    fd = open_regular_at_workspace(file_path);
+    fd = open_regular_at_workspace(ctx, file_path);
     if (fd < 0)
         return ccode_strdup("{\"error\":\"Path outside workspace or not found\"}");
 
@@ -1293,14 +1294,14 @@ struct gitignore_rules {
     int count;
 };
 
-int ccode_respect_gitignore_cached = -1;
-static int ccode_get_respect_gitignore(void) {
+static int ccode_get_respect_gitignore(struct agent_context *ctx) {
     const char *e;
-    if (ccode_respect_gitignore_cached != -1)
-        return ccode_respect_gitignore_cached;
-    e = getenv("CCODE_RESPECT_GITIGNORE");
-    ccode_respect_gitignore_cached = (!e || e[0] != '0') ? 1 : 0;
-    return ccode_respect_gitignore_cached;
+    if (!ctx->respect_gitignore_loaded) {
+        e = getenv("CCODE_RESPECT_GITIGNORE");
+        ctx->respect_gitignore = (!e || e[0] != '0') ? 1 : 0;
+        ctx->respect_gitignore_loaded = 1;
+    }
+    return ctx->respect_gitignore;
 }
 
 /* Load .gitignore patterns from a directory fd. Returns 0 on success. */
@@ -1345,11 +1346,12 @@ static int load_gitignore(int dir_fd, struct gitignore_rules *rules) {
 
 /* Check if a path component matches any active .gitignore pattern.
  * Returns 1 if ignored, 0 if not ignored, -1 on error. */
-static int is_gitignored(const char *name, int is_dir,
-                          const struct gitignore_rules *rules) {
+static int is_gitignored(struct agent_context *ctx, const char *name,
+                         int is_dir,
+                         const struct gitignore_rules *rules) {
     int i;
     int ignored = 0;
-    if (!ccode_get_respect_gitignore()) return 0;
+    if (!ccode_get_respect_gitignore(ctx)) return 0;
     for (i = 0; i < rules->count; i++) {
         const char *pat = rules->patterns[i];
         size_t plen = strlen(pat);
@@ -1365,7 +1367,8 @@ static int is_gitignored(const char *name, int is_dir,
     return ignored;
 }
 
-static void glob_recursive(int parent_fd, const char *rel_dir,
+static void glob_recursive(struct agent_context *ctx, int parent_fd,
+                            const char *rel_dir,
                             const char *pattern, int depth,
                             int use_regex,
                             char **result, size_t *total, size_t *cap,
@@ -1447,7 +1450,7 @@ static void glob_recursive(int parent_fd, const char *rel_dir,
         if (entry_fd < 0) continue;
         if (fstat(entry_fd, &st) != 0) { close(entry_fd); continue; }
 
-        if (active_gi && is_gitignored(d_name, S_ISDIR(st.st_mode) ? 1 : 0,
+        if (active_gi && is_gitignored(ctx, d_name, S_ISDIR(st.st_mode) ? 1 : 0,
                                         active_gi)) {
             close(entry_fd);
             continue;
@@ -1508,7 +1511,7 @@ static void glob_recursive(int parent_fd, const char *rel_dir,
         }
 
         if (S_ISDIR(st.st_mode)) {
-            glob_recursive(entry_fd, rel_path, pattern, depth + 1,
+            glob_recursive(ctx, entry_fd, rel_path, pattern, depth + 1,
                            use_regex,
                            result, total, cap, first, count, budget,
                            active_gi);
@@ -1522,7 +1525,7 @@ static void glob_recursive(int parent_fd, const char *rel_dir,
     if (gregex_ok) regfree(&gregex);
 }
 
-char *exec_glob(const char *workspace, const char *pattern,
+char *exec_glob(struct agent_context *ctx, const char *workspace, const char *pattern,
                        const char *path, int use_regex) {
     size_t cap = 8192;
     size_t total = 0;
@@ -1536,16 +1539,16 @@ char *exec_glob(const char *workspace, const char *pattern,
     if (!pattern)
         return ccode_strdup("{\"error\":\"Missing pattern argument\"}");
 
-    if (init_workspace(workspace) != 0)
+    if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
 
     if (path && path[0] != '\0') {
-        root_fd = open_directory_at_workspace(path);
+        root_fd = open_directory_at_workspace(ctx, path);
         if (root_fd < 0)
             return ccode_strdup("{\"error\":\"Path outside workspace or not a directory\"}");
         rel_dir = path;
     } else {
-        root_fd = dup(workspace_dir_fd);
+        root_fd = dup(ctx->workspace_dir_fd);
         if (root_fd < 0)
             return ccode_strdup("{\"error\":\"Could not access workspace\"}");
     }
@@ -1564,7 +1567,7 @@ char *exec_glob(const char *workspace, const char *pattern,
         close(root_fd); free(result); return NULL;
     }
 
-    glob_recursive(root_fd, rel_dir, pattern, 0, use_regex,
+    glob_recursive(ctx, root_fd, rel_dir, pattern, 0, use_regex,
                    &result, &total, &cap, &first, &count, &budget, NULL);
     close(root_fd);
 
@@ -1749,7 +1752,7 @@ done:
 }
 #undef CCODE_GREP_MAX_CTX
 
-static void search_dir_recursive(int parent_fd, const char *rel_dir,
+static void search_dir_recursive(struct agent_context *ctx, int parent_fd, const char *rel_dir,
                                   const char *pattern,
                                   const char *include, int context_lines,
                                   int use_regex,
@@ -1823,7 +1826,7 @@ static void search_dir_recursive(int parent_fd, const char *rel_dir,
         if (entry_fd < 0) continue;
         if (fstat(entry_fd, &st) != 0) { close(entry_fd); continue; }
 
-        if (active_gi && is_gitignored(d_name, S_ISDIR(st.st_mode) ? 1 : 0,
+        if (active_gi && is_gitignored(ctx, d_name, S_ISDIR(st.st_mode) ? 1 : 0,
                                         active_gi)) {
             close(entry_fd);
             continue;
@@ -1847,7 +1850,7 @@ static void search_dir_recursive(int parent_fd, const char *rel_dir,
                                          budget);
             }
         } else if (S_ISDIR(st.st_mode)) {
-            search_dir_recursive(entry_fd, rel_path, pattern, include,
+            search_dir_recursive(ctx, entry_fd, rel_path, pattern, include,
                                  context_lines, use_regex,
                                  depth + 1, result, total, cap, first,
                                  match_count, budget, active_gi);
@@ -1859,7 +1862,7 @@ static void search_dir_recursive(int parent_fd, const char *rel_dir,
     free(entries);
 }
 
-char *exec_grep(const char *workspace, const char *pattern,
+char *exec_grep(struct agent_context *ctx, const char *workspace, const char *pattern,
                        const char *include, int context_lines,
                        int use_regex,
                        const char *path) {
@@ -1875,16 +1878,16 @@ char *exec_grep(const char *workspace, const char *pattern,
     if (!pattern)
         return ccode_strdup("{\"error\":\"Missing pattern argument\"}");
 
-    if (init_workspace(workspace) != 0)
+    if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
 
     if (path && path[0] != '\0') {
-        root_fd = open_directory_at_workspace(path);
+        root_fd = open_directory_at_workspace(ctx, path);
         if (root_fd < 0)
             return ccode_strdup("{\"error\":\"Path outside workspace or not a directory\"}");
         rel_dir = path;
     } else {
-        root_fd = dup(workspace_dir_fd);
+        root_fd = dup(ctx->workspace_dir_fd);
         if (root_fd < 0)
             return ccode_strdup("{\"error\":\"Could not access workspace\"}");
     }
@@ -1903,7 +1906,7 @@ char *exec_grep(const char *workspace, const char *pattern,
         close(root_fd); free(result); return NULL;
     }
 
-    search_dir_recursive(root_fd, rel_dir, pattern, include,
+    search_dir_recursive(ctx, root_fd, rel_dir, pattern, include,
                          context_lines, use_regex, 0,
                          &result, &total, &cap, &first, &match_count,
                          &budget, NULL);
@@ -1927,15 +1930,15 @@ char *exec_grep(const char *workspace, const char *pattern,
     return result;
 }
 
-char *exec_delete_file(const char *workspace, const char *file_path) {
+char *exec_delete_file(struct agent_context *ctx, const char *workspace, const char *file_path) {
     char leaf[256];
     int parent_fd;
 
     if (!file_path)
         return ccode_strdup("{\"error\":\"Missing file_path argument\"}");
-    if (init_workspace(workspace) != 0)
+    if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
-    parent_fd = open_parent_at_workspace(file_path, leaf, sizeof(leaf));
+    parent_fd = open_parent_at_workspace(ctx, file_path, leaf, sizeof(leaf));
     if (parent_fd < 0)
         return ccode_strdup("{\"error\":\"Path outside workspace or parent not found\"}");
     if (unlinkat(parent_fd, leaf, 0) != 0) {
@@ -1943,11 +1946,11 @@ char *exec_delete_file(const char *workspace, const char *file_path) {
         return ccode_strdup("{\"error\":\"Could not delete file\"}");
     }
     close(parent_fd);
-    change_log_add("delete", file_path, 0, 0);
+    change_log_add(ctx, "delete", file_path, 0, 0);
     return ccode_strdup("{\"ok\":true}");
 }
 
-char *exec_move_file(const char *workspace, const char *source,
+char *exec_move_file(struct agent_context *ctx, const char *workspace, const char *source,
                              const char *destination) {
     char src_leaf[256];
     char dst_leaf[256];
@@ -1956,16 +1959,16 @@ char *exec_move_file(const char *workspace, const char *source,
 
     if (!source || !destination)
         return ccode_strdup("{\"error\":\"Missing source or destination argument\"}");
-    if (init_workspace(workspace) != 0)
+    if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
-    src_parent_fd = open_parent_at_workspace(source, src_leaf, sizeof(src_leaf));
+    src_parent_fd = open_parent_at_workspace(ctx, source, src_leaf, sizeof(src_leaf));
     if (src_parent_fd < 0)
         return ccode_strdup("{\"error\":\"Source path outside workspace or parent not found\"}");
     if (!is_workspace_relative_path(destination, 0)) {
         close(src_parent_fd);
         return ccode_strdup("{\"error\":\"Invalid destination path\"}");
     }
-    dst_parent_fd = open_parent_at_workspace(destination, dst_leaf, sizeof(dst_leaf));
+    dst_parent_fd = open_parent_at_workspace(ctx, destination, dst_leaf, sizeof(dst_leaf));
     if (dst_parent_fd < 0) {
         close(src_parent_fd);
         return ccode_strdup("{\"error\":\"Destination path outside workspace or parent not found\"}");
@@ -1977,6 +1980,6 @@ char *exec_move_file(const char *workspace, const char *source,
     }
     close(src_parent_fd);
     close(dst_parent_fd);
-    change_log_add("move", source, 0, 0);
+    change_log_add(ctx, "move", source, 0, 0);
     return ccode_strdup("{\"ok\":true}");
 }

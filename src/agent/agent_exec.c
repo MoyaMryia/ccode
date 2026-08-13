@@ -141,7 +141,7 @@ static int sh_is_bash(void) {
     return cached;
 }
 
-static char *exec_run_command_ex(const char *workspace,
+static char *exec_run_command_ex(struct agent_context *ctx, const char *workspace,
                                char * const *argv, size_t argc,
                                int timeout_ms, int allow_shell) {
     int stdout_pipe[2] = {-1, -1};
@@ -169,10 +169,10 @@ static char *exec_run_command_ex(const char *workspace,
         return ccode_strdup("{\"error\":\"Shell string execution is not allowed\"}");
     /* Workspace must be initialized before filtering so soft-sensitive
      * patterns can be tolerated for paths inside the workspace. */
-    if (init_workspace(workspace) != 0)
+    if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
     for (i = 0; i < argc; i++) {
-        if (ccode_command_is_sensitive(argv[i], workspace_root))
+        if (ccode_command_is_sensitive(argv[i], ctx->workspace_root))
             return ccode_strdup(
                 "{\"error\":\"Command may access sensitive paths\"}");
         if (ccode_command_mentions_destructive(argv[i]))
@@ -236,13 +236,13 @@ static char *exec_run_command_ex(const char *workspace,
         if (stdout_pipe[1] > 2) close(stdout_pipe[1]);
         if (stderr_pipe[1] > 2) close(stderr_pipe[1]);
 
-        if (setpgid(0, 0) != 0 || ccode_run_fchdir(workspace_dir_fd) != 0 ||
+        if (setpgid(0, 0) != 0 || ccode_run_fchdir(ctx->workspace_dir_fd) != 0 ||
             resolve_command_path(argv[0], executable, sizeof(executable)) != 0)
             _exit(127);
         /* Enforce the write sandbox before exec. When Landlock is
          * unavailable this is a no-op and the command filter above remains
          * the only path protection. */
-        (void)ccode_platform_sandbox_apply(workspace_root);
+        (void)ccode_platform_sandbox_apply(ctx->workspace_root);
         for (i = 0; i < argc; i++) exec_argv[i] = argv[i];
         exec_argv[argc] = NULL;
         execve(executable, exec_argv, exec_env);
@@ -437,7 +437,7 @@ static char *exec_run_command_ex(const char *workspace,
             strncat(cmd_summary, argv[j], sizeof(cmd_summary) - strlen(cmd_summary) - 1);
         }
         if (argc > 3) strncat(cmd_summary, " ...", sizeof(cmd_summary) - strlen(cmd_summary) - 1);
-        change_log_add_ex("command", cmd_summary,
+        change_log_add_ex(ctx, "command", cmd_summary,
                        WIFEXITED(status) ? WEXITSTATUS(status) : -1,
                        timed_out, 0, truncated_out, truncated_err);
     }
@@ -448,13 +448,13 @@ oom:
     return NULL;
 }
 
-char *exec_run_command(const char *workspace,
+char *exec_run_command(struct agent_context *ctx, const char *workspace,
                                char * const *argv, size_t argc,
                                int timeout_ms) {
-    return exec_run_command_ex(workspace, argv, argc, timeout_ms, 0);
+    return exec_run_command_ex(ctx, workspace, argv, argc, timeout_ms, 0);
 }
 
-char *exec_bash_command(const char *workspace, const char *command) {
+char *exec_bash_command(struct agent_context *ctx, const char *workspace, const char *command) {
     char *argv[4];
     char cmd_buf[4096];
 
@@ -467,7 +467,7 @@ char *exec_bash_command(const char *workspace, const char *command) {
     argv[1] = "-c";
     argv[2] = cmd_buf;
     argv[3] = NULL;
-    return exec_run_command_ex(workspace, argv, 3, CCODE_RUN_COMMAND_TIMEOUT, 1);
+    return exec_run_command_ex(ctx, workspace, argv, 3, CCODE_RUN_COMMAND_TIMEOUT, 1);
 }
 
 char *exec_web_fetch(const struct prepared_tool *prepared) {
@@ -480,7 +480,7 @@ char *exec_web_fetch(const struct prepared_tool *prepared) {
     return ccode_web_fetch(&opts);
 }
 
-static char *exec_git_command(const char *workspace,
+static char *exec_git_command(struct agent_context *ctx, const char *workspace,
                               char * const *argv, size_t argc,
                               int timeout_ms) {
     char ceiling[4096];
@@ -488,9 +488,9 @@ static char *exec_git_command(const char *workspace,
     char *result;
     int n;
 
-    if (init_workspace(workspace) != 0)
+    if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
-    n = snprintf(ceiling, sizeof(ceiling), "%s", workspace_root);
+    n = snprintf(ceiling, sizeof(ceiling), "%s", ctx->workspace_root);
     if (n <= 0 || (size_t)n >= sizeof(ceiling))
         return ccode_strdup("{\"error\":\"Could not constrain git repository\"}");
     slash = strrchr(ceiling, '/');
@@ -504,7 +504,7 @@ static char *exec_git_command(const char *workspace,
         git_ceiling_environment[0] = '\0';
         return ccode_strdup("{\"error\":\"Could not constrain git repository\"}");
     }
-    result = exec_run_command(workspace, argv, argc, timeout_ms);
+    result = exec_run_command(ctx, workspace, argv, argc, timeout_ms);
     git_ceiling_environment[0] = '\0';
     return result;
 }
@@ -537,10 +537,10 @@ static int contains_ci(const char *haystack, const char *needle) {
     return 0;
 }
 
-static char *exec_git_command_wrapper(const char *workspace,
+static char *exec_git_command_wrapper(struct agent_context *ctx, const char *workspace,
                                        char * const *argv, size_t argc,
                                        int timeout_ms) {
-    char *result = exec_git_command(workspace, argv, argc, timeout_ms);
+    char *result = exec_git_command(ctx, workspace, argv, argc, timeout_ms);
     if (result && contains_ci(result, "not a git repository")) {
         free(result);
         return ccode_strdup("{\"error\":\"Not a git repository\"}");
@@ -548,7 +548,7 @@ static char *exec_git_command_wrapper(const char *workspace,
     return result;
 }
 
-char *exec_git_status(const char *workspace, const char *path) {
+char *exec_git_status(struct agent_context *ctx, const char *workspace, const char *path) {
     char *argv[16];
     size_t argc = 0;
     argv[argc++] = "git";
@@ -560,10 +560,10 @@ char *exec_git_status(const char *workspace, const char *path) {
         argv[argc++] = (char *)path;
     }
     argv[argc] = NULL;
-    return exec_git_command_wrapper(workspace, argv, argc, 30000);
+    return exec_git_command_wrapper(ctx, workspace, argv, argc, 30000);
 }
 
-char *exec_git_diff(const char *workspace, const char *path,
+char *exec_git_diff(struct agent_context *ctx, const char *workspace, const char *path,
                            const char *cached) {
     char *argv[16];
     size_t argc = 0;
@@ -580,10 +580,10 @@ char *exec_git_diff(const char *workspace, const char *path,
         argv[argc++] = (char *)path;
     }
     argv[argc] = NULL;
-    return exec_git_command_wrapper(workspace, argv, argc, 30000);
+    return exec_git_command_wrapper(ctx, workspace, argv, argc, 30000);
 }
 
-char *exec_git_stat(const char *workspace, const char *path,
+char *exec_git_stat(struct agent_context *ctx, const char *workspace, const char *path,
                            const char *cached) {
     char *argv[16];
     size_t argc = 0;
@@ -601,7 +601,7 @@ char *exec_git_stat(const char *workspace, const char *path,
         argv[argc++] = (char *)path;
     }
     argv[argc] = NULL;
-    return exec_git_command_wrapper(workspace, argv, argc, 30000);
+    return exec_git_command_wrapper(ctx, workspace, argv, argc, 30000);
 }
 
 /* ── Sub-agent (agent_tool) ── */

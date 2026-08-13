@@ -69,5 +69,5 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（134 agent + 42 json + 28 http + 13 tui + 21 markdown + 5 tty + 5 e2e + 2 streaming）
+3. 现有测试套件全过（135 agent + 42 json + 28 http + 13 tui + 21 markdown + 5 tty + 5 e2e + 2 streaming）
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟

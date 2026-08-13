@@ -44,17 +44,18 @@
 #define MAX_SUBAGENT_DEPTH 3
 #define SUBAGENT_RESULT_MAX (1024 * 100)
 
-static int subagent_depth = 0;
+/* Per-process agent state: workspace, change log, task list, summary dedup
+ * cache and sub-agent recursion depth. Entry points run against this
+ * context; sub-agents derive their own copy (see run_subagent) so a
+ * delegate can never mutate the parent's state. */
+static struct agent_context agent_ctx;
 
 /* Cache of the last change-log / task summaries appended to the conversation.
  * The summaries are only appended when their content changed since the last
  * turn, keeping the request prefix byte-stable for upstream context caching
  * (DeepSeek and OpenAI cache the request prefix and discount cached tokens).
- * run_subagent saves and restores these around a delegated run so the
- * delegate's dedup state never suppresses a summary the parent still needs
- * to append. */
-static char *last_change_summary = NULL;
-static char *last_task_summary = NULL;
+ * A sub-agent runs against its own context copy, so its dedup state never
+ * suppresses a summary the parent still needs to append. */
 
 static const char *subagent_system_prompt(void) {
     return
@@ -111,38 +112,37 @@ static char *subagent_truncate(char *answer) {
     return tmp;
 }
 
-static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
+static int ccode_agent_process_turn_loop(struct agent_context *ctx,
+                                          struct ccode_agent_config *cfg,
                                           struct ccode_conversation *conv);
 
-static char *run_subagent(const struct ccode_agent_config *cfg,
+static char *run_subagent(struct agent_context *ctx,
+                           const struct ccode_agent_config *cfg,
                            const char *task, int read_only) {
+    struct agent_context sub_ctx;
     struct ccode_conversation sub;
     struct ccode_agent_config sub_cfg;
-    char *saved_change_summary = last_change_summary;
-    char *saved_task_summary = last_task_summary;
     char *answer;
     int rc;
 
-    if (subagent_depth >= MAX_SUBAGENT_DEPTH)
+    if (ctx->subagent_depth >= MAX_SUBAGENT_DEPTH)
         return ccode_strdup("{\"error\":\"Sub-agent depth limit "
                             "(3) reached\"}");
 
-    subagent_depth++;
-    last_change_summary = NULL;
-    last_task_summary = NULL;
-    if (ccode_conversation_init(&sub, CCODE_MAX_MESSAGES) != 0) {
-        subagent_depth--;
-        last_change_summary = saved_change_summary;
-        last_task_summary = saved_task_summary;
+    /* Derive a private context for the delegate: it gets its own change log,
+     * task list and summary dedup cache, so its runs can never corrupt the
+     * parent's state (no save/restore dance needed). */
+    sub_ctx = *ctx;
+    sub_ctx.subagent_depth = ctx->subagent_depth + 1;
+    sub_ctx.last_change_summary = NULL;
+    sub_ctx.last_task_summary = NULL;
+
+    if (ccode_conversation_init(&sub, CCODE_MAX_MESSAGES) != 0)
         return ccode_strdup("{\"error\":\"Out of memory\"}");
-    }
     if (ccode_conversation_add(&sub, CCODE_ROLE_SYSTEM,
                                subagent_system_prompt()) != 0 ||
         ccode_conversation_add(&sub, CCODE_ROLE_USER, task) != 0) {
         ccode_conversation_destroy(&sub);
-        subagent_depth--;
-        last_change_summary = saved_change_summary;
-        last_task_summary = saved_task_summary;
         return ccode_strdup("{\"error\":\"Out of memory\"}");
     }
 
@@ -161,20 +161,15 @@ static char *run_subagent(const struct ccode_agent_config *cfg,
     }
 
     fprintf(stderr, "  \033[2m[sub-agent] depth %d, %s\033[0m\n",
-            subagent_depth, read_only ? "read-only" : "read-write");
+            sub_ctx.subagent_depth,
+            read_only ? "read-only" : "read-write");
 
-    rc = ccode_agent_process_turn_loop(&sub_cfg, &sub);
+    rc = ccode_agent_process_turn_loop(&sub_ctx, &sub_cfg, &sub);
     answer = subagent_final_answer(&sub);
     ccode_conversation_destroy(&sub);
-    subagent_depth--;
 
-    /* The sub-agent ran with its own summary dedup state; discard it and
-     * restore the parent's so the parent re-appends any summary the
-     * delegate advanced past. */
-    free(last_change_summary);
-    free(last_task_summary);
-    last_change_summary = saved_change_summary;
-    last_task_summary = saved_task_summary;
+    free(sub_ctx.last_change_summary);
+    free(sub_ctx.last_task_summary);
 
     if (rc == 130) {
         free(answer);
@@ -189,22 +184,24 @@ static char *run_subagent(const struct ccode_agent_config *cfg,
     return subagent_truncate(answer);
 }
 
-static char *execute_prepared_tool(const struct ccode_agent_config *cfg,
+static char *execute_prepared_tool(struct agent_context *ctx,
+                                   const struct ccode_agent_config *cfg,
                                    const char *workspace,
                                    const struct prepared_tool *prepared) {
     if (prepared->kind == PREPARED_READ_FILE)
-        return exec_read_file(workspace, prepared->value);
+        return exec_read_file(ctx, workspace, prepared->value);
     if (prepared->kind == PREPARED_WRITE_FILE)
-        return exec_write_file(workspace, prepared->value, prepared->content);
+        return exec_write_file(ctx, workspace, prepared->value,
+                               prepared->content);
     if (prepared->kind == PREPARED_EDIT_FILE)
-        return exec_edit_file(workspace, prepared->value,
+        return exec_edit_file(ctx, workspace, prepared->value,
                               prepared->old_string, prepared->new_string);
     if (prepared->kind == PREPARED_GLOB)
-        return exec_glob(workspace, prepared->value,
+        return exec_glob(ctx, workspace, prepared->value,
                          prepared->tool_path[0] ? prepared->tool_path : NULL,
                          prepared->use_regex);
     if (prepared->kind == PREPARED_GREP)
-        return exec_grep(workspace, prepared->value,
+        return exec_grep(ctx, workspace, prepared->value,
                          prepared->have_include ? prepared->include : NULL,
                          prepared->context_lines,
                          prepared->use_regex,
@@ -214,33 +211,36 @@ static char *execute_prepared_tool(const struct ccode_agent_config *cfg,
         size_t j;
         for (j = 0; j < prepared->argc; j++)
             argv_ptrs[j] = (char *)prepared->argv[j];
-        return exec_run_command(workspace, argv_ptrs, prepared->argc,
+        return exec_run_command(ctx, workspace, argv_ptrs, prepared->argc,
                                 prepared->timeout_ms);
     }
     if (prepared->kind == PREPARED_GIT_STATUS)
-        return exec_git_status(workspace, prepared->value);
+        return exec_git_status(ctx, workspace, prepared->value);
     if (prepared->kind == PREPARED_GIT_DIFF)
-        return exec_git_diff(workspace, prepared->value, prepared->content);
+        return exec_git_diff(ctx, workspace, prepared->value,
+                             prepared->content);
     if (prepared->kind == PREPARED_GIT_STAT)
-        return exec_git_stat(workspace, prepared->value, prepared->content);
+        return exec_git_stat(ctx, workspace, prepared->value,
+                             prepared->content);
     if (prepared->kind == PREPARED_TASK_CREATE)
-        return exec_task_create(prepared->value);
+        return exec_task_create(ctx, prepared->value);
     if (prepared->kind == PREPARED_TASK_UPDATE)
-        return exec_task_update(prepared->value, prepared->content);
+        return exec_task_update(ctx, prepared->value, prepared->content);
     if (prepared->kind == PREPARED_TASK_LIST)
-        return exec_task_list();
+        return exec_task_list(ctx);
     if (prepared->kind == PREPARED_BASH)
-        return exec_bash_command(workspace, prepared->value);
+        return exec_bash_command(ctx, workspace, prepared->value);
     if (prepared->kind == PREPARED_DELETE_FILE)
-        return exec_delete_file(workspace, prepared->value);
+        return exec_delete_file(ctx, workspace, prepared->value);
     if (prepared->kind == PREPARED_MOVE_FILE)
-        return exec_move_file(workspace, prepared->value, prepared->destination);
+        return exec_move_file(ctx, workspace, prepared->value,
+                              prepared->destination);
     if (prepared->kind == PREPARED_WEB_FETCH)
         return exec_web_fetch(prepared);
     if (prepared->kind == PREPARED_AGENT_TOOL) {
         if (!cfg)
             return ccode_strdup("{\"error\":\"Sub-agent not available\"}");
-        return run_subagent(cfg, prepared->value,
+        return run_subagent(ctx, cfg, prepared->value,
                             prepared->read_only_subagent);
     }
     if (prepared->kind == PREPARED_WEB_SEARCH)
@@ -254,7 +254,7 @@ static char *exec_tool(const char *workspace, const char *name,
     struct prepared_tool prepared;
     const char *error = prepare_tool(name, arguments, &prepared);
     if (error) return ccode_strdup(error);
-    return execute_prepared_tool(NULL, workspace, &prepared);
+    return execute_prepared_tool(&agent_ctx, NULL, workspace, &prepared);
 }
 #endif
 static int is_readonly_tool(const char *name) {
@@ -311,10 +311,10 @@ static int append_summary_if_changed(struct ccode_conversation *conv,
 }
 
 void ccode_agent_summary_cache_reset(void) {
-    free(last_change_summary);
-    last_change_summary = NULL;
-    free(last_task_summary);
-    last_task_summary = NULL;
+    free(agent_ctx.last_change_summary);
+    agent_ctx.last_change_summary = NULL;
+    free(agent_ctx.last_task_summary);
+    agent_ctx.last_task_summary = NULL;
 }
 
 /* Guard against a model re-using a tool_call_id that already produced a tool
@@ -336,7 +336,8 @@ static int conversation_has_tool_result(const struct ccode_conversation *conv,
 /* Run the turn-processing loop on an initialized conversation.
  * Returns 0 on success, 130 on cancellation, 1 on other error.
  * The conversation is preserved and may be reused by the caller. */
-static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
+static int ccode_agent_process_turn_loop(struct agent_context *ctx,
+                                          struct ccode_agent_config *cfg,
                                           struct ccode_conversation *conv) {
     int turn = 0;
     int result = 0;
@@ -360,11 +361,11 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
          * bleed into the next assistant message. */
         ccode_print_content_reset();
         if ((cfg->tools_enabled || cfg->read_only_tools) && turn > 0) {
-            const char *ch = change_count > 0 ? change_log_serialize() : NULL;
-            const char *tasks = (cfg->tools_enabled && task_count > 0)
-                                ? task_list_serialize() : NULL;
-            if (append_summary_if_changed(conv, ch, &last_change_summary) != 0 ||
-                append_summary_if_changed(conv, tasks, &last_task_summary) != 0) {
+            const char *ch = ctx->change_count > 0 ? change_log_serialize(&agent_ctx) : NULL;
+            const char *tasks = (cfg->tools_enabled && ctx->task_count > 0)
+                                ? task_list_serialize(ctx) : NULL;
+            if (append_summary_if_changed(conv, ch, &ctx->last_change_summary) != 0 ||
+                append_summary_if_changed(conv, tasks, &ctx->last_task_summary) != 0) {
                 fprintf(stderr, "Out of memory.\n");
                 return 1;
             }
@@ -395,9 +396,9 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
                 int n = snprintf(line, sizeof(line),
                         "\n\033[2mturn %d  mode=%s  workspace=%s  changes=%d  "
                         "elapsed=%lds\033[0m\n",
-                        turn + 1, mode_label, workspace_root[0] ? workspace_root
+                        turn + 1, mode_label, ctx->workspace_root[0] ? ctx->workspace_root
                                                                  : "(none)",
-                        change_count, el);
+                        ctx->change_count, el);
                 if (n > 0 && (size_t)n < sizeof(line)) {
                     fwrite(line, 1, (size_t)n, stderr);
                 }
@@ -407,8 +408,8 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
         if (conv->count > CCODE_MAX_MESSAGES * 4 / 5) {
             const char *ch = NULL;
             const char *tk = NULL;
-            if (change_count > 0) ch = change_log_serialize();
-            if (task_count > 0) tk = task_list_serialize();
+            if (ctx->change_count > 0) ch = change_log_serialize(&agent_ctx);
+            if (ctx->task_count > 0) tk = task_list_serialize(ctx);
             ccode_conversation_compact(conv, ch, tk);
         }
 
@@ -549,7 +550,7 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
                         ccode_fprint_safe(stderr, acc.tool_calls[i].name,
                                           "(unknown)");
                         fputs(": tools are not enabled\n", stderr);
-                        change_log_add_denied(acc.tool_calls[i].name);
+                        change_log_add_denied(ctx, acc.tool_calls[i].name);
                         if (append_tool_error(conv, acc.tool_calls[i].id,
                                 "{\"error\":\"Tools are not enabled\"}") != 0) {
                             ccode_sse_accumulator_destroy(&acc);
@@ -565,7 +566,7 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
                         ccode_fprint_safe(stderr, acc.tool_calls[i].name,
                                           "(unknown)");
                         fputs(": unavailable\n", stderr);
-                        change_log_add_denied(acc.tool_calls[i].name);
+                        change_log_add_denied(ctx, acc.tool_calls[i].name);
                         if (append_tool_error(conv, acc.tool_calls[i].id,
                                 "{\"error\":\"Tool is unavailable\"}") != 0) {
                             ccode_sse_accumulator_destroy(&acc);
@@ -607,13 +608,13 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
                         continue;
                     }
 
-                    generate_edit_diff(&prepared);
+                    generate_edit_diff(ctx, &prepared);
 
                     {
                         struct ccode_permission_request preq;
                         preq.tool_name = acc.tool_calls[i].name;
                         preq.target = prepared.display;
-                        preq.workspace_root = workspace_root;
+                        preq.workspace_root = ctx->workspace_root;
                         preq.read_only = prepared.kind != PREPARED_WRITE_FILE &&
                                          prepared.kind != PREPARED_EDIT_FILE &&
                                          prepared.kind != PREPARED_RUN_COMMAND &&
@@ -627,7 +628,7 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
                             ccode_fprint_safe(stderr, acc.tool_calls[i].name,
                                               "(unknown)");
                             fputc('\n', stderr);
-                            change_log_add_denied(acc.tool_calls[i].name);
+                            change_log_add_denied(ctx, acc.tool_calls[i].name);
                             if (append_tool_error(conv, acc.tool_calls[i].id,
                                     "{\"error\":\"Permission denied by user\"}") != 0) {
                                 ccode_sse_accumulator_destroy(&acc);
@@ -646,7 +647,7 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
                     ccode_fprint_safe(stderr, prepared.display, "");
                     fputs(")...\n", stderr);
 
-                    tool_result = execute_prepared_tool(cfg, cfg->workspace,
+                    tool_result = execute_prepared_tool(ctx, cfg, cfg->workspace,
                                                         &prepared);
                     if (tool_result) {
                         if (ccode_conversation_add_tool_result(conv,
@@ -742,22 +743,25 @@ static void verify_model(struct ccode_agent_config *cfg,
 }
 
 int ccode_agent_run(struct ccode_agent_config *cfg) {
+    struct agent_context *ctx = &agent_ctx;
     struct ccode_conversation conv;
     char model_fallback[256];
     int result = 0;
 
-    reset_workspace_state();
+    ccode_agent_summary_cache_reset();
+    ccode_agent_context_init(&agent_ctx);
+    reset_workspace_state(ctx);
     ccode_cancel_install();
     verify_model(cfg, model_fallback, sizeof(model_fallback));
 
-    if (init_workspace(cfg->workspace) != 0) {
+    if (init_workspace(ctx, cfg->workspace) != 0) {
         fprintf(stderr, "Could not initialize workspace root.\n");
         return 1;
     }
 
     if (ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) != 0) {
         fprintf(stderr, "Out of memory.\n");
-        reset_workspace_state();
+        reset_workspace_state(&agent_ctx);
         return 1;
     }
 
@@ -766,7 +770,7 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
                                     NULL, NULL) != 0) {
             fputs("Could not load session (corrupted or missing).\n", stderr);
             ccode_conversation_destroy(&conv);
-            reset_workspace_state();
+            reset_workspace_state(&agent_ctx);
             return 1;
         }
         fprintf(stderr, "Resumed session (%zu messages loaded).\n", conv.count);
@@ -778,7 +782,7 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
         if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
             fprintf(stderr, "Out of memory.\n");
             ccode_conversation_destroy(&conv);
-            reset_workspace_state();
+            reset_workspace_state(&agent_ctx);
             return 1;
         }
     }
@@ -787,62 +791,62 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
         if (ccode_conversation_add(&conv, CCODE_ROLE_USER, cfg->prompt) != 0) {
             fprintf(stderr, "Out of memory.\n");
             ccode_conversation_destroy(&conv);
-            reset_workspace_state();
+            reset_workspace_state(&agent_ctx);
             return 1;
         }
     }
 
-    result = ccode_agent_process_turn_loop(cfg, &conv);
+    result = ccode_agent_process_turn_loop(&agent_ctx, cfg, &conv);
 
     {
         int i;
         putchar('\n');
-        if (change_count > 0) {
+        if (ctx->change_count > 0) {
             printf("\033[1mSession summary:\033[0m\n");
-            for (i = 0; i < change_count; i++) {
-                if (strcmp(change_log[i].type, "command") == 0) {
+            for (i = 0; i < ctx->change_count; i++) {
+                if (strcmp(ctx->change_log[i].type, "command") == 0) {
                     char extra[80] = "";
                     fputs("  command: ", stdout);
-                    ccode_fprint_safe(stdout, change_log[i].target, "");
-                    if (change_log[i].timed_out)
+                    ccode_fprint_safe(stdout, ctx->change_log[i].target, "");
+                    if (ctx->change_log[i].timed_out)
                         strncat(extra, ", timed out", sizeof(extra) - strlen(extra) - 1);
-                    if (change_log[i].stdout_truncated)
+                    if (ctx->change_log[i].stdout_truncated)
                         strncat(extra, ", stdout truncated", sizeof(extra) - strlen(extra) - 1);
-                    if (change_log[i].stderr_truncated)
+                    if (ctx->change_log[i].stderr_truncated)
                         strncat(extra, ", stderr truncated", sizeof(extra) - strlen(extra) - 1);
-                    if (change_log[i].denied)
+                    if (ctx->change_log[i].denied)
                         strncat(extra, ", denied", sizeof(extra) - strlen(extra) - 1);
-                    fprintf(stdout, " (exit=%d%s)\n", change_log[i].exit_code,
+                    fprintf(stdout, " (exit=%d%s)\n", ctx->change_log[i].exit_code,
                             extra);
                 } else {
                     char extra[32] = "";
-                    if (change_log[i].denied)
+                    if (ctx->change_log[i].denied)
                         strncat(extra, " (denied)", sizeof(extra) - strlen(extra) - 1);
                     fputs("  ", stdout);
-                    ccode_fprint_safe(stdout, change_log[i].type, "");
+                    ccode_fprint_safe(stdout, ctx->change_log[i].type, "");
                     fputs(": ", stdout);
-                    ccode_fprint_safe(stdout, change_log[i].target, "");
+                    ccode_fprint_safe(stdout, ctx->change_log[i].target, "");
                     fputs(extra, stdout);
                     fputc('\n', stdout);
                 }
             }
         }
-        if (task_count > 0) {
+        if (ctx->task_count > 0) {
             printf("\033[1mTasks:\033[0m\n");
-            for (i = 0; i < task_count; i++) {
+            for (i = 0; i < ctx->task_count; i++) {
                 fputs("  [", stdout);
-                ccode_fprint_safe(stdout, task_list[i].status, "");
+                ccode_fprint_safe(stdout, ctx->task_list[i].status, "");
                 fputs("] ", stdout);
-                ccode_fprint_safe(stdout, task_list[i].id, "");
+                ccode_fprint_safe(stdout, ctx->task_list[i].id, "");
                 fputs(": ", stdout);
-                ccode_fprint_safe(stdout, task_list[i].content, "");
+                ccode_fprint_safe(stdout, ctx->task_list[i].content, "");
                 fputc('\n', stdout);
             }
         }
     }
     if (cfg->save_session) {
-        const char *ch = change_count > 0 ? change_log_serialize() : NULL;
-        const char *tk = task_count > 0 ? task_list_serialize() : NULL;
+        const char *ch = ctx->change_count > 0 ? change_log_serialize(&agent_ctx) : NULL;
+        const char *tk = ctx->task_count > 0 ? task_list_serialize(ctx) : NULL;
         struct ccode_session_metadata meta;
         memset(&meta, 0, sizeof(meta));
         if (cfg->model) {
@@ -851,10 +855,10 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
             memcpy(meta.model, cfg->model, ml);
             meta.model[ml] = '\0';
         }
-        if (workspace_root[0]) {
-            size_t wl = strlen(workspace_root);
+        if (ctx->workspace_root[0]) {
+            size_t wl = strlen(ctx->workspace_root);
             if (wl >= sizeof(meta.workspace)) wl = sizeof(meta.workspace) - 1;
-            memcpy(meta.workspace, workspace_root, wl);
+            memcpy(meta.workspace, ctx->workspace_root, wl);
             meta.workspace[wl] = '\0';
         }
         meta.created_at = time(NULL);
@@ -864,8 +868,8 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
     ccode_conversation_destroy(&conv);
     {
         int cancelled = ccode_cancel_pending();
-        cleanup_residual_temp_files();
-        reset_workspace_state();
+        cleanup_residual_temp_files(&agent_ctx);
+        reset_workspace_state(&agent_ctx);
         signal(SIGINT, SIG_DFL);
         if (cancelled) return 130;
     }
@@ -953,6 +957,7 @@ static void print_session_list(void) {
 }
 
 int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
+    struct agent_context *ctx = &agent_ctx;
     int have_session_path;
     char current_session_path[4096];
     int conv_initialized;
@@ -997,17 +1002,19 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
         return 1;
     }
     memset(history, 0, CCODE_HISTORY_MAX * CCODE_INPUT_LINE_MAX);
-    reset_workspace_state();
+    ccode_agent_summary_cache_reset();
+    ccode_agent_context_init(&agent_ctx);
+    reset_workspace_state(&agent_ctx);
     ccode_cancel_install();
 
-    if (init_workspace(cfg->workspace) != 0) {
+    if (init_workspace(ctx, cfg->workspace) != 0) {
         fprintf(stderr, "Could not initialize workspace root.\n");
         return 1;
     }
 
     if (ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) != 0) {
         fprintf(stderr, "Out of memory.\n");
-        reset_workspace_state();
+        reset_workspace_state(&agent_ctx);
         return 1;
     }
     conv_initialized = 1;
@@ -1084,8 +1091,8 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                 }
                 continue;
             } else if (strcmp(line, "/compact") == 0) {
-                const char *ch = change_count > 0 ? change_log_serialize() : NULL;
-                const char *tk = task_count > 0 ? task_list_serialize() : NULL;
+                const char *ch = ctx->change_count > 0 ? change_log_serialize(&agent_ctx) : NULL;
+                const char *tk = ctx->task_count > 0 ? task_list_serialize(ctx) : NULL;
                 ccode_conversation_compact(&conv, ch, tk);
                 ccode_agent_summary_cache_reset();
                 fprintf(stderr, "  Conversation compacted.\n");
@@ -1430,10 +1437,20 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                         snprintf(out_path, sizeof(out_path), "%.*s.json", (int)nl, name);
                 }
                 {
-                    char full[sizeof(workspace_root) + sizeof(out_path) + 2];
-                    snprintf(full, sizeof(full), "%s/%s",
-                             workspace_root[0] ? workspace_root : ".", out_path);
+                    char *full;
+                    size_t full_size = strlen(ctx->workspace_root)
+                                       + strlen(out_path) + 2;
+                    full = malloc(full_size);
+                    if (!full) {
+                        fputs("  Out of memory.\n", stderr);
+                        free(exported);
+                        continue;
+                    }
+                    snprintf(full, full_size, "%s/%s",
+                             ctx->workspace_root[0] ? ctx->workspace_root : ".",
+                             out_path);
                     out = fopen(full, "wb");
+                    free(full);
                     if (!out) {
                         fputs("  Could not write export file.\n", stderr);
                         free(exported);
@@ -1496,8 +1513,8 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                     ccode_agent_summary_cache_reset();
                     fprintf(stderr, "  Resumed session: %s (%zu messages loaded)\n",
                             name, conv.count);
-                    task_list_reset();
-                    change_log_reset();
+                    task_list_reset(ctx);
+                    change_log_reset(&agent_ctx);
                     if (strlen(session_path) < sizeof(current_session_path)) {
                         memcpy(current_session_path, session_path,
                                strlen(session_path) + 1);
@@ -1532,8 +1549,8 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                     size_t nl = strlen(name);
 
                     ccode_agent_summary_cache_reset();
-                    task_list_reset();
-                    change_log_reset();
+                    task_list_reset(ctx);
+                    change_log_reset(&agent_ctx);
                     history_count = 0;
                     ccode_conversation_destroy(&conv);
                     if (ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) != 0) {
@@ -1573,10 +1590,10 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                         memcpy(meta.model, cfg->model, ml);
                         meta.model[ml] = '\0';
                     }
-                    if (workspace_root[0]) {
-                        size_t wl = strlen(workspace_root);
+                    if (ctx->workspace_root[0]) {
+                        size_t wl = strlen(ctx->workspace_root);
                         if (wl >= sizeof(meta.workspace)) wl = sizeof(meta.workspace) - 1;
-                        memcpy(meta.workspace, workspace_root, wl);
+                        memcpy(meta.workspace, ctx->workspace_root, wl);
                         meta.workspace[wl] = '\0';
                     }
                     meta.created_at = time(NULL);
@@ -1636,8 +1653,8 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                     ccode_conversation_destroy(&conv);
                     conv = new_conv;
                     ccode_agent_summary_cache_reset();
-                    task_list_reset();
-                    change_log_reset();
+                    task_list_reset(ctx);
+                    change_log_reset(&agent_ctx);
                     if (strlen(path) < sizeof(current_session_path)) {
                         memcpy(current_session_path, path, strlen(path) + 1);
                         have_session_path = 1;
@@ -1669,7 +1686,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
             goto cleanup;
         }
 
-        turn_result = ccode_agent_process_turn_loop(cfg, &conv);
+        turn_result = ccode_agent_process_turn_loop(&agent_ctx, cfg, &conv);
         if (turn_result == 130) {
             exit_code = 130;
             break;
@@ -1677,8 +1694,8 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
 
         /* Auto-save after each turn if we have a session path. */
         if (have_session_path && conv_initialized) {
-            const char *ch = change_count > 0 ? change_log_serialize() : NULL;
-            const char *tk = task_count > 0 ? task_list_serialize() : NULL;
+            const char *ch = ctx->change_count > 0 ? change_log_serialize(&agent_ctx) : NULL;
+            const char *tk = ctx->task_count > 0 ? task_list_serialize(ctx) : NULL;
             struct ccode_session_metadata meta;
             memset(&meta, 0, sizeof(meta));
             if (cfg->model) {
@@ -1687,10 +1704,10 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                 memcpy(meta.model, cfg->model, ml);
                 meta.model[ml] = '\0';
             }
-            if (workspace_root[0]) {
-                size_t wl = strlen(workspace_root);
+            if (ctx->workspace_root[0]) {
+                size_t wl = strlen(ctx->workspace_root);
                 if (wl >= sizeof(meta.workspace)) wl = sizeof(meta.workspace) - 1;
-                memcpy(meta.workspace, workspace_root, wl);
+                memcpy(meta.workspace, ctx->workspace_root, wl);
                 meta.workspace[wl] = '\0';
             }
             meta.created_at = time(NULL);
@@ -1701,31 +1718,31 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
 cleanup:
     {
         int i;
-        if (change_count > 0) {
+        if (ctx->change_count > 0) {
             putchar('\n');
             printf("\033[1mSession summary:\033[0m\n");
-            for (i = 0; i < change_count; i++) {
-                if (strcmp(change_log[i].type, "command") == 0) {
+            for (i = 0; i < ctx->change_count; i++) {
+                if (strcmp(ctx->change_log[i].type, "command") == 0) {
                     char extra[80] = "";
                     fputs("  command: ", stdout);
-                    ccode_fprint_safe(stdout, change_log[i].target, "");
-                    if (change_log[i].timed_out)
+                    ccode_fprint_safe(stdout, ctx->change_log[i].target, "");
+                    if (ctx->change_log[i].timed_out)
                         strncat(extra, ", timed out", sizeof(extra) - strlen(extra) - 1);
-                    if (change_log[i].stdout_truncated)
+                    if (ctx->change_log[i].stdout_truncated)
                         strncat(extra, ", stdout truncated", sizeof(extra) - strlen(extra) - 1);
-                    if (change_log[i].stderr_truncated)
+                    if (ctx->change_log[i].stderr_truncated)
                         strncat(extra, ", stderr truncated", sizeof(extra) - strlen(extra) - 1);
-                    if (change_log[i].denied)
+                    if (ctx->change_log[i].denied)
                         strncat(extra, ", denied", sizeof(extra) - strlen(extra) - 1);
-                    fprintf(stdout, " (exit=%d%s)\n", change_log[i].exit_code, extra);
+                    fprintf(stdout, " (exit=%d%s)\n", ctx->change_log[i].exit_code, extra);
                 } else {
                     char extra[32] = "";
-                    if (change_log[i].denied)
+                    if (ctx->change_log[i].denied)
                         strncat(extra, " (denied)", sizeof(extra) - strlen(extra) - 1);
                     fputs("  ", stdout);
-                    ccode_fprint_safe(stdout, change_log[i].type, "");
+                    ccode_fprint_safe(stdout, ctx->change_log[i].type, "");
                     fputs(": ", stdout);
-                    ccode_fprint_safe(stdout, change_log[i].target, "");
+                    ccode_fprint_safe(stdout, ctx->change_log[i].target, "");
                     fputs(extra, stdout);
                     fputc('\n', stdout);
                 }
@@ -1733,8 +1750,8 @@ cleanup:
         }
     }
     if (cfg->save_session && conv_initialized) {
-        const char *ch = change_count > 0 ? change_log_serialize() : NULL;
-        const char *tk = task_count > 0 ? task_list_serialize() : NULL;
+        const char *ch = ctx->change_count > 0 ? change_log_serialize(&agent_ctx) : NULL;
+        const char *tk = ctx->task_count > 0 ? task_list_serialize(ctx) : NULL;
         struct ccode_session_metadata meta;
         memset(&meta, 0, sizeof(meta));
         if (cfg->model) {
@@ -1743,10 +1760,10 @@ cleanup:
             memcpy(meta.model, cfg->model, ml);
             meta.model[ml] = '\0';
         }
-        if (workspace_root[0]) {
-            size_t wl = strlen(workspace_root);
+        if (ctx->workspace_root[0]) {
+            size_t wl = strlen(ctx->workspace_root);
             if (wl >= sizeof(meta.workspace)) wl = sizeof(meta.workspace) - 1;
-            memcpy(meta.workspace, workspace_root, wl);
+            memcpy(meta.workspace, ctx->workspace_root, wl);
             meta.workspace[wl] = '\0';
         }
         meta.created_at = time(NULL);
@@ -1755,8 +1772,8 @@ cleanup:
     }
     if (conv_initialized) ccode_conversation_destroy(&conv);
     free(history);
-    cleanup_residual_temp_files();
-    reset_workspace_state();
+    cleanup_residual_temp_files(&agent_ctx);
+    reset_workspace_state(&agent_ctx);
     signal(SIGINT, SIG_DFL);
     return exit_code;
 }
@@ -1764,36 +1781,36 @@ cleanup:
 #ifdef CCODE_UNIT_TEST
 /* Expose static helpers for unit tests. Production builds never define this. */
 char *test_exec_read_file(const char *workspace, const char *file_path) {
-    return exec_read_file(workspace, file_path);
+    return exec_read_file(&agent_ctx, workspace, file_path);
 }
 char *test_exec_glob(const char *workspace, const char *pattern) {
-    return exec_glob(workspace, pattern, NULL, 0);
+    return exec_glob(&agent_ctx, workspace, pattern, NULL, 0);
 }
 char *test_exec_grep(const char *workspace, const char *pattern,
                      const char *include) {
-    return exec_grep(workspace, pattern, include, 0, 0, NULL);
+    return exec_grep(&agent_ctx, workspace, pattern, include, 0, 0, NULL);
 }
 char *test_exec_write_file(const char *workspace, const char *file_path,
                            const char *content) {
-    return exec_write_file(workspace, file_path, content);
+    return exec_write_file(&agent_ctx, workspace, file_path, content);
 }
 char *test_exec_edit_file(const char *workspace, const char *file_path,
                           const char *old_string, const char *new_string) {
-    return exec_edit_file(workspace, file_path, old_string, new_string);
+    return exec_edit_file(&agent_ctx, workspace, file_path, old_string, new_string);
 }
 char *test_exec_run_command(const char *workspace,
                             char **argv, size_t argc,
                             int timeout_ms) {
-    return exec_run_command(workspace, argv, argc, timeout_ms);
+    return exec_run_command(&agent_ctx, workspace, argv, argc, timeout_ms);
 }
 const char *test_normalize_glob(const char *pattern) {
     return normalize_glob(pattern);
 }
 void test_reset_workspace(void) {
-    reset_workspace_state();
+    reset_workspace_state(&agent_ctx);
 }
 const char *test_workspace_root(void) {
-    return workspace_root;
+    return agent_ctx.workspace_root;
 }
 char *test_exec_tool(const char *workspace, const char *name,
                       const char *arguments) {
@@ -1816,28 +1833,29 @@ int test_prepare_tool_display(const char *name, const char *arguments,
     n = snprintf(dest, dest_size, "%s", prepared.display);
     return n >= 0 && (size_t)n < dest_size ? 0 : -1;
 }
-void test_change_log_reset(void) { change_log_reset(); }
-int test_change_log_count(void) { return change_count; }
-const char *test_change_log_serialize(void) { return change_log_serialize(); }
+void test_change_log_reset(void) { change_log_reset(&agent_ctx); }
+int test_change_log_count(void) { return agent_ctx.change_count; }
+const char *test_change_log_serialize(void) { return change_log_serialize(&agent_ctx); }
 void test_change_log_add_command_full(const char *cmd, int exit_code,
                                        int timed_out,
                                        int stdout_truncated,
                                        int stderr_truncated) {
-    change_log_add_ex("command", cmd, exit_code, timed_out, 0,
+    change_log_add_ex(&agent_ctx, "command", cmd, exit_code, timed_out, 0,
                       stdout_truncated, stderr_truncated);
 }
 void test_change_log_add_denied_entry(const char *tool_name) {
-    change_log_add_denied(tool_name);
+    change_log_add_denied(&agent_ctx, tool_name);
 }
 void test_set_respect_gitignore(int v) {
-    ccode_respect_gitignore_cached = v;
+    agent_ctx.respect_gitignore = v;
+    agent_ctx.respect_gitignore_loaded = 1;
 }
 int test_conversation_has_tool_result(const struct ccode_conversation *conv,
                                       const char *tool_call_id) {
     return conversation_has_tool_result(conv, tool_call_id);
 }
 void ccode_test_cleanup_residual_temp_files(void) {
-    cleanup_residual_temp_files();
+    cleanup_residual_temp_files(&agent_ctx);
 }
 int ccode_test_cancel_pending(void) {
     return ccode_cancel_pending();
