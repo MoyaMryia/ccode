@@ -16,6 +16,22 @@ RESPONSES = {}
 _SUBAGENT_REQ_TIMES = []
 _SUBAGENT_REQ_LOCK = threading.Lock()
 
+def chunk_content_events(content, chunk=4096):
+    """Emit content as a stream of small deltas, like a real streaming
+    provider. ccode's SSE parser holds at most IO_BUF_SIZE (32 KiB) per
+    event line, so any answer larger than that must be split across events."""
+    out = []
+    for i in range(0, len(content), chunk):
+        out.append({"data": json.dumps({
+            "choices": [{"index": 0,
+                         "delta": {"content": content[i:i + chunk]},
+                         "finish_reason": None}]
+        })})
+    out.append({"data": json.dumps({
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+    })})
+    return out
+
 def load_responses(fixtures_dir):
     for fname in os.listdir(fixtures_dir):
         if fname.endswith('.json'):
@@ -506,15 +522,12 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                     overlapping = any(now - t < 1.0
                                       for t in _SUBAGENT_REQ_TIMES)
                     _SUBAGENT_REQ_TIMES.append(now)
-                events = [{"data": json.dumps({
-                    "choices": [{"index": 0,
-                                 "delta": {"content": "answer:{};overlap:{}".format(
-                                     prompt, "yes" if overlapping else "no")},
-                                 "finish_reason": None}]
-                })}, {"data": json.dumps({
-                    "choices": [{"index": 0, "delta": {},
-                                 "finish_reason": "stop"}]
-                })}]
+                padding = int(os.environ.get("MOCK_SUBAGENT_PADDING", "0"))
+                content = "answer:{};overlap:{}".format(
+                    prompt, "yes" if overlapping else "no")
+                if padding > 0 and "sub-a-delegate" in prompt:
+                    content += "p" * padding
+                events = chunk_content_events(content)
                 time.sleep(1.0)
             elif tool_count == 0:
                 # Parent turn 1: emit two read-only agent_tool calls.
@@ -546,11 +559,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                     if m.get("role") == "tool":
                         parts.append(str(m.get("content", "")))
                 content = "Parallel results: " + " | ".join(parts)
-                events = [{"data": json.dumps({
-                    "choices": [{"index": 0,
-                                 "delta": {"content": content},
-                                 "finish_reason": "stop"}]
-                })}]
+                events = chunk_content_events(content)
 
         elif test_mode == "incomplete":
             events = [

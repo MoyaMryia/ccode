@@ -233,6 +233,18 @@ static int run_pending_subagents(struct agent_context *ctx,
                                  struct pending_subagent *jobs, size_t count) {
     size_t i;
     size_t launched = 0;
+    sigset_t cancel_block;
+
+    /* Block SIGINT for the whole launch window. Each child is forked into its
+     * own process group before it gets registered with the cancel handler;
+     * without blocking, an interrupt landing between fork() and registration
+     * would leave a detached, unkillable child (it is no longer in the
+     * foreground group and no one holds its pid). The pending signal is
+     * delivered to the handler right after unblock, which kills every group
+     * registered so far. */
+    (void)sigemptyset(&cancel_block);
+    (void)sigaddset(&cancel_block, SIGINT);
+    (void)sigprocmask(SIG_BLOCK, &cancel_block, NULL);
 
     for (i = 0; i < count; i++) {
         int fds[2];
@@ -242,6 +254,11 @@ static int run_pending_subagents(struct agent_context *ctx,
             jobs[i].error = 1;
             continue;
         }
+        /* FD_CLOEXEC on both ends so a descendant that outlives the child
+         * (an exec'd command inside a sub-agent) cannot keep the write end
+         * open and make the parent wait for EOF forever. */
+        (void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+        (void)fcntl(fds[1], F_SETFD, FD_CLOEXEC);
         pid = fork();
         if (pid < 0) {
             close(fds[0]);
@@ -258,6 +275,11 @@ static int run_pending_subagents(struct agent_context *ctx,
             size_t written = 0;
             size_t j;
             (void)setpgid(0, 0);
+            /* The launch window's SIGINT block is inherited by fork; undo it
+             * so the sub-agent's own loop sees signals normally. A SIGINT
+             * that landed while blocked is already pending here and fires the
+             * inherited handler, which marks this child cancelled. */
+            (void)sigprocmask(SIG_UNBLOCK, &cancel_block, NULL);
             /* Close every pipe read end we inherited so the parent sees EOF
              * exactly when each child finishes. */
             close(fds[0]);
@@ -305,6 +327,9 @@ static int run_pending_subagents(struct agent_context *ctx,
         for (i = 0; i < count; i++) {
             if (jobs[i].pipe_fd >= 0) ccode_cancel_child_register(jobs[i].pid);
         }
+        /* Launch window over: every child is registered. Unblock SIGINT so a
+         * pending interrupt reaches the handler now and kills the groups. */
+        (void)sigprocmask(SIG_UNBLOCK, &cancel_block, NULL);
 
         /* Drain every pipe concurrently so a child writing more than the
          * pipe buffer cannot deadlock on a sibling's unread data. */
@@ -337,18 +362,32 @@ static int run_pending_subagents(struct agent_context *ctx,
                 n = read(jobs[i].pipe_fd, tmp, sizeof(tmp));
                 if (n > 0) {
                     if (jobs[i].buf_len + (size_t)n > jobs[i].buf_cap) {
+                        size_t need = jobs[i].buf_len + (size_t)n;
                         size_t new_cap = jobs[i].buf_cap
                                          ? jobs[i].buf_cap * 2 : 4096;
                         char *tmp2;
-                        if (new_cap < jobs[i].buf_len + (size_t)n)
-                            new_cap = jobs[i].buf_len + (size_t)n;
+                        if (new_cap < need) new_cap = need;
                         if (new_cap > SUBAGENT_RESULT_MAX + 64 + 8) {
+                            /* Doubling overshoots the cap for a payload that
+                             * may still fit (the child clamps at
+                             * SUBAGENT_RESULT_MAX + 64, so 4 header bytes +
+                             * payload fits exactly). Grow by the exact need. */
+                            new_cap = need;
+                        }
+                        if (new_cap > SUBAGENT_RESULT_MAX + 64 + 8) {
+                            /* Truly oversized answer. Do not keep reading:
+                             * the child would block on a full pipe and the
+                             * waitpid below would wait on it forever. Kill
+                             * its whole process group instead so the writer
+                             * dies and the read end reaches EOF. */
+                            (void)kill(-jobs[i].pid, SIGKILL);
                             jobs[i].done = 1;
                             jobs[i].error = 1;
                             continue;
                         }
                         tmp2 = realloc(jobs[i].buf, new_cap);
                         if (!tmp2) {
+                            (void)kill(-jobs[i].pid, SIGKILL);
                             jobs[i].done = 1;
                             jobs[i].error = 1;
                             continue;

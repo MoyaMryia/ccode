@@ -89,9 +89,13 @@ REPAIR_FIXTURE_DIR = None
 
 
 def start_mock():
+    return start_mock_env(os.environ.copy())
+
+
+def start_mock_env(env):
     proc = subprocess.Popen(
         [sys.executable, MOCK_PROVIDER, str(PORT)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
     time.sleep(0.5)
     if proc.poll() is not None:
         print("FAIL: mock provider failed to start")
@@ -99,9 +103,19 @@ def start_mock():
     return proc
 
 
-def run_ccode_workflow(prompt, workspace):
+def stop_mock(mock_proc):
+    mock_proc.terminate()
+    try:
+        mock_proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        mock_proc.kill()
+
+
+def run_ccode_workflow(prompt, workspace, extra_env=None):
     """Run ccode through the full workflow with PTY approval."""
     env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
     env["CCODE_API_BASE"] = "http://127.0.0.1:%d/v1" % PORT
     env["CCODE_API_KEY"] = "test-key"
     env["CCODE_MODEL"] = "test-model"
@@ -465,7 +479,62 @@ def main():
     if 'sub_dir' in dir():
         subprocess.run(["rm", "-rf", sub_dir], capture_output=True)
 
-    # Test 6: Session persistence -- save and resume    tests_run += 1
+    # Test 6: Parallel sub-agents, oversized answers -- each delegate returns
+    # a result larger than the 64 KiB pipe buffer and past the growth-doubling
+    # boundary. The parent must still receive both answers intact (the grow
+    # path used to overshoot the cap, stop reading, and deadlock on waitpid).
+    tests_run += 1
+    print("--- workflow: parallel sub-agents, oversized answers ---")
+    try:
+        big_dir = os.path.join(
+            os.path.dirname(__file__), "fixtures",
+            "e2e_parallel_oversize_%d" % os.getpid())
+        os.makedirs(big_dir, exist_ok=True)
+        stop_mock(mock_proc)
+        big_env = os.environ.copy()
+        big_env["MOCK_SUBAGENT_PADDING"] = "80000"
+        mock_proc = start_mock_env(big_env)
+        stdout, stderr, rc, approved = run_ccode_workflow(
+            "__ccode_test_parallel-subagents-fixture", big_dir)
+        output = stdout.decode() + stderr.decode()
+
+        if rc == 0:
+            print("  PASS: parent completed (no deadlock)")
+        else:
+            print("  FAIL: parent did not finish (rc=%s) - oversized "
+                  "answers deadlocked the drain (output: %s)"
+                  % (rc, output[:300]))
+            tests_failed += 1
+
+        if "sub-a-delegate;overlap" in output:
+            print("  PASS: oversized delegate A result intact")
+        else:
+            print("  FAIL: oversized delegate A result lost (output: %s)"
+                  % output[:300])
+            tests_failed += 1
+
+        if "sub-b-delegate;overlap" in output:
+            print("  PASS: oversized delegate B result intact")
+        else:
+            print("  FAIL: oversized delegate B result lost (output: %s)"
+                  % output[:300])
+            tests_failed += 1
+
+        if "Sub-agent failed" in output:
+            print("  FAIL: oversized answers reported as sub-agent failure")
+            tests_failed += 1
+        else:
+            print("  PASS: no spurious sub-agent failure")
+    except Exception as e:
+        print("  FAIL: %s" % e)
+        tests_failed += 1
+    if 'big_dir' in dir():
+        subprocess.run(["rm", "-rf", big_dir], capture_output=True)
+    stop_mock(mock_proc)
+    mock_proc = start_mock()
+
+    # Test 7: Session persistence -- save and resume
+    tests_run += 1
     print("--- workflow: session save and resume ---")
     try:
         session_dir = os.path.abspath(os.path.join(

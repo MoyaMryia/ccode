@@ -55,9 +55,9 @@ struct parsed_url {
 };
 
 struct sse_parser {
-    char input[IO_BUF_SIZE];
+    char input[2 * IO_BUF_SIZE];
     size_t input_used;
-    char event[IO_BUF_SIZE];
+    char event[2 * IO_BUF_SIZE];
     size_t event_used;
 };
 
