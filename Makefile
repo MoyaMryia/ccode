@@ -1,6 +1,6 @@
 CC ?= cc
 CPPFLAGS ?=
-CFLAGS ?= -O2 -std=c99 -Wall -Wextra -Wpedantic
+CFLAGS ?= -Os -std=c99 -Wall -Wextra -Wpedantic
 LDFLAGS ?=
 override CPPFLAGS += -D_POSIX_C_SOURCE=200112L
 
@@ -34,7 +34,7 @@ override CPPFLAGS += -Isrc/compat
 # sources are C89 (mid-block declarations were hoisted by scripts/c89ify.py;
 # `long long` remains as a GNU extension), so only the flags need dropping:
 # -std=c99 (unsupported by gcc 2.7) and -pedantic (chokes on `long long`).
-override CFLAGS  := -O2 $(filter-out -std=c99 -pedantic -march=x86-64 -mtune=generic -Wextra -Wpedantic,$(CFLAGS))
+override CFLAGS  := -O2 $(filter-out -std=c99 -pedantic -march=x86-64 -mtune=generic -Wextra -Wpedantic -Os,$(CFLAGS))
 # -m32/-march/-mtune are gcc 3.x+ multilib flags. A native i386 toolchain
 # (gcc 2.7.2.3 on BasicLinux) is already 32-bit and uses -m486/-mcpu=
 # instead, so set RETRO_NATIVE=1 there to skip them. The host smoke-test
@@ -68,17 +68,47 @@ endif
 endif
 endif
 
-# Per-OS platform implementation. Linux shares /proc + Landlock; Darwin
-# uses _NSGetExecutablePath + best-effort; the BSDs use sysctl for the exe
-# path. See src/platform/platform.h. HOST_MACH (defined near the top) carries
-# the vendor token (e.g. *-apple-darwin*, x86_64-portbld-freebsd14.0,
-# x86_64--netbsd); version suffixes mean substring match, not word filter.
+# Per-OS platform implementation. Linux uses /proc + Landlock; Darwin uses
+# _NSGetExecutablePath + best-effort; the BSDs use sysctl for the exe path;
+# Haiku/Hurd/Solaris/MINIX/Win32(Cygwin) have dedicated files (see below).
+# See src/platform/platform.h. HOST_MACH (defined near the top) carries the
+# vendor token (e.g. *-apple-darwin*, x86_64-portbld-freebsd14.0,
+# x86_64--netbsd, x86_64-unknown-haiku, i686-gnu, x86_64-pc-solaris2.11,
+# i686-minix, x86_64-pc-cygwin); version suffixes mean substring match, not
+# word filter.
 PLATFORM_SRC = src/platform/platform_linux.c
 ifneq ($(findstring apple,$(HOST_MACH)),)
 PLATFORM_SRC = src/platform/platform_darwin.c
 endif
 ifneq (,$(findstring freebsd,$(HOST_MACH))$(findstring dragonfly,$(HOST_MACH))$(findstring netbsd,$(HOST_MACH))$(findstring openbsd,$(HOST_MACH)))
 PLATFORM_SRC = src/platform/platform_bsd.c
+endif
+# Haiku (BeOS descendant): find_path(B_APP_IMAGE_SYMBOL) exe resolution.
+ifneq ($(findstring haiku,$(HOST_MACH)),)
+PLATFORM_SRC = src/platform/platform_haiku.c
+endif
+# GNU Hurd: /proc/self/exe via procfs translator + MSG_NOSIGNAL (glibc).
+# The canonical Hurd triplet is *-gnu (e.g. i686-gnu, x86_64-gnu) with no
+# "linux" or "mingw" token; exclude *-linux-gnu (glibc Linux) and
+# *-w64-mingw32-gnu (MinGW), which also carry the gnu substring.
+ifeq ($(findstring linux,$(HOST_MACH)),)
+ifeq ($(findstring mingw,$(HOST_MACH)),)
+ifneq (,$(filter %-gnu,$(HOST_MACH)))
+PLATFORM_SRC = src/platform/platform_hurd.c
+endif
+endif
+endif
+# illumos / Solaris / OpenSolaris: getexecname() + /proc/self/path/a.out.
+ifneq (,$(findstring solaris,$(HOST_MACH))$(findstring illumos,$(HOST_MACH)))
+PLATFORM_SRC = src/platform/platform_solaris.c
+endif
+# MINIX 3: NetBSD libc sysctl exe path + SO_NOSIGPIPE.
+ifneq ($(findstring minix,$(HOST_MACH)),)
+PLATFORM_SRC = src/platform/platform_minix.c
+endif
+# Windows via Cygwin / MSYS2: /proc/self/exe + MSG_NOSIGNAL (Cygwin).
+ifneq (,$(findstring cygwin,$(HOST_MACH))$(findstring msys,$(HOST_MACH)))
+PLATFORM_SRC = src/platform/platform_win32.c
 endif
 AGENT_SRC = src/agent/agent.c src/agent/agent_cancel.c src/agent/agent_fs.c src/agent/agent_args.c src/agent/agent_prepare.c src/agent/agent_exec.c src/agent/agent_output.c src/agent/message.c
 SRC = src/main.c src/config.c src/tui/tui.c src/tui/term.c src/tui/render.c src/tui/input.c src/tui/messages.c src/tui/status.c src/tui/theme.c src/tui/protocol.c src/markdown.c $(PLATFORM_SRC)
@@ -147,9 +177,43 @@ endif
 
 OBJDIR = .build/$(BUILD_MODE)
 OBJ = $(addprefix $(OBJDIR)/,$(SRC:.c=.o))
-MODE_BIN = $(OBJDIR)/ccode
+TUI_BIN = $(OBJDIR)/ccode-tui
 CLI_BIN = $(OBJDIR)/ccode-cli
+COMBINED_BIN = $(OBJDIR)/ccode
 CLI_SRC = src/cli/main.c src/config.c src/http.c src/json.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c $(AGENT_SRC) src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c $(PLATFORM_SRC)
+# 单体 ccode：进程内 TUI + CLI 合一个二进制。$(sort) 去掉 SRC/CLI_SRC
+# 里重叠的 config.c/markdown.c/platform；main.c 与 cli/main.c 的 main() 在
+# -DCCODE_COMBINED 下被排除，由 combined_main.c 提供分发入口。
+COMBINED_SRC = $(sort src/combined_main.c src/main.c src/cli/main.c $(SRC) $(CLI_SRC))
+
+# ── Binary size optimization ──
+# Split every function/data into its own section and let the linker drop
+# whatever is unreferenced. The vendored mbedTLS/PolarSSL compile all of
+# their library/*.c but only a small TLS-client subset is used, so this is
+# the single largest size win. -s strips the symbol table. --gc-sections is
+# GNU-ld specific, so non-Linux hosts only get -s.
+#
+# Retro also shrinks, but conservatively:
+#   - host smoke build (RETRO=1, modern gcc -m32): full set.
+#   - guest native (RETRO_NATIVE=1, egcs 1.1.2 / gcc 2.7.2.3): only -s.
+#     Old gcc lacks -fdata-sections, and --gc-sections over a libc5 static
+#     link with old binutils is not worth risking.
+ifeq ($(RETRO),1)
+ifneq ($(RETRO_NATIVE),1)
+SIZE_CFLAGS = -ffunction-sections -fdata-sections
+SIZE_LDFLAGS = -Wl,--gc-sections -s
+else
+SIZE_CFLAGS =
+SIZE_LDFLAGS = -s
+endif
+else
+SIZE_CFLAGS = -ffunction-sections -fdata-sections
+ifeq ($(findstring linux,$(HOST_MACH)),)
+SIZE_LDFLAGS = -s
+else
+SIZE_LDFLAGS = -Wl,--gc-sections -s
+endif
+endif
 
 # Vendored PolarSSL 1.3.9 (retro TLS backend; see
 # vendor/polarssl-1.3.9/README.ccode.md). Compiled into the binary via the
@@ -158,16 +222,22 @@ POLARSSL_SRC = $(wildcard vendor/polarssl-1.3.9/library/*.c)
 
 ifeq ($(BUILD_MODE),https)
 # Vendored mbedTLS library sources, compiled into the binary (no -lmbedtls).
-# Compiled with relaxed flags: third-party code, keep it quiet.
+# Compiled with relaxed flags: third-party code, keep it quiet. Function/data
+# sections let --gc-sections drop the unused algorithms at link time.
 MBEDTLS_SRC = $(wildcard $(MBEDTLS_DIR)/library/*.c)
 MBEDTLS_OBJ = $(addprefix $(OBJDIR)/,$(MBEDTLS_SRC:.c=.o))
-MBEDTLS_CFLAGS = -O2 -std=c99 -w $(X86_GNU_FLAGS)
+MBEDTLS_CFLAGS = -Os -std=c99 -w $(SIZE_CFLAGS) $(X86_GNU_FLAGS)
 endif
 
-all: ccode ccode-cli
+all: ccode ccode-cli ccode-tui
 .PHONY: all
 
-ccode: $(MODE_BIN)
+# 单体二进制：自带 TUI + CLI（进程内运行，不 fork 后端）。
+ccode: $(COMBINED_BIN)
+	@tmp=$@.$$$$; cp $< $$tmp && mv -f $$tmp $@
+
+# 分离的 TUI 前端（fork ccode-cli 当后端，走 JSON Lines 协议）。
+ccode-tui: $(TUI_BIN)
 	@tmp=$@.$$$$; cp $< $$tmp && mv -f $$tmp $@
 
 ccode-cli: $(CLI_BIN)
@@ -175,14 +245,18 @@ ccode-cli: $(CLI_BIN)
 
 $(CLI_BIN): $(CLI_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ)
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(CLI_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ) $(LDFLAGS) $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SIZE_CFLAGS) -o $@ $(CLI_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ) $(SIZE_LDFLAGS) $(LDFLAGS) $(LDLIBS)
 
-$(MODE_BIN): $(OBJ) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ)
-	$(CC) $(LDFLAGS) -o $@ $(OBJ) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ) $(LDFLAGS) $(LDLIBS)
+$(COMBINED_BIN): $(COMBINED_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ)
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SIZE_CFLAGS) -DCCODE_COMBINED=1 -o $@ $(COMBINED_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ) $(SIZE_LDFLAGS) $(LDFLAGS) $(LDLIBS)
+
+$(TUI_BIN): $(OBJ) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ)
+	$(CC) $(LDFLAGS) -o $@ $(OBJ) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ) $(SIZE_LDFLAGS) $(LDFLAGS) $(LDLIBS)
 
 $(OBJDIR)/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SIZE_CFLAGS) -c -o $@ $<
 
 ifeq ($(BUILD_MODE),https)
 $(OBJDIR)/$(MBEDTLS_DIR)/%.o: $(MBEDTLS_DIR)/%.c
@@ -268,9 +342,10 @@ PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 MANDIR ?= $(PREFIX)/share/man/man1
 
-install: ccode ccode-cli
+install: ccode ccode-cli ccode-tui
 	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(MANDIR)
 	install -m 0755 ccode $(DESTDIR)$(BINDIR)/ccode
+	install -m 0755 ccode-tui $(DESTDIR)$(BINDIR)/ccode-tui
 	install -m 0755 ccode-cli $(DESTDIR)$(BINDIR)/ccode-cli
 	install -m 0644 docs/man/ccode.1 $(DESTDIR)$(MANDIR)/ccode.1
 	install -m 0644 docs/man/ccode-cli.1 $(DESTDIR)$(MANDIR)/ccode-cli.1
@@ -279,18 +354,18 @@ install: ccode ccode-cli
 
 clean:
 	rm -rf .build
-	rm -f ccode ccode-cli tests/test_json tests/test_agent tests/test_permissions tests/test_tui tests/test_markdown
+	rm -f ccode ccode-tui ccode-cli tests/test_json tests/test_agent tests/test_permissions tests/test_tui tests/test_markdown
 	rm -rf test-sandbox
 
 # ASan + UBSan build (for debugging/fuzzing). Override CFLAGS to remove
 # -O2 (ASan works best with -O0 or -O1) and inject the sanitizer flags.
 # X86_GNU_FLAGS is empty on non-Linux-x86 hosts so the build stays portable.
 asan: clean
-	@$(MAKE) HTTP_ONLY=1 CFLAGS="-O1 -std=c99 -Wall -Wextra -Wpedantic $(X86_GNU_FLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer -g" LDFLAGS="$(if $(X86_GNU_FLAGS),-m64) -fsanitize=address,undefined"
+	@$(MAKE) HTTP_ONLY=1 SIZE_CFLAGS= SIZE_LDFLAGS= CFLAGS="-O1 -std=c99 -Wall -Wextra -Wpedantic $(X86_GNU_FLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer -g" LDFLAGS="$(if $(X86_GNU_FLAGS),-m64) -fsanitize=address,undefined"
 	@echo "ASan/UBSan binary ready. Run individual test targets to exercise."
 
 # Reproducible build: honour SOURCE_DATE_EPOCH and strip unstable paths.
 repro: clean
-	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic $(X86_GNU_FLAGS) -ffile-prefix-map=$(PWD)=."
+	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 SIZE_CFLAGS= SIZE_LDFLAGS= CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic $(X86_GNU_FLAGS) -ffile-prefix-map=$(PWD)=."
 
-.PHONY: ccode ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-markdown test-tty test-e2e test-streaming retro-test asan repro test-sandbox
+.PHONY: ccode ccode-tui ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-markdown test-tty test-e2e test-streaming retro-test asan repro test-sandbox

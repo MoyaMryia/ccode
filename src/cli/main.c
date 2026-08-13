@@ -291,11 +291,15 @@ static void backend_command(struct json_session_state *state, const char *comman
     } else if (strcmp(command, "/model") == 0) {
         json_print("message", state->options.model_name);
     } else if (strncmp(command, "/model default ", 15) == 0) {
-        snprintf(state->options.model_name, sizeof(state->options.model_name), "%s", command + 15);
+        snprintf(state->options.model_name, sizeof(state->options.model_name),
+                 "%.*s", (int)sizeof(state->options.model_name) - 1,
+                 command + 15);
         state->options.model = state->options.model_name;
         json_print("message", "Default model set.");
     } else if (strncmp(command, "/model ", 7) == 0) {
-        snprintf(state->options.model_name, sizeof(state->options.model_name), "%s", command + 7);
+        snprintf(state->options.model_name, sizeof(state->options.model_name),
+                 "%.*s", (int)sizeof(state->options.model_name) - 1,
+                 command + 7);
         state->options.model = state->options.model_name;
         json_print("message", "Model switched.");
     } else if (strcmp(command, "/thinking") == 0) {
@@ -534,7 +538,7 @@ static int run_json_mode(const struct ccode_config *config) {
     return 0;
 }
 
-int main(int argc, char **argv) {
+int ccode_cli_main(int argc, char **argv) {
     struct ccode_config config;
     struct ccode_agent_config agent;
     int result = ccode_parse_args(argc, argv, &config);
@@ -572,3 +576,9 @@ int main(int argc, char **argv) {
     if (config.interactive) return ccode_agent_run_interactive(&agent);
     return ccode_agent_run(&agent);
 }
+
+#ifndef CCODE_COMBINED
+int main(int argc, char **argv) {
+    return ccode_cli_main(argc, argv);
+}
+#endif
