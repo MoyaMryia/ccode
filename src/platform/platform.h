@@ -19,12 +19,20 @@
  *                      detect/sandbox best-effort no-op)
  *   platform_bsd.c     FreeBSD/NetBSD/OpenBSD/DragonFlyBSD (sysctl exe path;
  *                      detect/sandbox best-effort no-op)
+ *   platform_haiku.c   HaikuOS (find_path(B_APP_IMAGE_SYMBOL); detect/sandbox
+ *                      best-effort no-op; no SIGPIPE on closed socket)
+ *   platform_hurd.c    GNU Hurd (/proc/self/exe via procfs translator,
+ *                      /proc stat scan, MSG_NOSIGNAL; sandbox no-op)
+ *   platform_solaris.c illumos/Solaris/OpenSolaris (getexecname +
+ *                      /proc/self/path/a.out, /proc psinfo scan,
+ *                      SO_NOSIGPIPE; sandbox no-op)
+ *   platform_minix.c   MINIX 3 (NetBSD libc sysctl exe path, SO_NOSIGPIPE;
+ *                      detect/sandbox best-effort no-op)
+ *   platform_win32.c   Windows NT 4.0+ via Cygwin/MSYS2 (/proc/self/exe,
+ *                      /proc stat scan, MSG_NOSIGNAL; sandbox no-op)
  *
  * Future implementations (interfaces only, not yet built):
- *   platform_hurd.c    GNU Hurd (native POSIX, Mach microkernel)
- *   platform_haiku.c   HaikuOS (BeOS descendant, POSIX layer)
- *   platform_sysv.c    System V / illumos (POSIX with legacy quirks)
- *   platform_win32.c   Windows NT 4.0+ via Cygwin/MSYS2 (POSIX compatibility layer)
+ *   (none currently planned; the layer covers all targeted OSes)
  *
  * Design rules:
  *   - Functions here are the ONLY place platform-specific headers appear.
@@ -49,10 +57,11 @@
  * NetBSD:    sysctl(CTL_KERN, KERN_PROC_ARGS, KERN_PROC_PATHNAME, -1)
  * OpenBSD:   no exe-path sysctl (deliberately); returns -1 (argv[0]/PATH)
  * Darwin:    _NSGetExecutablePath + realpath
- * Hurd:      /proc/self/exe readlink (compat layer)   (TODO)
- * Haiku:     find_path(B_APP_IMAGE_SYMBOL)            (TODO)
- * SysV:      /proc/self/exe readlink or argv[0]+PATH  (TODO)
- * Win32:     Cygwin: readlink("/proc/self/exe")        (TODO)
+ * Hurd:      readlink("/proc/self/exe") via procfs translator
+ * Haiku:     find_path(B_APP_IMAGE_SYMBOL, B_FIND_PATH_IMAGE_PATH)
+ * SysV/illumos: readlink("/proc/self/path/a.out"), fallback getexecname()
+ * MINIX:     sysctl(CTL_KERN, KERN_PROC_ARGS, KERN_PROC_PATHNAME, -1)
+ * Win32:     Cygwin/MSYS2: readlink("/proc/self/exe")
  *
  */
 int ccode_platform_exe_path(char *buf, size_t cap);
@@ -67,7 +76,11 @@ int ccode_platform_exe_path(char *buf, size_t cap);
  * usable procfs return 0.
  *
  * Linux:  scan /proc/<pid>/stat for ppid==child && pgid!=child_pgid
- * Darwin/BSD: return 0 (TODO: sysctl/libproc/libkvm process-tree walk)
+ * Hurd:   scan /proc/<pid>/stat (procfs translator) same as Linux
+ * SysV/illumos: scan /proc/<pid>/psinfo (procfs head) same invariant
+ * Win32:  Cygwin: scan /proc/<pid>/stat same as Linux
+ * Darwin/BSD/Haiku/MINIX: return 0 (no usable procfs; rely on
+ *          process-group kill)
  */
 int ccode_platform_detect_escaped(pid_t child);
 
@@ -82,6 +95,7 @@ int ccode_platform_detect_escaped(pid_t child);
  * Win32:  Cygwin: no-op returning -1 (command filter as fallback)
  * Darwin: no-op returning -1 (TODO: Seatbelt)
  * BSD:    no-op returning -1 (TODO: pledge/unveil, cap_enter)
+ * Hurd/Haiku/SysV/illumos/MINIX: no-op returning -1 (command filter)
  */
 int ccode_platform_sandbox_apply(const char *workspace_path);
 
@@ -92,7 +106,11 @@ int ccode_platform_sandbox_apply(const char *workspace_path);
  * pre-existing behavior on platforms without this).
  *
  * Linux:  no-op (MSG_NOSIGNAL is used per-send instead)
+ * Hurd:   no-op (MSG_NOSIGNAL is used per-send instead)
  * Darwin: setsockopt(SO_NOSIGPIPE) - the Darwin equivalent of MSG_NOSIGNAL
+ * Win32:  Cygwin: no-op (MSG_NOSIGNAL is used per-send instead)
+ * BSD/MINIX/SysV/illumos: setsockopt(SO_NOSIGPIPE) where available
+ * Haiku:  no-op (closed-socket send returns -1/EPIPE, no SIGPIPE)
  * Others: no-op returning -1
  */
 int ccode_platform_socket_nosigpipe(int fd);
@@ -103,7 +121,9 @@ int ccode_platform_socket_nosigpipe(int fd);
  * peer.
  *
  * Linux:  MSG_NOSIGNAL
+ * Hurd:   MSG_NOSIGNAL
  * Darwin: 0 (SO_NOSIGPIPE set via ccode_platform_socket_nosigpipe)
+ * Win32:  Cygwin: MSG_NOSIGNAL
  * Others: 0
  */
 int ccode_platform_send_flags(void);

@@ -9,6 +9,8 @@
  * See platform.h for the interface contract.
  */
 
+#if defined(__APPLE__) && defined(__MACH__)
+
 #include "platform.h"
 
 #include <errno.h>
@@ -93,3 +95,41 @@ int ccode_platform_socket_nosigpipe(int fd) {
 int ccode_platform_send_flags(void) {
     return 0; /* SO_NOSIGPIPE handles it socket-wide. */
 }
+
+#else /* !(__APPLE__ && __MACH__) */
+
+/*
+ * Fallback: compiled for a platform this file was not written for (the
+ * Makefile normally picks the matching platform_*.c). Provide the
+ * best-effort no-ops that platform.h allows, so the build still links and
+ * callers fall back to argv[0]/PATH search, process-group kill and the
+ * command filter in sandbox.c.
+ */
+
+#include "platform.h"
+
+int ccode_platform_exe_path(char *buf, size_t cap) {
+    (void)buf; (void)cap;
+    return -1;
+}
+
+int ccode_platform_detect_escaped(pid_t child) {
+    (void)child;
+    return 0;
+}
+
+int ccode_platform_sandbox_apply(const char *workspace_path) {
+    (void)workspace_path;
+    return -1;
+}
+
+int ccode_platform_socket_nosigpipe(int fd) {
+    (void)fd;
+    return -1;
+}
+
+int ccode_platform_send_flags(void) {
+    return 0;
+}
+
+#endif /* __APPLE__ && __MACH__ */
