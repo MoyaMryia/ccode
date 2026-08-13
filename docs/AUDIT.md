@@ -56,11 +56,9 @@
 
 注意 `agent_fs.c` 的 `append_json_escaped_fixed` 是固定缓冲追加器（不同形态），保留原样。
 
-### 3. 全局可变状态 + subagent 的 save/restore 舞蹈
+### 3. 全局可变状态 + subagent 的 save/restore 舞蹈 ✅
 
-`src/agent/agent_internal.h:98-104` 把 `workspace_root`、`change_log[]`、`task_list[]`、`change_count`、`task_count` 当 extern 全局暴露；`src/agent/agent.c:56-57` 的 `last_change_summary`/`last_task_summary` 是文件级 static，`subagent_depth`（`agent.c:47`）也是 static。
-
-于是 `run_subagent()`（`src/agent/agent.c:121-177`）必须先 `saved_change_summary = last_change_summary`，跑完子代理再 free 掉子代理的状态、恢复父级的——因为子代理会污染这些全局。这套"全局 + 手动存续"的状态管理是难推理、难重入、难并行的典型信号。
+已收进 `struct agent_context`（`src/agent/agent_internal.h`）：`workspace_root`、`workspace_dir_fd`、`change_log[]`/`change_count`、`task_list[]`/`task_count`/`task_next_id`、`respect_gitignore` 缓存、`subagent_depth`、`last_change_summary`/`last_task_summary` 全部是结构体成员，`agent_fs.c`/`agent_exec.c`/`agent.c` 的所有相关函数改为显式传 `ctx`。入口 `ccode_agent_run` / `ccode_agent_run_interactive` 用进程级 `agent_ctx`；`run_subagent` 从父 context **派生一份拷贝**（`sub_ctx = *ctx`，摘要缓存指针置 NULL），子代理的 change log / task list / 摘要全部写在自己的拷贝里，跑完释放自己的摘要即可——不再需要 save/restore 全局的舞蹈。附带的行为修正：子代理的工具动作不再污染父代理的 change log / task list（隔离更干净）。回归测试：`test_agent_context_isolation`。
 
 ### 4. 交互模式栈上开 512KB ✅
 
@@ -90,7 +88,7 @@
 
 1. ✅ **收敛 JSON 工具层**：`print_session_list()`、`/models*`、`models.c`、`scan_tool_result()` 已全换成 jsmn 封装，`extract_json_string_field()` 空 field 用法已消除。
 2. ✅ **合并重复实现**：`strdup` / JSON 转义 / JSON 反转义 / UTF-8 校验各保留一份（`src/json.h`），其它调用点已改为引用。
-3. **状态收进 context**：把 `workspace_root`、`change_log`、`task_list`、`last_*_summary`、`subagent_depth` 收进一个 `agent_context` 结构体，`run_subagent` 的 save/restore 改为基于 context 的派生。这是后续上并行的前置条件。
+3. ✅ **状态收进 context**：`workspace_root`、`change_log`、`task_list`、`last_*_summary`、`subagent_depth` 已收进 `struct agent_context`，`run_subagent` 的 save/restore 改为基于 context 的派生（子代理自带拷贝，天然隔离）。
 4. **并行 subagent**（路线图 P2）：走多进程 + 管道，父代理预分配不重叠的文件范围，避免冲突。
 5. ✅ 顺手修小问题：`scan_tool_result` 的 `ec+10`、`parse_chunk_size` 的 `digits`、`history` 改堆分配、清理死代码 `ccode_build_chat_request`。剩余：`navigate()` 的 `strtok`、`conversation_compact` 缩进、`config.c` 的 setenv 传参、`display[8256]` 魔法数。
 
