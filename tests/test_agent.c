@@ -75,6 +75,10 @@ void test_change_log_add_command_full(const char *cmd, int exit_code,
                                        int stderr_truncated);
 void test_change_log_add_denied_entry(const char *tool_name);
 void test_set_respect_gitignore(int v);
+int test_run_pending_subagents(struct ccode_agent_config *cfg,
+                               struct ccode_conversation *conv,
+                               const char *ids[], const char *tasks[],
+                               const int read_only[], size_t count);
 void ccode_test_cleanup_residual_temp_files(void);
 int ccode_test_cancel_pending(void);
 void ccode_test_cancel_signal(void);
@@ -2009,6 +2013,38 @@ static int test_agent_context_isolation(void) {
     return 1;
 }
 
+/* Parallel sub-agent dispatch: three read-only delegates launched together.
+ * The unit-test build has no reachable provider, so each delegate fails fast
+ * with a structured error; the test asserts fork/pipe/gather mechanics and
+ * that results land in the conversation in job order. */
+static int test_parallel_subagents_dispatch(void) {
+    struct ccode_conversation conv;
+    const char *ids[] = {"call_1", "call_2", "call_3"};
+    const char *tasks[] = {"task a", "task b", "task c"};
+    const int read_only[] = {1, 1, 1};
+    struct ccode_agent_config cfg;
+    size_t i;
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.api_base = NULL;
+    cfg.api_key = "k";
+    cfg.model = "m";
+    cfg.tools_enabled = 1;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(test_run_pending_subagents(&cfg, &conv, ids, tasks, read_only, 3)
+           == 0);
+    ASSERT(conv.count == 3);
+    for (i = 0; i < 3; i++) {
+        ASSERT(conv.messages[i].role == CCODE_ROLE_TOOL);
+        ASSERT(strcmp(conv.messages[i].tool_call_id, ids[i]) == 0);
+        ASSERT(conv.messages[i].content != NULL);
+        ASSERT(strstr(conv.messages[i].content, "error") != NULL);
+    }
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
 /* ccode_conversation_compact scans dropped tool results for markers. The
  * scan must be key-based (not substring-based): "exit=0" without the stray
  * colon that used to appear from "exit_code"+10, plus the denial/truncation
@@ -3381,6 +3417,7 @@ int main(void) {
     TEST(duplicate_tool_call_id_detected);
     TEST(compact_scans_tool_results);
     TEST(agent_context_isolation);
+    TEST(parallel_subagents_dispatch);
     TEST(load_rejects_strict_schema_and_is_transactional);
     TEST(content_limit_is_exact);
     TEST(save_is_loadable_and_rejects_oversized_state);

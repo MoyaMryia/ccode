@@ -417,8 +417,55 @@ def main():
     if 'repl_dir' in dir():
         subprocess.run(["rm", "-rf", repl_dir], capture_output=True)
 
-    # Test 5: Session persistence -- save and resume
+    # Test 5: Parallel sub-agents -- two read-only agent_tool calls in one
+    # turn must run concurrently (the mock delays each delegate's reply and
+    # flags overlap) and both answers must reach the parent.
     tests_run += 1
+    print("--- workflow: parallel sub-agents ---")
+    try:
+        sub_dir = os.path.join(
+            os.path.dirname(__file__), "fixtures",
+            "e2e_parallel_subagents_%d" % os.getpid())
+        os.makedirs(sub_dir, exist_ok=True)
+        stdout, stderr, rc, approved = run_ccode_workflow(
+            "__ccode_test_parallel-subagents-fixture", sub_dir)
+        output = stdout.decode() + stderr.decode()
+
+        if output.count("[sub-agent] depth 1") >= 2:
+            print("  PASS: two sub-agents launched")
+        else:
+            print("  FAIL: expected 2 sub-agent launches (output: %s)"
+                  % output[:300])
+            tests_failed += 1
+
+        if "sub-a-delegate;overlap" in output:
+            print("  PASS: delegate A result returned to parent")
+        else:
+            print("  FAIL: delegate A result missing (output: %s)"
+                  % output[:300])
+            tests_failed += 1
+
+        if "sub-b-delegate;overlap" in output:
+            print("  PASS: delegate B result returned to parent")
+        else:
+            print("  FAIL: delegate B result missing (output: %s)"
+                  % output[:300])
+            tests_failed += 1
+
+        if "overlap:yes" in output:
+            print("  PASS: sub-agents ran concurrently (mock observed overlap)")
+        else:
+            print("  FAIL: no overlap observed - delegates ran serially "
+                  "(output: %s)" % output[:300])
+            tests_failed += 1
+
+    except Exception as e:
+        print("  FAIL: %s" % e)
+        tests_failed += 1
+    if 'sub_dir' in dir():
+        subprocess.run(["rm", "-rf", sub_dir], capture_output=True)
+
+    # Test 6: Session persistence -- save and resume    tests_run += 1
     print("--- workflow: session save and resume ---")
     try:
         session_dir = os.path.abspath(os.path.join(
