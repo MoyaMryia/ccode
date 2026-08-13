@@ -414,8 +414,7 @@ static int ccode_agent_process_turn_loop(struct ccode_agent_config *cfg,
 
         body = ccode_conversation_build_request(conv, cfg->model, tools_json,
                                                 cfg->thinking_enabled,
-                                                cfg->thinking_effort,
-                                                cfg->api_base);
+                                                cfg->thinking_effort);
         free(tools_json);
         if (!body) {
             fprintf(stderr, "Out of memory while building request.\n");
@@ -1372,7 +1371,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                         snprintf(out_path, sizeof(out_path), "%.*s.json", (int)nl, name);
                 }
                 {
-                    char full[4096];
+                    char full[sizeof(workspace_root) + sizeof(out_path) + 2];
                     snprintf(full, sizeof(full), "%s/%s",
                              workspace_root[0] ? workspace_root : ".", out_path);
                     out = fopen(full, "wb");
