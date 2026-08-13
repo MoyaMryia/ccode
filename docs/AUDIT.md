@@ -1,94 +1,74 @@
 # ccode 代码审计与技术债
 
-本文记录一次面向"长期可维护性"的代码审计结论。不做产品功能评估（那归 `FEATURES.md`），只记实现层面的技术债、重复、隐患和推荐的收敛方向。随代码演进持续更新，改代码前先看本文和 `AGENTS.md`。
+本文记录面向"长期可维护性"的代码审计结论。不做产品功能评估（那归 `FEATURES.md`），只记实现层面的技术债、重复、隐患和推荐的收敛方向。随代码演进持续更新，改代码前先看本文和 `AGENTS.md`。
 
 ## 一句话结论
 
-代码写得认真、安全边界扎实（原子写、Landlock 沙箱、会话严格校验、TLS 超时控制）。2026-08 已建立公共 JSON 工具层（`src/json.h` 的 `ccode_json_escape` / `ccode_json_unescape` / `ccode_valid_utf8` / `ccode_json_find_key` 等），业务里手写 `strstr` 解析 JSON 的路径已收敛到 jsmn；剩余的主要技术债是**全局可变状态**（`agent_internal.h` 的 extern 全局）和每请求 fork 的 DNS 超时，短期能跑，但上并行前必须先收状态。
+代码写得认真、安全边界扎实（原子写、Landlock 沙箱、会话严格校验、TLS 超时控制）。2026-08 已建立公共 JSON 工具层（`src/json.h`，含 `ccode_json_escape` / `ccode_json_unescape` / `ccode_valid_utf8` / `ccode_utf8_decode` / `ccode_append_cstr`）、全局状态已收进 `struct agent_context`、只读子代理已并行化（fork + 管道）且死锁/竞态隐患已修复；动态缓冲 append、JSON 转义与 UTF-8 解码的三族重复实现已全部收敛到工具层。剩余技术债：每请求 fork 一次做 DNS 超时、`--allow-http` 用环境变量当传参通道、取消路径 P4/P5 两个小尾巴，均属独立重构，短期不阻塞。
 
 ## 并发现状
 
-**当前是纯单线程、单进程**，没有任何 `pthread`/线程。
+**进程模型，非线程**：没有 `pthread`。同一轮的**只读子代理并行**（最多 8 个，fork + 管道回传答案），读写子代理保持串行（写目标未知，无法预分配不重叠文件范围，按 AGENTS.md 降级）。
 
-连 subagent 的派发方式已经升级：**同一轮的只读子代理并行**（fork + 管道，见下"改进方向"第 4 项），但仍然是"父进程起子进程、父进程等结果"的模型，不是线程并行。`fork()` 的主要位置仍是：
+`fork()` 的位置：
 
 | 位置 | 用途 |
 |------|------|
 | `src/http.c:218` | DNS 解析加超时，fork 子进程跑 `getaddrinfo` |
 | `src/agent/agent_exec.c:126/197` | 执行命令，fork 出 shell / 命令子进程 |
 | `src/webfetch.c:208` | 网页抓取 |
-| `src/agent/agent.c` `run_pending_subagents` | 并行子代理：每轮最多 8 个只读子代理各 fork 一进程跑完整 agent loop，结果走管道回传 |
+| `src/agent/agent.c` `run_pending_subagents` | 并行子代理：每轮最多 8 个只读子代理各 fork 一进程跑完整 agent loop，结果按 4 字节长度头 + 载荷经管道回传，父进程 poll 同时排空所有管道 |
 | `src/tui/protocol.c:101` | 分离式 TUI 拉起 `ccode-cli` 后端 |
 
-含义：
-
-- 全局可变状态（见下）**现在**是安全的——因为没并发；
-- 但代码也正因为"没并发"才敢这么写。`AGENTS.md` 已把"子代理默认支持并行"列为目标（`FEATURES.md` 路线图 P2），一旦上并行，下面这些全局状态和 `fork` 的混用会立刻变成坑。
-
-**并行方向建议**：优先走**多进程 + 管道**（现有 fork 模型的自然延伸），而不是 pthread。理由：全局状态改造量最小化、`fork` 与线程混用是经典坑（fork 后子进程只剩当前线程）、多进程天然隔离（subagent 崩溃不拖垮主进程，和 sandbox 思路一致）。无论哪种并行，前置工作都是先把全局状态收进 context 结构体（见"改进方向"）。
+并行隔离靠 fork 的写时复制 + `struct agent_context` 派生拷贝（`run_subagent` 内 `sub_ctx = *ctx`），父代理的 change log / task list / 摘要缓存不会被子代理污染。
 
 ## 技术债清单
 
-按严重程度排序。已解决条目标注 ✅。
+按严重程度排序。
 
-### 1. JSON 解析三套并存，业务大量手写 strstr ✅
+### 1. 并行子代理实现的隐患（`run_pending_subagents`，`src/agent/agent.c`）
 
-已收敛：`src/json.h` 现在导出统一工具层（`ccode_json_escape`、`ccode_json_unescape`、`ccode_valid_utf8`、`ccode_strdup`、`ccode_json_parse`、`ccode_json_find_key`、`ccode_json_find_index`、`ccode_json_token_string` / `_to_string` / `_to_int`）。下列手写 `strstr` 解析全部换成了 jsmn 封装：
+管道协议本身正确（`pipe_fd=-1` 初始化避开了 fd 0 混淆、结果按 job 顺序入会话、`setpgid(0,0)` 独立进程组）。P1/P2/P3 已修复（commit `fb64e1e`）：
 
-- `src/agent/agent.c` `print_session_list()`（/sessions、/session list）
-- `src/agent/agent.c` `/models`、`/models search`、`/models info`
-- `src/models.c` `extract_json_string_field()`（已删除，`ccode_models_fetch` 直接解 web_fetch 的 `content` 字段）与 `ccode_model_verify()`（改为解析 `data` 数组的 `id` 字段）
-- `src/agent/message.c` `scan_tool_result()`（key 驱动扫描）
+- ✅ **P1 死锁**：缓冲超上限时不再只标 done 停读——子进程会因管道写满永久阻塞、`waitpid` 无时限互相等死。现改为 `kill(-pid, SIGKILL)` 杀整个子代理进程组；并修正增长路径，翻倍越过上限时先用精确大小（子代理答案被钳在 `SUBAGENT_RESULT_MAX+64`，4 字节头 + 载荷恰好装下），合法大答案不再被误判超限。e2e 回归：`parallel sub-agents, oversized answers`（70KiB 答案跨过 64KiB 管道缓冲与翻倍边界）。
+- ✅ **P2 fork/注册竞态**：launch 全程 `sigprocmask` 屏蔽 SIGINT，全部 `ccode_cancel_child_register` 之后再放开；子进程 fork 后解除屏蔽（继承的 pending SIGINT 由子代理自身循环处理）。
+- ✅ **P3 管道缺 FD_CLOEXEC**：`pipe()` 两端设 `F_SETFD FD_CLOEXEC`（对齐 `http.c:215-216`），防止子代理内 exec 的后代进程持有写端导致父进程等不到 EOF。
 
-遗留小问题：`src/json.c` `navigate()` 仍用 `strtok`（非重入）+ 固定 512 字节路径缓冲，只服务 SSE 流式解析的内部路径，目前无实际调用方输入不可信的问题，但后续可换 `strtok_r`。
+顺带修了一个被上述大答案路径暴露的 SSE 读取缺陷：`sse_parser` 的 `input`/`event` 缓冲翻倍到 `2*IO_BUF_SIZE`。此前 recv 满 32KiB 且上一分片残留半行数据时 `feed_sse` 直接失败（`input_used+length+1` 放不下），任何响应体 >32KiB 的流式响应都会静默失败。
 
-### 2. 同一功能重复实现多遍 ✅
+- **P4 SIGTERM 后立刻 SIGKILL**（未改）：`agent_cancel.c` 两连击，SIGTERM 的优雅退出路径永远跑不到，SIGTERM 是死代码。要么只留 SIGKILL 并注明硬取消，要么留退出窗口。
+- **P5（次要）**（未改）：`waitpid` 无时限 + `poll(-1)`，全部依赖子代理内部 deadline。8 个并行子代理各带 300s 总超时，父进程最坏等 5 分钟，可接受但应写进注释。
 
-已合并，各模块引用 `src/json.h` 里的唯一实现：
+### 2. "动态缓冲 append" 家族 — 同一函数 5 份 ✅
 
-| 功能 | 唯一实现处 |
-|------|-----------|
-| `strdup` | `src/json.c` 的 `ccode_strdup`（原 `json.c`/`message.c` 的 static 版和 `agent_fs.c` 导出版已删，`websearch.c`/`webfetch.c` 改用） |
-| JSON 字符串转义 | `src/json.c` 的 `ccode_json_escape`（原 `json.c`/`message.c`/`websearch.c`/`webfetch.c` 各自实现已删） |
-| JSON 字符串反转义 | `src/json.c` 的 `ccode_json_unescape`（原 `message.c` 的 `unescape_json` 已删，加载路径改用） |
-| UTF-8 校验 | `src/json.c` 的 `ccode_valid_utf8`（原 `message.c` 的 `valid_utf8` 已删） |
+已收敛（commit `a3b65c9`）：`ccode_append_cstr` 进驻 `json.h` 工具层（实现从 `agent_fs.c` 的 `append_cstr_with` 原样迁移），成为动态追加的唯一实现；`tools.c` 的 `append_str`/`append_cstr`、`message.c` 的 `append_str`/`append_cstr` 与 `buf_append_cstr`、`websearch.c` 的 `ws_append`/`ws_append_cstr`（有界截断式，顺带消除输出被静默截断的可能）全部删除。回归：`test_append_cstr`。
 
-注意 `agent_fs.c` 的 `append_json_escaped_fixed` 是固定缓冲追加器（不同形态），保留原样。
+### 3. JSON 转义 3 个风味 + UTF-8 解码 2 份 ✅
 
-### 3. 全局可变状态 + subagent 的 save/restore 舞蹈 ✅
+- JSON 转义（commit `8f7e772`）：`tui/protocol.c:24` 的私有 `json_escape`（有界写缓冲、控制字符有损替换为 `?`）删除，改用 `ccode_json_escape`，超长载荷显式失败（fail-closed）；TUI 二进制接入 `json.c` 链接。配套修复 `cli/main.c` 的 `field()` 改用 `ccode_json_unescape`（原实现两个缺陷：转义引号提前截断字段、`\n` 解码成字面 `n`）。`agent_fs.c` 的 `append_json_escaped_fixed` 是有界固定缓冲追加器（不同形态），保留。
+- UTF-8 码点解码：`permissions.c` 的 `utf8_sequence` 与 `markdown.c` 的 `md_utf8_sequence` 合并为 `ccode_utf8_decode` 放 `json.h`。回归：`test_utf8_decode`、`protocol_event_escape_round_trip`。
 
-已收进 `struct agent_context`（`src/agent/agent_internal.h`）：`workspace_root`、`workspace_dir_fd`、`change_log[]`/`change_count`、`task_list[]`/`task_count`/`task_next_id`、`respect_gitignore` 缓存、`subagent_depth`、`last_change_summary`/`last_task_summary` 全部是结构体成员，`agent_fs.c`/`agent_exec.c`/`agent.c` 的所有相关函数改为显式传 `ctx`。入口 `ccode_agent_run` / `ccode_agent_run_interactive` 用进程级 `agent_ctx`；`run_subagent` 从父 context **派生一份拷贝**（`sub_ctx = *ctx`，摘要缓存指针置 NULL），子代理的 change log / task list / 摘要全部写在自己的拷贝里，跑完释放自己的摘要即可——不再需要 save/restore 全局的舞蹈。附带的行为修正：子代理的工具动作不再污染父代理的 change log / task list（隔离更干净）。回归测试：`test_agent_context_isolation`。
+### 4. 固定缓冲 + 魔法数字 ✅
 
-### 4. 交互模式栈上开 512KB ✅
+`struct prepared_tool` 的 `display[8256]` 改为 `display[2 * 4096 + 64]` 表达式并注释来历（value + content 上限加 JSON 引号/分隔符开销）；压缩阈值 `* 4 / 5`、`keep_first=2`/`keep_last=8` 补注释说明语义；`config.c` 密钥文件缓冲命名化为 `CCODE_API_KEY_FILE_BUF` 并注明指向静态缓冲的生存期安全。`argv[16][256]` 与 8 个 `char[4096]` 字段的超长截断策略依赖调用方约定，未改。
 
-`src/agent/agent.c` 交互 REPL 的 `history[64][8192]` 已改为堆分配（`CCODE_HISTORY_MAX * CCODE_INPUT_LINE_MAX` 一次 malloc，cleanup 释放）。
-
-### 5. 固定缓冲 + 魔法数字
-
-`src/agent/agent_internal.h:76-95` `struct prepared_tool`：8 个 `char[4096]` 字段加 `display[8256]`（这个 8256 的来历没有任何说明），`argv[16][256]`。超长路径/内容靠调用方截断，没有统一截断策略。
-
-其他零散魔法数：`agent.c:407` 的 `* 4 / 5` 压缩阈值、`message.c:427-428` 的 `keep_first=2`/`keep_last=8`、`config.c:82` 的 `static char file_buf[4096]`（API key 指向静态缓冲）。
-
-### 6. 具体小问题
-
-- ✅ `src/agent/message.c` `scan_tool_result()`：改为 jsmn 取 `exit_code` 数值，不再用 `ec + 10` 切片（原来的 `exit=:0` 冒号 bug 已修，回归测试 `test_compact_scans_tool_results` 覆盖）
-- ✅ `src/http.c` `parse_chunk_size()`：`digits` 标志更名为 `have_digit`（语义与名字一致）
-- `src/config.c:234` `--allow-http` 通过 `setenv("CCODE_ALLOW_HTTP","1",1)` 运行时改进程环境变量，再由 `http.c` 请求时才读——用全局环境当传参通道（未改）
-- ✅ `src/json.c` `ccode_build_chat_request()` 死代码已删（连带 json.h 声明和 test_json.c 里的测试，替换为 `ccode_json_escape` 等新 API 的测试）
-- `src/agent/message.c` `ccode_conversation_compact()` 函数体缩进错位（参数后直接接 `size_t tool_call_count;`，未改）
-
-### 7. 每请求 fork 一次做 DNS 超时
+### 5. 每请求 fork 一次做 DNS 超时
 
 `src/http.c:207` `resolve_with_deadline()` 为了给 `getaddrinfo` 加超时，每次连接都 fork 子进程再 kill。动机可理解，但代价偏高，且并发/线程场景下 fork 模型要特别小心。（未改）
 
+### 6. 小问题残留
+
+- ✅ `src/json.c` `navigate()`：`strtok` 已换 `strtok_r`（commit `d790c91`）。
+- `src/config.c:234` `--allow-http` 通过 `setenv("CCODE_ALLOW_HTTP","1",1)` 运行时改进程环境变量，再由 `http.c` 请求时才读——用全局环境当传参通道。修复需要把 allow 标志穿过 config/agent/http/webfetch/websearch 多处签名，属独立重构，暂缓。
+- ✅ `src/agent/message.c` `ccode_conversation_compact()` 函数体缩进错位已修正（commit `d790c91`）。
+
 ## 改进方向
 
-按优先级排，前两项收益最大、风险最低：
+按优先级排：
 
-1. ✅ **收敛 JSON 工具层**：`print_session_list()`、`/models*`、`models.c`、`scan_tool_result()` 已全换成 jsmn 封装，`extract_json_string_field()` 空 field 用法已消除。
-2. ✅ **合并重复实现**：`strdup` / JSON 转义 / JSON 反转义 / UTF-8 校验各保留一份（`src/json.h`），其它调用点已改为引用。
-3. ✅ **状态收进 context**：`workspace_root`、`change_log`、`task_list`、`last_*_summary`、`subagent_depth` 已收进 `struct agent_context`，`run_subagent` 的 save/restore 改为基于 context 的派生（子代理自带拷贝，天然隔离）。
-4. ✅ **并行 subagent**（路线图 P2）：只读子代理走多进程 + 管道（`run_pending_subagents`），同一轮最多 8 个并行，父进程 poll 同时排空所有管道防死锁；子代理各设独立进程组，取消处理器可同时终止（`agent_cancel.c` 改为多子进程注册）。**读写子代理保持串行**：写目标未知，父代理无法预分配不重叠文件范围，按 AGENTS.md"可能写同一文件的降级为串行"处理。回归覆盖：单元测试 `test_parallel_subagents_dispatch`（fork/管道/顺序/结构化错误）+ e2e `parallel-subagents`（mock 观测到两个子代理请求重叠、双方答案按序回传）。
-5. ✅ 顺手修小问题：`scan_tool_result` 的 `ec+10`、`parse_chunk_size` 的 `digits`、`history` 改堆分配、清理死代码 `ccode_build_chat_request`。剩余：`navigate()` 的 `strtok`、`conversation_compact` 缩进、`config.c` 的 setenv 传参、`display[8256]` 魔法数。
+1. ✅ **修并行子代理的 P1/P2/P3**（commit `fb64e1e`）：P1 超限改 kill 子进程组 + 增长路径精确大小；P2 launch 期间屏蔽 SIGINT 后统一注册；P3 补 FD_CLOEXEC。顺带修了被 70KiB 大答案暴露的 SSE 读取缺陷（`sse_parser` 缓冲翻倍到 `2*IO_BUF_SIZE`）。P4/P5 保留，视需要再处理。
+2. ✅ **收掉 append 五胞胎**（commit `a3b65c9`）：统一走 `ccode_append_cstr`（json.h 公共件），四份私有实现删除。
+3. ✅ **合并剩余转义/解码**（commit `8f7e772`）：`protocol.c` 的 `json_escape` 换 `ccode_json_escape`（配套修 `cli/main.c` 的 `field()` 解码）；两份 UTF-8 解码并成 `ccode_utf8_decode`。
+4. ✅ **收尾小问题与魔法数**（commit `d790c91`）：`strtok_r`、缩进错位、`display[8256]`、压缩阈值/keep 计数注释化。`--allow-http` 的 setenv 桥接暂缓（需跨 8 处签名传标志，独立重构）。
 
 改动时遵守 `AGENTS.md` 的最小改动原则：每一类收敛单独一个变更，配回归测试，别和功能改动混在一起。
