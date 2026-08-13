@@ -94,30 +94,18 @@ static size_t ws_html_to_text(const char *in, size_t len, char *out,
     return o;
 }
 
-/* Bounded string append with JSON field writing. Returns 0 on success. */
-static int ws_append(char *out, size_t out_size, size_t *pos,
-                     const char *s, size_t len) {
-    if (len >= out_size - *pos - 1) len = out_size - *pos - 1;
-    memcpy(out + *pos, s, len);
-    *pos += len;
-    out[*pos] = '\0';
-    return 0;
-}
-
-static int ws_append_cstr(char *out, size_t out_size, size_t *pos,
-                          const char *s) {
-    return ws_append(out, out_size, pos, s, strlen(s));
-}
-
-static void ws_append_json_string(char *out, size_t out_size, size_t *pos,
-                                  const char *s) {
+/* Append a JSON-escaped quoted field to the growable result buffer.
+ * Returns -1 on allocation failure. */
+static int ws_append_json_string(char **out, size_t *pos, size_t *cap,
+                                 const char *s) {
     char *escaped = ccode_json_escape(s ? s : "");
-    if (escaped) {
-        ws_append(out, out_size, pos, "\"", 1);
-        ws_append(out, out_size, pos, escaped, strlen(escaped));
-        free(escaped);
-        ws_append(out, out_size, pos, "\"", 1);
-    }
+    int rc = -1;
+    if (!escaped) return -1;
+    if (ccode_append_cstr(out, pos, cap, "\"") == 0 &&
+        ccode_append_cstr(out, pos, cap, escaped) == 0)
+        rc = ccode_append_cstr(out, pos, cap, "\"");
+    free(escaped);
+    return rc;
 }
 
 /* Scan for the next b_algo result block and parse one result. Advances the
@@ -205,15 +193,16 @@ static int ws_next_result(const char **scan, size_t *remaining,
 char *ccode_web_search_parse_html(const char *html, size_t length) {
     const char *scan = html;
     size_t remaining = length;
-    size_t cap = WS_MAX_RESULTS * (WS_MAX_FIELD * 3 + 64) + 64;
-    char *out = malloc(cap);
+    char *out = NULL;
+    size_t cap = 0;
     size_t pos = 0;
     int count = 0;
     int first = 1;
 
-    if (!out) return NULL;
-    out[0] = '\0';
-    ws_append_cstr(out, cap, &pos, "{\"results\":[");
+    if (ccode_append_cstr(&out, &pos, &cap, "{\"results\":[") != 0) {
+        free(out);
+        return NULL;
+    }
 
     while (count < WS_MAX_RESULTS) {
         char title[WS_MAX_FIELD];
@@ -223,18 +212,22 @@ char *ccode_web_search_parse_html(const char *html, size_t length) {
             break;
         if (title[0] == '\0' && url[0] == '\0') continue;
         count++;
-        if (!first) ws_append_cstr(out, cap, &pos, ",");
+        if (!first && ccode_append_cstr(&out, &pos, &cap, ",") != 0) goto fail;
         first = 0;
-        ws_append_cstr(out, cap, &pos, "{\"title\":");
-        ws_append_json_string(out, cap, &pos, title);
-        ws_append_cstr(out, cap, &pos, ",\"url\":");
-        ws_append_json_string(out, cap, &pos, url);
-        ws_append_cstr(out, cap, &pos, ",\"snippet\":");
-        ws_append_json_string(out, cap, &pos, snippet);
-        ws_append_cstr(out, cap, &pos, "}");
+        if (ccode_append_cstr(&out, &pos, &cap, "{\"title\":") != 0 ||
+            ws_append_json_string(&out, &pos, &cap, title) != 0 ||
+            ccode_append_cstr(&out, &pos, &cap, ",\"url\":") != 0 ||
+            ws_append_json_string(&out, &pos, &cap, url) != 0 ||
+            ccode_append_cstr(&out, &pos, &cap, ",\"snippet\":") != 0 ||
+            ws_append_json_string(&out, &pos, &cap, snippet) != 0 ||
+            ccode_append_cstr(&out, &pos, &cap, "}") != 0)
+            goto fail;
     }
-    ws_append_cstr(out, cap, &pos, "]}");
+    if (ccode_append_cstr(&out, &pos, &cap, "]}") != 0) goto fail;
     return out;
+fail:
+    free(out);
+    return NULL;
 }
 
 char *ccode_web_search(const char *query) {

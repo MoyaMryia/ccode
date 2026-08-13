@@ -361,61 +361,61 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
         char num[32];
         int n;
 
-        if (append_cstr_with(&result, &result_pos, &result_cap,
+        if (ccode_append_cstr(&result, &result_pos, &result_cap,
                 "{\"exit_code\":") != 0) goto oom;
         if (WIFEXITED(status))
             n = snprintf(num, sizeof(num), "%d", WEXITSTATUS(status));
         else
             n = snprintf(num, sizeof(num), "0");
         if (n <= 0 || (size_t)n >= sizeof(num)) goto oom;
-        if (append_cstr_with(&result, &result_pos, &result_cap, num) != 0)
+        if (ccode_append_cstr(&result, &result_pos, &result_cap, num) != 0)
             goto oom;
 
         if (WIFSIGNALED(status)) {
             n = snprintf(num, sizeof(num), "%d", WTERMSIG(status));
             if (n <= 0 || (size_t)n >= sizeof(num)) goto oom;
-            if (append_cstr_with(&result, &result_pos, &result_cap,
+            if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     ",\"signal\":") != 0) goto oom;
-            if (append_cstr_with(&result, &result_pos, &result_cap, num) != 0)
+            if (ccode_append_cstr(&result, &result_pos, &result_cap, num) != 0)
                 goto oom;
         }
 
-        if (append_cstr_with(&result, &result_pos, &result_cap,
+        if (ccode_append_cstr(&result, &result_pos, &result_cap,
                 ",\"timed_out\":") != 0) goto oom;
-        if (append_cstr_with(&result, &result_pos, &result_cap,
+        if (ccode_append_cstr(&result, &result_pos, &result_cap,
                 timed_out ? "true" : "false") != 0) goto oom;
-        if (append_cstr_with(&result, &result_pos, &result_cap,
+        if (ccode_append_cstr(&result, &result_pos, &result_cap,
                 ",\"stdout\":\"") != 0) goto oom;
         if (is_binary_content((const unsigned char *)stdout_buf, stdout_len)) {
-            if (append_cstr_with(&result, &result_pos, &result_cap,
+            if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     "<binary output omitted>") != 0) goto oom;
             stdout_binary = 1;
         } else if (append_json_string_n(&result, &result_pos, &result_cap,
                                       stdout_buf, stdout_len) != 0) goto oom;
-        if (append_cstr_with(&result, &result_pos, &result_cap,
+        if (ccode_append_cstr(&result, &result_pos, &result_cap,
                 "\",\"stderr\":\"") != 0) goto oom;
         if (is_binary_content((const unsigned char *)stderr_buf, stderr_len)) {
-            if (append_cstr_with(&result, &result_pos, &result_cap,
+            if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     "<binary output omitted>") != 0) goto oom;
             stderr_binary = 1;
         } else if (append_json_string_n(&result, &result_pos, &result_cap,
                                       stderr_buf, stderr_len) != 0) goto oom;
-        if (append_cstr_with(&result, &result_pos, &result_cap,
+        if (ccode_append_cstr(&result, &result_pos, &result_cap,
                 "\"") != 0) goto oom;
         if (truncated_out)
-            if (append_cstr_with(&result, &result_pos, &result_cap,
+            if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     ",\"stdout_truncated\":true") != 0) goto oom;
         if (truncated_err)
-            if (append_cstr_with(&result, &result_pos, &result_cap,
+            if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     ",\"stderr_truncated\":true") != 0) goto oom;
         if (stdout_binary)
-            if (append_cstr_with(&result, &result_pos, &result_cap,
+            if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     ",\"stdout_binary\":true") != 0) goto oom;
         if (stderr_binary)
-            if (append_cstr_with(&result, &result_pos, &result_cap,
+            if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     ",\"stderr_binary\":true") != 0) goto oom;
         if (incomplete_cleanup)
-            if (append_cstr_with(&result, &result_pos, &result_cap,
+            if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     ",\"incomplete_cleanup\":true") != 0) goto oom;
         if ((!WIFEXITED(status) || WEXITSTATUS(status) != 0 || timed_out) &&
             !sh_is_bash()) {
@@ -423,10 +423,10 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
                 ",\"shell_note\":\"/bin/sh is a POSIX shell, not bash; "
                 "bash-only syntax ([[ ]], ${var//pat}, arrays, "
                 "for((;;))) will fail\"";
-            if (append_cstr_with(&result, &result_pos, &result_cap,
+            if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     note) != 0) goto oom;
         }
-        if (append_cstr_with(&result, &result_pos, &result_cap,
+        if (ccode_append_cstr(&result, &result_pos, &result_cap,
                 "}") != 0) goto oom;
     }
     {

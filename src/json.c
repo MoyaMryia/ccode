@@ -18,6 +18,27 @@ char *ccode_strdup(const char *s) {
     return copy;
 }
 
+/* Append a verbatim NUL-terminated string to a growable buffer, keeping it
+ * NUL-terminated. *pos and *cap track the used length and allocation size.
+ * Returns 0 on success, -1 on allocation failure. This is the canonical
+ * dynamic-append helper; modules must not re-derive their own copy. */
+int ccode_append_cstr(char **buf, size_t *pos, size_t *cap, const char *s) {
+    size_t len = strlen(s);
+    if (*pos + len + 1 > *cap) {
+        char * tmp;
+        size_t new_cap = *cap * 2;
+        if (new_cap < *pos + len + 1) new_cap = *pos + len + 1;
+        tmp = realloc(*buf, new_cap);
+        if (!tmp) return -1;
+        *buf = tmp;
+        *cap = new_cap;
+    }
+    memcpy(*buf + *pos, s, len);
+    *pos += len;
+    (*buf)[*pos] = '\0';
+    return 0;
+}
+
 char *ccode_json_escape(const char *input) {
     size_t i;
     size_t length = 0;

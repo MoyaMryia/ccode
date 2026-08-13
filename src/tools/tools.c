@@ -1,5 +1,7 @@
 #include "tools.h"
 
+#include "../json.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -152,27 +154,6 @@ static size_t estimate_tools_json_len(void) {
     return total;
 }
 
-static int append_str(char **buf, size_t *pos, size_t *cap,
-                      const char *s, size_t len) {
-    if (*pos + len + 1 > *cap) {
-        char * tmp;
-        size_t new_cap = *cap * 2;
-        if (new_cap < *pos + len + 1) new_cap = *pos + len + 1;
-        tmp = realloc(*buf, new_cap);
-        if (!tmp) return -1;
-        *buf = tmp;
-        *cap = new_cap;
-    }
-    memcpy(*buf + *pos, s, len);
-    *pos += len;
-    (*buf)[*pos] = '\0';
-    return 0;
-}
-
-static int append_cstr(char **buf, size_t *pos, size_t *cap, const char *s) {
-    return append_str(buf, pos, cap, s, strlen(s));
-}
-
 char *ccode_build_tools_json(void) {
     size_t cap = estimate_tools_json_len();
     size_t pos = 0;
@@ -182,29 +163,29 @@ char *ccode_build_tools_json(void) {
     if (!buf) return NULL;
     buf[0] = '\0';
 
-    if (append_cstr(&buf, &pos, &cap, "\"tools\":[") != 0) goto fail;
+    if (ccode_append_cstr(&buf, &pos, &cap, "\"tools\":[") != 0) goto fail;
 
     for (i = 0; i < ccode_tool_definitions_count; i++) {
-        if (i > 0 && append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
-        if (append_cstr(&buf, &pos, &cap,
+        if (i > 0 && ccode_append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
+        if (ccode_append_cstr(&buf, &pos, &cap,
                 "{\"type\":\"function\",\"function\":{") != 0) goto fail;
 
-        if (append_cstr(&buf, &pos, &cap, "\"name\":\"") != 0) goto fail;
-        if (append_cstr(&buf, &pos, &cap,
+        if (ccode_append_cstr(&buf, &pos, &cap, "\"name\":\"") != 0) goto fail;
+        if (ccode_append_cstr(&buf, &pos, &cap,
                 ccode_tool_definitions[i].name) != 0) goto fail;
 
-        if (append_cstr(&buf, &pos, &cap, "\",\"description\":\"") != 0) goto fail;
-        if (append_cstr(&buf, &pos, &cap,
+        if (ccode_append_cstr(&buf, &pos, &cap, "\",\"description\":\"") != 0) goto fail;
+        if (ccode_append_cstr(&buf, &pos, &cap,
                 ccode_tool_definitions[i].description) != 0) goto fail;
 
-        if (append_cstr(&buf, &pos, &cap, "\",\"parameters\":") != 0) goto fail;
-        if (append_cstr(&buf, &pos, &cap,
+        if (ccode_append_cstr(&buf, &pos, &cap, "\",\"parameters\":") != 0) goto fail;
+        if (ccode_append_cstr(&buf, &pos, &cap,
                 ccode_tool_definitions[i].param_schema) != 0) goto fail;
 
-        if (append_cstr(&buf, &pos, &cap, "}}") != 0) goto fail;
+        if (ccode_append_cstr(&buf, &pos, &cap, "}}") != 0) goto fail;
     }
 
-    if (append_cstr(&buf, &pos, &cap, "]") != 0) goto fail;
+    if (ccode_append_cstr(&buf, &pos, &cap, "]") != 0) goto fail;
     return buf;
 
 fail:
@@ -214,15 +195,15 @@ fail:
 
 static int append_tool_def(char **buf, size_t *pos, size_t *cap,
                            const struct ccode_tool_def *def) {
-    if (append_cstr(buf, pos, cap,
+    if (ccode_append_cstr(buf, pos, cap,
             "{\"type\":\"function\",\"function\":{") != 0) return -1;
-    if (append_cstr(buf, pos, cap, "\"name\":\"") != 0) return -1;
-    if (append_cstr(buf, pos, cap, def->name) != 0) return -1;
-    if (append_cstr(buf, pos, cap, "\",\"description\":\"") != 0) return -1;
-    if (append_cstr(buf, pos, cap, def->description) != 0) return -1;
-    if (append_cstr(buf, pos, cap, "\",\"parameters\":") != 0) return -1;
-    if (append_cstr(buf, pos, cap, def->param_schema) != 0) return -1;
-    if (append_cstr(buf, pos, cap, "}}") != 0) return -1;
+    if (ccode_append_cstr(buf, pos, cap, "\"name\":\"") != 0) return -1;
+    if (ccode_append_cstr(buf, pos, cap, def->name) != 0) return -1;
+    if (ccode_append_cstr(buf, pos, cap, "\",\"description\":\"") != 0) return -1;
+    if (ccode_append_cstr(buf, pos, cap, def->description) != 0) return -1;
+    if (ccode_append_cstr(buf, pos, cap, "\",\"parameters\":") != 0) return -1;
+    if (ccode_append_cstr(buf, pos, cap, def->param_schema) != 0) return -1;
+    if (ccode_append_cstr(buf, pos, cap, "}}") != 0) return -1;
     return 0;
 }
 
@@ -239,14 +220,14 @@ char *ccode_build_readonly_tools_json(void) {
     if (!buf) return NULL;
     buf[0] = '\0';
 
-    if (append_cstr(&buf, &pos, &cap, "\"tools\":[") != 0) goto fail;
+    if (ccode_append_cstr(&buf, &pos, &cap, "\"tools\":[") != 0) goto fail;
 
     for (i = 0; i < sizeof(readonly_names) / sizeof(readonly_names[0]); i++) {
         size_t j;
         for (j = 0; j < ccode_tool_definitions_count; j++) {
             if (strcmp(ccode_tool_definitions[j].name, readonly_names[i]) == 0) {
                 if (!first) {
-                    if (append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
+                    if (ccode_append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
                 }
                 first = 0;
                 if (append_tool_def(&buf, &pos, &cap,
@@ -257,7 +238,7 @@ char *ccode_build_readonly_tools_json(void) {
         }
     }
 
-    if (append_cstr(&buf, &pos, &cap, "]") != 0) goto fail;
+    if (ccode_append_cstr(&buf, &pos, &cap, "]") != 0) goto fail;
     return buf;
 
 fail:
@@ -282,13 +263,13 @@ char *ccode_build_write_tools_json(void) {
 
     if (!buf) return NULL;
     buf[0] = '\0';
-    if (append_cstr(&buf, &pos, &cap, "\"tools\":[") != 0) goto fail;
+    if (ccode_append_cstr(&buf, &pos, &cap, "\"tools\":[") != 0) goto fail;
 
     for (i = 0; i < sizeof(enabled_names) / sizeof(enabled_names[0]); i++) {
         size_t j;
         for (j = 0; j < ccode_tool_definitions_count; j++) {
             if (strcmp(ccode_tool_definitions[j].name, enabled_names[i]) == 0) {
-                if (!first && append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
+                if (!first && ccode_append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
                 first = 0;
                 if (append_tool_def(&buf, &pos, &cap,
                                     &ccode_tool_definitions[j]) != 0)
@@ -297,7 +278,7 @@ char *ccode_build_write_tools_json(void) {
             }
         }
     }
-    if (append_cstr(&buf, &pos, &cap, "]") != 0) goto fail;
+    if (ccode_append_cstr(&buf, &pos, &cap, "]") != 0) goto fail;
     return buf;
 
 fail:

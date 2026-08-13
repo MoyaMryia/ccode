@@ -1003,25 +1003,6 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
     return ccode_strdup("{\"ok\":true}");
 }
 
-/* Append a verbatim C string to a dynamic buffer. Returns -1 on failure. */
-int append_cstr_with(char **buf, size_t *pos, size_t *cap,
-                            const char *s) {
-    size_t len = strlen(s);
-    if (*pos + len + 1 > *cap) {
-        char * tmp;
-        size_t new_cap = *cap * 2;
-        if (new_cap < *pos + len + 1) new_cap = *pos + len + 1;
-        tmp = realloc(*buf, new_cap);
-        if (!tmp) return -1;
-        *buf = tmp;
-        *cap = new_cap;
-    }
-    memcpy(*buf + *pos, s, len);
-    *pos += len;
-    (*buf)[*pos] = '\0';
-    return 0;
-}
-
 /* Append the JSON-escaped form of `s` to a dynamic buffer. Used to safely
  * serialize path entries rather than dropping control bytes or trusting
  * quotes. Returns -1 on allocation failure. */
@@ -1482,19 +1463,19 @@ static void glob_recursive(struct agent_context *ctx, int parent_fd,
             }
             if (match_ok) {
                 if (!*first) {
-                    if (append_cstr_with(result, total, cap, ",") != 0) {
+                    if (ccode_append_cstr(result, total, cap, ",") != 0) {
                         budget->truncated = 1; close(entry_fd); free(entries); if (gregex_ok) { regfree(&gregex); } return;
                     }
                 }
                 *first = 0;
 
-                if (append_cstr_with(result, total, cap, "\"") != 0) {
+                if (ccode_append_cstr(result, total, cap, "\"") != 0) {
                     budget->truncated = 1; close(entry_fd); free(entries); if (gregex_ok) { regfree(&gregex); } return;
                 }
                 if (append_json_string(result, total, cap, rel_path) != 0) {
                     budget->truncated = 1; close(entry_fd); free(entries); if (gregex_ok) { regfree(&gregex); } return;
                 }
-                if (append_cstr_with(result, total, cap, "\"") != 0) {
+                if (ccode_append_cstr(result, total, cap, "\"") != 0) {
                     budget->truncated = 1; close(entry_fd); free(entries); if (gregex_ok) { regfree(&gregex); } return;
                 }
                 (*count)++;
@@ -1557,13 +1538,13 @@ char *exec_glob(struct agent_context *ctx, const char *workspace, const char *pa
     if (!result) { close(root_fd); return NULL; }
     result[0] = '\0';
 
-    if (append_cstr_with(&result, &total, &cap, "{\"pattern\":\"") != 0) {
+    if (ccode_append_cstr(&result, &total, &cap, "{\"pattern\":\"") != 0) {
         close(root_fd); free(result); return NULL;
     }
     if (append_json_string(&result, &total, &cap, pattern) != 0) {
         close(root_fd); free(result); return NULL;
     }
-    if (append_cstr_with(&result, &total, &cap, "\",\"files\":[") != 0) {
+    if (ccode_append_cstr(&result, &total, &cap, "\",\"files\":[") != 0) {
         close(root_fd); free(result); return NULL;
     }
 
@@ -1578,7 +1559,7 @@ char *exec_glob(struct agent_context *ctx, const char *workspace, const char *pa
                          count, CCODE_MAX_GLOB_RESULTS,
                          budget.truncated ? ",\"truncated\":true" : "");
         if (n <= 0 || (size_t)n >= sizeof(tail) ||
-            append_cstr_with(&result, &total, &cap, tail) != 0) {
+            ccode_append_cstr(&result, &total, &cap, tail) != 0) {
             free(result); return NULL;
         }
     }
@@ -1596,22 +1577,22 @@ static int append_match_entry(char **result, size_t *total, size_t *cap,
     if (*total >= CCODE_MAX_LISTING_BYTES - 256) return 1;
 
     if (!*first) {
-        if (append_cstr_with(result, total, cap, ",") != 0) return -1;
+        if (ccode_append_cstr(result, total, cap, ",") != 0) return -1;
     }
     *first = 0;
 
-    if (append_cstr_with(result, total, cap, "\"") != 0) return -1;
+    if (ccode_append_cstr(result, total, cap, "\"") != 0) return -1;
     if (append_json_string(result, total, cap, rel_path) != 0) return -1;
 
     written = snprintf(numbuf, sizeof(numbuf), ":%zu:", line_num);
     if (written <= 0 || (size_t)written >= sizeof(numbuf)) return -1;
-    if (append_cstr_with(result, total, cap, numbuf) != 0) return -1;
+    if (ccode_append_cstr(result, total, cap, numbuf) != 0) return -1;
 
     if (is_context)
-        if (append_cstr_with(result, total, cap, "~") != 0) return -1;
+        if (ccode_append_cstr(result, total, cap, "~") != 0) return -1;
 
     if (append_json_string(result, total, cap, line_text) != 0) return -1;
-    if (append_cstr_with(result, total, cap, "\"") != 0) return -1;
+    if (ccode_append_cstr(result, total, cap, "\"") != 0) return -1;
     return 0;
 }
 
@@ -1896,13 +1877,13 @@ char *exec_grep(struct agent_context *ctx, const char *workspace, const char *pa
     if (!result) { close(root_fd); return NULL; }
     result[0] = '\0';
 
-    if (append_cstr_with(&result, &total, &cap, "{\"pattern\":\"") != 0) {
+    if (ccode_append_cstr(&result, &total, &cap, "{\"pattern\":\"") != 0) {
         close(root_fd); free(result); return NULL;
     }
     if (append_json_string(&result, &total, &cap, pattern) != 0) {
         close(root_fd); free(result); return NULL;
     }
-    if (append_cstr_with(&result, &total, &cap, "\",\"matches\":[") != 0) {
+    if (ccode_append_cstr(&result, &total, &cap, "\",\"matches\":[") != 0) {
         close(root_fd); free(result); return NULL;
     }
 
@@ -1922,7 +1903,7 @@ char *exec_grep(struct agent_context *ctx, const char *workspace, const char *pa
                          match_count, CCODE_MAX_GREP_MATCHES,
                          truncated ? ",\"truncated\":true" : "");
         if (n <= 0 || (size_t)n >= sizeof(tail) ||
-            append_cstr_with(&result, &total, &cap, tail) != 0) {
+            ccode_append_cstr(&result, &total, &cap, tail) != 0) {
             free(result); return NULL;
         }
     }

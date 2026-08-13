@@ -177,27 +177,6 @@ static size_t estimate_request_size(struct ccode_conversation *conv,
     return total;
 }
 
-static int append_str(char **buf, size_t *pos, size_t *cap, const char *s,
-                      size_t len) {
-    if (*pos + len + 1 > *cap) {
-        char * tmp;
-        size_t new_cap = *cap * 2;
-        if (new_cap < *pos + len + 1) new_cap = *pos + len + 1;
-        tmp = realloc(*buf, new_cap);
-        if (!tmp) return -1;
-        *buf = tmp;
-        *cap = new_cap;
-    }
-    memcpy(*buf + *pos, s, len);
-    *pos += len;
-    (*buf)[*pos] = '\0';
-    return 0;
-}
-
-static int append_cstr(char **buf, size_t *pos, size_t *cap, const char *s) {
-    return append_str(buf, pos, cap, s, strlen(s));
-}
-
 char *ccode_conversation_build_request(struct ccode_conversation *conv,
                                        const char *model,
                                        const char *tools_json,
@@ -212,78 +191,78 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
     if (!buf) return NULL;
     buf[0] = '\0';
 
-    if (append_cstr(&buf, &pos, &cap, "{\"model\":\"") != 0) goto fail;
+    if (ccode_append_cstr(&buf, &pos, &cap, "{\"model\":\"") != 0) goto fail;
     escaped = ccode_json_escape(model);
-    if (escaped) { append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
-    if (append_cstr(&buf, &pos, &cap, "\",\"messages\":[") != 0) goto fail;
+    if (escaped) { ccode_append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
+    if (ccode_append_cstr(&buf, &pos, &cap, "\",\"messages\":[") != 0) goto fail;
 
     for (i = 0; i < conv->count; i++) {
-        if (i > 0 && append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
-        if (append_cstr(&buf, &pos, &cap, "{\"role\":\"") != 0) goto fail;
-        if (append_cstr(&buf, &pos, &cap, role_str(conv->messages[i].role)) != 0)
+        if (i > 0 && ccode_append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
+        if (ccode_append_cstr(&buf, &pos, &cap, "{\"role\":\"") != 0) goto fail;
+        if (ccode_append_cstr(&buf, &pos, &cap, role_str(conv->messages[i].role)) != 0)
             goto fail;
 
         if (conv->messages[i].content) {
-            if (append_cstr(&buf, &pos, &cap, "\",\"content\":\"") != 0) goto fail;
+            if (ccode_append_cstr(&buf, &pos, &cap, "\",\"content\":\"") != 0) goto fail;
             escaped = ccode_json_escape(conv->messages[i].content);
             if (!escaped) goto fail;
-            if (append_cstr(&buf, &pos, &cap, escaped) != 0) {
+            if (ccode_append_cstr(&buf, &pos, &cap, escaped) != 0) {
                 free(escaped);
                 goto fail;
             }
             free(escaped);
-            if (append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
+            if (ccode_append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
         } else {
             /* OpenAI/DeepSeek require the content field to be present on
              * user/tool messages (even when null) and expect assistant
              * messages that carry tool_calls to use content:null rather
              * than content:"". Emitting the field as JSON null satisfies
              * both shapes and survives round-trips through the loader. */
-            if (append_cstr(&buf, &pos, &cap, "\",\"content\":null") != 0)
+            if (ccode_append_cstr(&buf, &pos, &cap, "\",\"content\":null") != 0)
                 goto fail;
         }
 
         if (conv->messages[i].tool_call_count > 0) {
-            if (append_cstr(&buf, &pos, &cap, ",\"tool_calls\":[") != 0) goto fail;
+            if (ccode_append_cstr(&buf, &pos, &cap, ",\"tool_calls\":[") != 0) goto fail;
             for (j = 0; j < conv->messages[i].tool_call_count; j++) {
                 struct ccode_tool_call *tc = &conv->messages[i].tool_calls[j];
-                if (j > 0 && append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
-                if (append_cstr(&buf, &pos, &cap,
+                if (j > 0 && ccode_append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
+                if (ccode_append_cstr(&buf, &pos, &cap,
                         "{\"id\":\"") != 0) goto fail;
                 escaped = ccode_json_escape(tc->id);
-                if (escaped) { append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
-                if (append_cstr(&buf, &pos, &cap,
+                if (escaped) { ccode_append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
+                if (ccode_append_cstr(&buf, &pos, &cap,
                         "\",\"type\":\"function\",\"function\":{\"name\":\"") != 0)
                     goto fail;
                 escaped = ccode_json_escape(tc->name);
-                if (escaped) { append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
-                if (append_cstr(&buf, &pos, &cap,
+                if (escaped) { ccode_append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
+                if (ccode_append_cstr(&buf, &pos, &cap,
                         "\",\"arguments\":\"") != 0) goto fail;
                 {
                     const char *                    args = tc->arguments ? tc->arguments : "{}";
                     escaped = ccode_json_escape(args);
-                    if (escaped) { append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
+                    if (escaped) { ccode_append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
                 }
-                if (append_cstr(&buf, &pos, &cap, "\"}}") != 0) goto fail;
+                if (ccode_append_cstr(&buf, &pos, &cap, "\"}}") != 0) goto fail;
             }
-            if (append_cstr(&buf, &pos, &cap, "]") != 0) goto fail;
+            if (ccode_append_cstr(&buf, &pos, &cap, "]") != 0) goto fail;
         }
 
         if (conv->messages[i].tool_call_id) {
-            if (append_cstr(&buf, &pos, &cap, ",\"tool_call_id\":\"") != 0) goto fail;
+            if (ccode_append_cstr(&buf, &pos, &cap, ",\"tool_call_id\":\"") != 0) goto fail;
             escaped = ccode_json_escape(conv->messages[i].tool_call_id);
-            if (escaped) { append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
-            if (append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
+            if (escaped) { ccode_append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
+            if (ccode_append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
         }
 
-        if (append_cstr(&buf, &pos, &cap, "}") != 0) goto fail;
+        if (ccode_append_cstr(&buf, &pos, &cap, "}") != 0) goto fail;
     }
 
-    if (append_cstr(&buf, &pos, &cap, "]") != 0) goto fail;
+    if (ccode_append_cstr(&buf, &pos, &cap, "]") != 0) goto fail;
 
     if (tools_json && tools_json[0] != '\0') {
-        if (append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
-        if (append_cstr(&buf, &pos, &cap, tools_json) != 0) goto fail;
+        if (ccode_append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
+        if (ccode_append_cstr(&buf, &pos, &cap, tools_json) != 0) goto fail;
     }
 
     /* The thinking switch and the effort knob are independent fields:
@@ -292,18 +271,18 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
      * that always reason (e.g. Kimi K3) can be driven by effort alone,
      * and nothing is sent when both are off. */
     if (thinking_enabled) {
-        if (append_cstr(&buf, &pos, &cap,
+        if (ccode_append_cstr(&buf, &pos, &cap,
                         ",\"thinking\":{\"type\":\"enabled\"}") != 0)
             goto fail;
     }
     if (thinking_effort) {
-        if (append_cstr(&buf, &pos, &cap, ",\"reasoning_effort\":\"") != 0)
+        if (ccode_append_cstr(&buf, &pos, &cap, ",\"reasoning_effort\":\"") != 0)
             goto fail;
-        if (append_cstr(&buf, &pos, &cap, thinking_effort) != 0) goto fail;
-        if (append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
+        if (ccode_append_cstr(&buf, &pos, &cap, thinking_effort) != 0) goto fail;
+        if (ccode_append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
     }
 
-    if (append_cstr(&buf, &pos, &cap, ",\"stream\":true}") != 0) goto fail;
+    if (ccode_append_cstr(&buf, &pos, &cap, ",\"stream\":true}") != 0) goto fail;
     return buf;
 
 fail:
@@ -1205,35 +1184,12 @@ parse_fail:
 
 /* ── Dynamic buffer helpers (mirror agent.c) ── */
 
-static int buf_append_cstr(char **buf, size_t *pos, size_t *cap,
-                            const char *s);
-static int buf_append_json_string(char **buf, size_t *pos, size_t *cap,
-                                   const char *s);
-
-static int buf_append_cstr(char **buf, size_t *pos, size_t *cap,
-                            const char *s) {
-    size_t len = strlen(s);
-    if (*pos + len + 1 > *cap) {
-        char * tmp;
-        size_t new_cap = *cap * 2;
-        if (new_cap < *pos + len + 1) new_cap = *pos + len + 1;
-        tmp = realloc(*buf, new_cap);
-        if (!tmp) return -1;
-        *buf = tmp;
-        *cap = new_cap;
-    }
-    memcpy(*buf + *pos, s, len);
-    *pos += len;
-    (*buf)[*pos] = '\0';
-    return 0;
-}
-
 static int buf_append_json_string(char **buf, size_t *pos, size_t *cap,
                                    const char *s) {
     int ret;
     char *escaped = ccode_json_escape(s);
     if (!escaped) return -1;
-    ret = buf_append_cstr(buf, pos, cap, escaped);
+    ret = ccode_append_cstr(buf, pos, cap, escaped);
     free(escaped);
     return ret;
 }
@@ -1493,7 +1449,7 @@ char *ccode_session_list(void) {
         char *tmp = result;
         size_t tmp_pos = 0;
         size_t tmp_cap = cap;
-        if (buf_append_cstr(&tmp, &tmp_pos, &tmp_cap, "{\"sessions\":[") != 0) {
+        if (ccode_append_cstr(&tmp, &tmp_pos, &tmp_cap, "{\"sessions\":[") != 0) {
             free(tmp); closedir(d); return NULL;
         }
         result = tmp; pos = tmp_pos; cap = tmp_cap;
@@ -1539,44 +1495,44 @@ char *ccode_session_list(void) {
             if (n <= 0 || (size_t)n >= sizeof(msg_str)) continue;
 
             if (!first) {
-                if (buf_append_cstr(&result, &pos, &cap, ",") != 0) {
+                if (ccode_append_cstr(&result, &pos, &cap, ",") != 0) {
                     free(result); closedir(d); return NULL;
                 }
             }
             first = 0;
 
-            if (buf_append_cstr(&result, &pos, &cap,
+            if (ccode_append_cstr(&result, &pos, &cap,
                     "{\"name\":\"") != 0 ||
                 buf_append_json_string(&result, &pos, &cap, entry->d_name) != 0 ||
-                buf_append_cstr(&result, &pos, &cap,
+                ccode_append_cstr(&result, &pos, &cap,
                     "\",\"size\":") != 0 ||
-                buf_append_cstr(&result, &pos, &cap, size_str) != 0 ||
-                buf_append_cstr(&result, &pos, &cap,
+                ccode_append_cstr(&result, &pos, &cap, size_str) != 0 ||
+                ccode_append_cstr(&result, &pos, &cap,
                     ",\"mtime\":") != 0 ||
-                buf_append_cstr(&result, &pos, &cap, mtime_str) != 0 ||
-                buf_append_cstr(&result, &pos, &cap,
+                ccode_append_cstr(&result, &pos, &cap, mtime_str) != 0 ||
+                ccode_append_cstr(&result, &pos, &cap,
                     ",\"messages\":") != 0 ||
-                buf_append_cstr(&result, &pos, &cap, msg_str) != 0) {
+                ccode_append_cstr(&result, &pos, &cap, msg_str) != 0) {
                 free(result); closedir(d); return NULL;
             }
 
             if (model[0]) {
-                if (buf_append_cstr(&result, &pos, &cap,
+                if (ccode_append_cstr(&result, &pos, &cap,
                         ",\"model\":\"") != 0 ||
                     buf_append_json_string(&result, &pos, &cap, model) != 0 ||
-                    buf_append_cstr(&result, &pos, &cap, "\"") != 0) {
+                    ccode_append_cstr(&result, &pos, &cap, "\"") != 0) {
                     free(result); closedir(d); return NULL;
                 }
             }
 
-            if (buf_append_cstr(&result, &pos, &cap, "}") != 0) {
+            if (ccode_append_cstr(&result, &pos, &cap, "}") != 0) {
                 free(result); closedir(d); return NULL;
             }
         }
     }
     closedir(d);
 
-    if (buf_append_cstr(&result, &pos, &cap, "]}") != 0) {
+    if (ccode_append_cstr(&result, &pos, &cap, "]}") != 0) {
         free(result); return NULL;
     }
 
@@ -1649,45 +1605,45 @@ char *ccode_session_export(const char *name, const char *format) {
         pos = 0;
         result[0] = '\0';
 
-        buf_append_cstr(&result, &pos, &cap,
+        ccode_append_cstr(&result, &pos, &cap,
             "# Session Export\n\n");
         for (i = 0; i < conv.count; i++) {
             const char *role = role_str(conv.messages[i].role);
-            buf_append_cstr(&result, &pos, &cap, "## ");
+            ccode_append_cstr(&result, &pos, &cap, "## ");
             /* Capitalize first letter. */
             if (role[0] >= 'a' && role[0] <= 'z') {
                 char cap_char[2] = { (char)(role[0] - 32), '\0' };
-                buf_append_cstr(&result, &pos, &cap, cap_char);
-                buf_append_cstr(&result, &pos, &cap, role + 1);
+                ccode_append_cstr(&result, &pos, &cap, cap_char);
+                ccode_append_cstr(&result, &pos, &cap, role + 1);
             } else {
-                buf_append_cstr(&result, &pos, &cap, role);
+                ccode_append_cstr(&result, &pos, &cap, role);
             }
-            buf_append_cstr(&result, &pos, &cap, "\n\n");
+            ccode_append_cstr(&result, &pos, &cap, "\n\n");
 
             if (conv.messages[i].content)
-                buf_append_cstr(&result, &pos, &cap,
+                ccode_append_cstr(&result, &pos, &cap,
                                   conv.messages[i].content);
-            buf_append_cstr(&result, &pos, &cap, "\n\n");
+            ccode_append_cstr(&result, &pos, &cap, "\n\n");
 
             for (j = 0; j < conv.messages[i].tool_call_count; j++) {
-                buf_append_cstr(&result, &pos, &cap,
+                ccode_append_cstr(&result, &pos, &cap,
                     "> Tool call: `");
                 buf_append_json_string(&result, &pos, &cap,
                     conv.messages[i].tool_calls[j].name);
-                buf_append_cstr(&result, &pos, &cap, "`\n>\n");
-                buf_append_cstr(&result, &pos, &cap, "> ```json\n> ");
+                ccode_append_cstr(&result, &pos, &cap, "`\n>\n");
+                ccode_append_cstr(&result, &pos, &cap, "> ```json\n> ");
                 buf_append_json_string(&result, &pos, &cap,
                     conv.messages[i].tool_calls[j].arguments);
-                buf_append_cstr(&result, &pos, &cap, "\n> ```\n\n");
+                ccode_append_cstr(&result, &pos, &cap, "\n> ```\n\n");
             }
 
             if (conv.messages[i].tool_call_id) {
-                buf_append_cstr(&result, &pos, &cap,
+                ccode_append_cstr(&result, &pos, &cap,
                     "> Result: ");
                 if (conv.messages[i].content)
-                    buf_append_cstr(&result, &pos, &cap,
+                    ccode_append_cstr(&result, &pos, &cap,
                                       conv.messages[i].content);
-                buf_append_cstr(&result, &pos, &cap, "\n\n");
+                ccode_append_cstr(&result, &pos, &cap, "\n\n");
             }
         }
     } else if (format && (strcmp(format, "text") == 0 ||
@@ -1698,25 +1654,25 @@ char *ccode_session_export(const char *name, const char *format) {
         pos = 0;
         result[0] = '\0';
 
-        buf_append_cstr(&result, &pos, &cap,
+        ccode_append_cstr(&result, &pos, &cap,
             "Session Export\n==============\n\n");
         for (i = 0; i < conv.count; i++) {
             const char *role = role_str(conv.messages[i].role);
             if (role[0] >= 'a' && role[0] <= 'z') {
                 char cap_char[2] = { (char)(role[0] - 32), '\0' };
-                buf_append_cstr(&result, &pos, &cap, "[");
-                buf_append_cstr(&result, &pos, &cap, cap_char);
-                buf_append_cstr(&result, &pos, &cap, role + 1);
+                ccode_append_cstr(&result, &pos, &cap, "[");
+                ccode_append_cstr(&result, &pos, &cap, cap_char);
+                ccode_append_cstr(&result, &pos, &cap, role + 1);
             } else {
-                buf_append_cstr(&result, &pos, &cap, "[");
-                buf_append_cstr(&result, &pos, &cap, role);
+                ccode_append_cstr(&result, &pos, &cap, "[");
+                ccode_append_cstr(&result, &pos, &cap, role);
             }
-            buf_append_cstr(&result, &pos, &cap, "]\n");
+            ccode_append_cstr(&result, &pos, &cap, "]\n");
 
             if (conv.messages[i].content)
-                buf_append_cstr(&result, &pos, &cap,
+                ccode_append_cstr(&result, &pos, &cap,
                                   conv.messages[i].content);
-            buf_append_cstr(&result, &pos, &cap, "\n\n");
+            ccode_append_cstr(&result, &pos, &cap, "\n\n");
         }
     } else {
         /* Default: return raw JSON string. */

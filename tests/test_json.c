@@ -809,10 +809,39 @@ static int test_accumulator_reasoning_callback(void) {
     return 1;
 }
 
+static int test_append_cstr(void) {
+    char *buf = NULL;
+    size_t pos = 0;
+    size_t cap = 0;
+
+    /* Starts from NULL/0 and grows through the doubling path. */
+    ASSERT(ccode_append_cstr(&buf, &pos, &cap, "hello ") == 0);
+    ASSERT(ccode_append_cstr(&buf, &pos, &cap, "world") == 0);
+    ASSERT(pos == 11);
+    ASSERT(buf != NULL && strcmp(buf, "hello world") == 0);
+    /* A chunk bigger than the current capacity forces an exact-size grow. */
+    {
+        char big[2000];
+        memset(big, 'x', sizeof(big));
+        big[1999] = '\0';
+        ASSERT(ccode_append_cstr(&buf, &pos, &cap, big) == 0);
+        ASSERT(pos == 11 + 1999);
+        ASSERT(strncmp(buf, "hello world", 11) == 0);
+        ASSERT(buf[11 + 1999] == '\0');
+    }
+    /* Empty string is a no-op and the buffer stays NUL-terminated. */
+    ASSERT(ccode_append_cstr(&buf, &pos, &cap, "") == 0);
+    ASSERT(pos == 11 + 1999);
+    ASSERT(buf[pos] == '\0');
+    free(buf);
+    return 1;
+}
+
 int main(void) {
     fprintf(stderr, "=== JSON Unit Tests ===\n");
 
     TEST(json_escape);
+    TEST(append_cstr);
     TEST(strdup_null_and_copy);
     TEST(valid_utf8);
     TEST(json_unescape_buffer);
