@@ -29,24 +29,109 @@ static int tests_failed = 0;
     } \
 } while (0)
 
-static int test_build_chat_request(void) {
-    char *req = ccode_build_chat_request("test-model", "hello");
-    ASSERT(req != NULL);
-    ASSERT(strstr(req, "\"model\":\"test-model\"") != NULL);
-    ASSERT(strstr(req, "\"content\":\"hello\"") != NULL);
-    ASSERT(strstr(req, "\"stream\":true") != NULL);
-    free(req);
+static int test_json_escape(void) {
+    char *e = ccode_json_escape("a\"b\\c\nd\x01");
+    ASSERT(e != NULL);
+    ASSERT(strcmp(e, "a\\\"b\\\\c\\nd\\u0001") == 0);
+    free(e);
+    e = ccode_json_escape("\b\f\r\t");
+    ASSERT(e != NULL);
+    ASSERT(strcmp(e, "\\b\\f\\r\\t") == 0);
+    free(e);
+    ASSERT(ccode_json_escape(NULL) == NULL);
+    e = ccode_json_escape("");
+    ASSERT(e != NULL && e[0] == '\0');
+    free(e);
     return 1;
 }
 
-static int test_escape_json(void) {
-    /* Test via build_chat_request with special chars */
-    char *req = ccode_build_chat_request("a\"b", "c\\d\ne");
-    ASSERT(req != NULL);
-    ASSERT(strstr(req, "a\\\"b") != NULL);
-    ASSERT(strstr(req, "c\\\\d") != NULL);
-    ASSERT(strstr(req, "\\ne") != NULL);
-    free(req);
+static int test_strdup_null_and_copy(void) {
+    char *s = ccode_strdup("hello");
+    ASSERT(s != NULL);
+    ASSERT(strcmp(s, "hello") == 0);
+    free(s);
+    ASSERT(ccode_strdup(NULL) == NULL);
+    return 1;
+}
+
+static int test_valid_utf8(void) {
+    ASSERT(ccode_valid_utf8("plain ascii") == 0);
+    ASSERT(ccode_valid_utf8("\xe2\x82\xac") == 0);
+    ASSERT(ccode_valid_utf8("\xf0\x9f\x98\x80") == 0);
+    ASSERT(ccode_valid_utf8("") == 0);
+    ASSERT(ccode_valid_utf8("\xff") == -1);
+    ASSERT(ccode_valid_utf8("\xc0\xaf") == -1);
+    ASSERT(ccode_valid_utf8("\xed\xa0\x80") == -1);
+    ASSERT(ccode_valid_utf8("\xf4\x90\x80\x80") == -1);
+    return 1;
+}
+
+static int test_json_unescape_buffer(void) {
+    char buf[64];
+    ASSERT(ccode_json_unescape("a\\u20ac\\ud83d\\ude00",
+                               "a\\u20ac\\ud83d\\ude00" + 19,
+                               buf, sizeof(buf)) == 0);
+    ASSERT(strcmp(buf, "a\xe2\x82\xac\xf0\x9f\x98\x80") == 0);
+    ASSERT(ccode_json_unescape("\\u0000", "\\u0000" + 6,
+                               buf, sizeof(buf)) == -1);
+    ASSERT(ccode_json_unescape("\\ud800", "\\ud800" + 6,
+                               buf, sizeof(buf)) == -1);
+    ASSERT(ccode_json_unescape("\\", "\\" + 1, buf, sizeof(buf)) == -1);
+    ASSERT(ccode_json_unescape("ab", "ab" + 2, buf, 1) == -1);
+    ASSERT(ccode_json_unescape("", "", buf, sizeof(buf)) == 0);
+    return 1;
+}
+
+static int test_json_navigation(void) {
+    const char *json = "{"
+        "\"data\":[{\"id\":\"a\",\"owned_by\":\"org\"},"
+        "{\"id\":\"b\"}],"
+        "\"sessions\":[],"
+        "\"count\":7"
+        "}";
+    ccode_jsmntok_t tokens[64];
+    int num_tokens = ccode_json_parse(json, strlen(json), tokens, 64);
+    ccode_jsmntok_t *tok;
+    long v = -1;
+    ASSERT(num_tokens > 0);
+    ASSERT(tokens[0].type == CCODE_JSMN_OBJECT);
+    tok = ccode_json_find_key(tokens, num_tokens, 0, json, "data");
+    ASSERT(tok != NULL && tok->type == CCODE_JSMN_ARRAY && tok->size == 2);
+    tok = ccode_json_find_index(tokens, num_tokens,
+                                (int)(ccode_json_find_key(tokens, num_tokens,
+                                                          0, json, "data") -
+                                      tokens), 1);
+    ASSERT(tok != NULL && tok->type == CCODE_JSMN_OBJECT);
+    tok = ccode_json_find_key(tokens, num_tokens, (int)(tok - tokens),
+                              json, "id");
+    ASSERT(tok != NULL && tok->type == CCODE_JSMN_STRING);
+    {
+        char id[8];
+        ASSERT(ccode_json_token_to_string(json, tok, id, sizeof(id)) == 0);
+        ASSERT(strcmp(id, "b") == 0);
+    }
+    ASSERT(ccode_json_find_key(tokens, num_tokens, 0, json, "nope") == NULL);
+    ASSERT(ccode_json_find_index(tokens, num_tokens, 0, 99) == NULL);
+    tok = ccode_json_find_key(tokens, num_tokens, 0, json, "count");
+    ASSERT(tok != NULL && tok->type == CCODE_JSMN_PRIMITIVE);
+    ASSERT(ccode_json_token_to_int(json, tok, &v) == 0);
+    ASSERT(v == 7);
+    return 1;
+}
+
+static int test_json_token_string_alloc(void) {
+    const char *json = "{\"x\":\"v\\\\u00e9\"}";
+    ccode_jsmntok_t tokens[8];
+    int num_tokens = ccode_json_parse(json, strlen(json), tokens, 8);
+    ccode_jsmntok_t *tok;
+    char *s;
+    ASSERT(num_tokens > 0);
+    tok = ccode_json_find_key(tokens, num_tokens, 0, json, "x");
+    ASSERT(tok != NULL);
+    s = ccode_json_token_string(json, tok);
+    ASSERT(s != NULL);
+    ASSERT(strcmp(s, "v\\u00e9") == 0);
+    free(s);
     return 1;
 }
 
@@ -727,8 +812,12 @@ static int test_accumulator_reasoning_callback(void) {
 int main(void) {
     fprintf(stderr, "=== JSON Unit Tests ===\n");
 
-    TEST(build_chat_request);
-    TEST(escape_json);
+    TEST(json_escape);
+    TEST(strdup_null_and_copy);
+    TEST(valid_utf8);
+    TEST(json_unescape_buffer);
+    TEST(json_navigation);
+    TEST(json_token_string_alloc);
     TEST(parse_basic_delta);
     TEST(parse_finish_reason);
     TEST(parse_done);

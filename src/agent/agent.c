@@ -907,53 +907,46 @@ static void print_repl_help(void) {
  * Used by /sessions and /session list. */
 static void print_session_list(void) {
     char *sessions = ccode_session_list();
+    ccode_jsmntok_t tokens[512];
+    ccode_jsmntok_t *arr;
+    int num_tokens;
+    int i;
     if (!sessions) {
         fputs("  Could not list sessions.\n", stderr);
         return;
     }
     fprintf(stderr, "  Sessions:\n");
-    {
-        const char *p = sessions;
-        int n = 0;
-        while (*p) {
-            const char *name_start, *name_end, *sz, *ms;
-            char name_buf[256], sz_buf[32], ms_buf[32];
-
-            name_start = strstr(p, "\"name\":\"");
-            if (!name_start) break;
-            name_start += 8;
-            name_end = strchr(name_start, '"');
-            if (!name_end) break;
-            {
-                size_t nl2 = (size_t)(name_end - name_start);
-                if (nl2 >= sizeof(name_buf)) nl2 = sizeof(name_buf) - 1;
-                memcpy(name_buf, name_start, nl2);
-                name_buf[nl2] = '\0';
-            }
-
-            sz = strstr(name_end, "\"size\":");
-            ms = strstr(name_end, "\"messages\":");
-            sz = sz ? sz + 7 : "0";
-            ms = ms ? ms + 11 : "0";
-            {
-                const char *se = strchr(sz, ',');
-                const char *me = strchr(ms, ',');
-                if (!se) se = strchr(sz, '}');
-                if (!me) me = strchr(ms, '}');
-                {
-                    size_t sl = se ? (size_t)(se - sz) : strlen(sz);
-                    size_t ml2 = me ? (size_t)(me - ms) : strlen(ms);
-                    if (sl >= sizeof(sz_buf)) sl = sizeof(sz_buf) - 1;
-                    if (ml2 >= sizeof(ms_buf)) ml2 = sizeof(ms_buf) - 1;
-                    memcpy(sz_buf, sz, sl); sz_buf[sl] = '\0';
-                    memcpy(ms_buf, ms, ml2); ms_buf[ml2] = '\0';
-                }
-            }
-
-            n++;
-            fprintf(stderr, "    %d. %s (%s bytes, %s msgs)\n",
-                    n, name_buf, sz_buf, ms_buf);
-            p = name_end + 1;
+    num_tokens = ccode_json_parse(sessions, strlen(sessions), tokens, 512);
+    arr = (num_tokens > 0 && tokens[0].type == CCODE_JSMN_OBJECT)
+              ? ccode_json_find_key(tokens, num_tokens, 0, sessions,
+                                    "sessions")
+              : NULL;
+    if (arr && arr->type == CCODE_JSMN_ARRAY) {
+        for (i = 0; i < arr->size; i++) {
+            ccode_jsmntok_t *entry = ccode_json_find_index(
+                tokens, num_tokens, (int)(arr - tokens), i);
+            ccode_jsmntok_t *tok;
+            char name_buf[256];
+            long size = 0;
+            long msgs = 0;
+            if (!entry || entry->type != CCODE_JSMN_OBJECT) continue;
+            tok = ccode_json_find_key(tokens, num_tokens,
+                                      (int)(entry - tokens), sessions, "name");
+            if (!tok || tok->type != CCODE_JSMN_STRING ||
+                ccode_json_token_to_string(sessions, tok,
+                                           name_buf, sizeof(name_buf)) != 0)
+                continue;
+            tok = ccode_json_find_key(tokens, num_tokens,
+                                      (int)(entry - tokens), sessions, "size");
+            if (tok && tok->type == CCODE_JSMN_PRIMITIVE)
+                ccode_json_token_to_int(sessions, tok, &size);
+            tok = ccode_json_find_key(tokens, num_tokens,
+                                      (int)(entry - tokens), sessions,
+                                      "messages");
+            if (tok && tok->type == CCODE_JSMN_PRIMITIVE)
+                ccode_json_token_to_int(sessions, tok, &msgs);
+            fprintf(stderr, "    %d. %s (%ld bytes, %ld msgs)\n",
+                    i + 1, name_buf, size, msgs);
         }
     }
     free(sessions);
@@ -968,7 +961,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
     int exit_code;
     char current_model[256];
     char current_effort[16];
-    char history[CCODE_HISTORY_MAX][CCODE_INPUT_LINE_MAX];
+    char *history;
     history_count = 0;
 
     if (cfg->model) {
@@ -996,7 +989,14 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
 
     current_session_path[0] = '\0';
 
-    memset(history, 0, sizeof(history));
+    /* Keep the prompt history off the stack: 64 x 8192 bytes does not belong
+     * in a fixed-size frame (small-stack platforms / future threads). */
+    history = malloc(CCODE_HISTORY_MAX * CCODE_INPUT_LINE_MAX);
+    if (!history) {
+        fprintf(stderr, "Out of memory.\n");
+        return 1;
+    }
+    memset(history, 0, CCODE_HISTORY_MAX * CCODE_INPUT_LINE_MAX);
     reset_workspace_state();
     ccode_cancel_install();
 
@@ -1078,7 +1078,8 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                 fprintf(stderr, "  Session history (%d prompts):\n", history_count);
                 for (i = 0; i < history_count; i++) {
                     fprintf(stderr, "    [%d] ", i + 1);
-                    ccode_fprint_safe(stderr, history[i], "");
+                    ccode_fprint_safe(stderr,
+                                      history + i * CCODE_INPUT_LINE_MAX, "");
                     fputc('\n', stderr);
                 }
                 continue;
@@ -1093,38 +1094,54 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                 char *models = ccode_models_fetch(cfg->api_base, cfg->api_key);
                 if (!models) {
                     fputs("  Could not fetch model list.\n", stderr);
-                } else if (strstr(models, "\"error\"")) {
-                    fprintf(stderr, "  API error: %s\n", models);
-                    free(models);
                 } else {
-                    fprintf(stderr, "  Available models:\n");
-                    {
-                        const char *p = models;
-                        int n = 0;
-                        while ((p = strstr(p, "\"id\":\"")) != NULL) {
-                            char cur;
-                            const char * end;
-                            size_t id_len;
-                            p += 6;
-                            end = strchr(p, '"');
-                            if (!end) break;
-                            id_len = (size_t)(end - p);
-                            cur = ' ';
-                            if (id_len == strlen(current_model) &&
-                                memcmp(p, current_model, id_len) == 0) cur = '*';
-                            fprintf(stderr, "    %c %.*s\n", cur, (int)id_len, p);
-                            n++; p = end + 1;
-                        }
-                        if (n == 0) {
-                            const char *ct = strstr(models, "\"content\":\"");
-                            if (ct) {
-                                const char *ce;
-                                ct += 11;
-                                ce = strchr(ct, '"');
-                                if (ce) fprintf(stderr, "    %.*s\n", (int)(ce - ct), ct);
+                    ccode_jsmntok_t tokens[2048];
+                    ccode_jsmntok_t *data;
+                    int num_tokens;
+                    int n = 0;
+                    int i;
+                    num_tokens = ccode_json_parse(models, strlen(models),
+                                                  tokens, 2048);
+                    if (num_tokens > 0 &&
+                        tokens[0].type == CCODE_JSMN_OBJECT &&
+                        ccode_json_find_key(tokens, num_tokens, 0, models,
+                                            "error")) {
+                        fprintf(stderr, "  API error: %s\n", models);
+                    } else {
+                        fprintf(stderr, "  Available models:\n");
+                        data = (num_tokens > 0 &&
+                                tokens[0].type == CCODE_JSMN_OBJECT)
+                                   ? ccode_json_find_key(tokens, num_tokens, 0,
+                                                         models, "data")
+                                   : NULL;
+                        if (data && data->type == CCODE_JSMN_ARRAY) {
+                            for (i = 0; i < data->size; i++) {
+                                ccode_jsmntok_t *entry =
+                                    ccode_json_find_index(
+                                        tokens, num_tokens,
+                                        (int)(data - tokens), i);
+                                ccode_jsmntok_t *id_tok;
+                                char id_buf[256];
+                                char cur;
+                                if (!entry ||
+                                    entry->type != CCODE_JSMN_OBJECT) continue;
+                                id_tok = ccode_json_find_key(
+                                    tokens, num_tokens, (int)(entry - tokens),
+                                    models, "id");
+                                if (!id_tok ||
+                                    id_tok->type != CCODE_JSMN_STRING ||
+                                    ccode_json_token_to_string(
+                                        models, id_tok, id_buf,
+                                        sizeof(id_buf)) != 0) continue;
+                                cur = ' ';
+                                if (strcmp(id_buf, current_model) == 0)
+                                    cur = '*';
+                                fprintf(stderr, "    %c %s\n", cur, id_buf);
+                                n++;
                             }
-                            else fprintf(stderr, "    %s\n", models);
                         }
+                        if (n == 0)
+                            fprintf(stderr, "    %s\n", models);
                     }
                     free(models);
                 }
@@ -1137,20 +1154,43 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                     char *m = ccode_models_fetch(cfg->api_base, cfg->api_key);
                     if (!m) { fputs("  Could not fetch model list.\n", stderr); }
                     else {
-                        const char *p;
+                        ccode_jsmntok_t tokens[2048];
+                        ccode_jsmntok_t *data;
+                        int num_tokens;
                         int n = 0;
+                        int i;
                         fprintf(stderr, "  Models matching \"%s\":\n", kw);
-                        p = m;
-                        while ((p = strstr(p, "\"id\":\""))) {
-                            size_t l;
-                            const char *e;
-                            p += 6;
-                            e = strchr(p, '"');
-                            if (!e) break;
-                            l = (size_t)(e - p);
-                            if (memmem(p, l, kw, strlen(kw))) {
-                                n++; fprintf(stderr, "    %d. %.*s\n", n, (int)l, p);
-                            } p = e + 1;
+                        num_tokens = ccode_json_parse(m, strlen(m),
+                                                      tokens, 2048);
+                        data = (num_tokens > 0 &&
+                                tokens[0].type == CCODE_JSMN_OBJECT)
+                                   ? ccode_json_find_key(tokens, num_tokens, 0,
+                                                         m, "data")
+                                   : NULL;
+                        if (data && data->type == CCODE_JSMN_ARRAY) {
+                            for (i = 0; i < data->size; i++) {
+                                ccode_jsmntok_t *entry =
+                                    ccode_json_find_index(
+                                        tokens, num_tokens,
+                                        (int)(data - tokens), i);
+                                ccode_jsmntok_t *id_tok;
+                                char id_buf[256];
+                                if (!entry ||
+                                    entry->type != CCODE_JSMN_OBJECT) continue;
+                                id_tok = ccode_json_find_key(
+                                    tokens, num_tokens, (int)(entry - tokens),
+                                    m, "id");
+                                if (!id_tok ||
+                                    id_tok->type != CCODE_JSMN_STRING ||
+                                    ccode_json_token_to_string(
+                                        m, id_tok, id_buf,
+                                        sizeof(id_buf)) != 0) continue;
+                                if (strstr(id_buf, kw)) {
+                                    n++;
+                                    fprintf(stderr, "    %d. %s\n",
+                                            n, id_buf);
+                                }
+                            }
                         }
                         if (n == 0) fputs("    (no matches)\n", stderr);
                         free(m);
@@ -1165,34 +1205,53 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                     char *m = ccode_models_fetch(cfg->api_base, cfg->api_key);
                     if (!m) { fputs("  Could not fetch model list.\n", stderr); }
                     else {
+                        ccode_jsmntok_t tokens[2048];
+                        ccode_jsmntok_t *data;
+                        int num_tokens;
                         int found = 0;
-                        const char *p = m;
-                        while ((p = strstr(p, "\"id\":\""))) {
-                            size_t l;
-                            const char *e;
-                            p += 6;
-                            e = strchr(p, '"');
-                            if (!e) break;
-                            l = (size_t)(e - p);
-                            if (l == strlen(name) && memcmp(p, name, l) == 0) {
-                                const char *scope_s;
-                                const char *ow;
-                                ptrdiff_t scope_max;
-                                fprintf(stderr, "  Model: %.*s\n", (int)l, p);
-                                found = 1;
-                                scope_s = p > m + 20 ? p - 20 : m;
-                                scope_max = (m + strlen(m)) - scope_s;
-                                if (scope_max > 300) scope_max = 300;
-                                ow = strstr(scope_s, "\"owned_by\":\"");
-                                if (ow && (ow - scope_s) < scope_max) {
-                                    const char *oe;
-                                    ow += 12;
-                                    oe = strchr(ow, '"');
-                                    if (oe) fprintf(stderr, "  Provider: %.*s\n",
-                                        (int)(oe - ow > 100 ? 100 : oe - ow), ow);
+                        int i;
+                        num_tokens = ccode_json_parse(m, strlen(m),
+                                                      tokens, 2048);
+                        data = (num_tokens > 0 &&
+                                tokens[0].type == CCODE_JSMN_OBJECT)
+                                   ? ccode_json_find_key(tokens, num_tokens, 0,
+                                                         m, "data")
+                                   : NULL;
+                        if (data && data->type == CCODE_JSMN_ARRAY) {
+                            for (i = 0; i < data->size && !found; i++) {
+                                ccode_jsmntok_t *entry =
+                                    ccode_json_find_index(
+                                        tokens, num_tokens,
+                                        (int)(data - tokens), i);
+                                ccode_jsmntok_t *id_tok;
+                                char id_buf[256];
+                                if (!entry ||
+                                    entry->type != CCODE_JSMN_OBJECT) continue;
+                                id_tok = ccode_json_find_key(
+                                    tokens, num_tokens, (int)(entry - tokens),
+                                    m, "id");
+                                if (!id_tok ||
+                                    id_tok->type != CCODE_JSMN_STRING ||
+                                    ccode_json_token_to_string(
+                                        m, id_tok, id_buf,
+                                        sizeof(id_buf)) != 0) continue;
+                                if (strcmp(id_buf, name) == 0) {
+                                    ccode_jsmntok_t *ow_tok;
+                                    char ow_buf[128];
+                                    fprintf(stderr, "  Model: %s\n", id_buf);
+                                    found = 1;
+                                    ow_tok = ccode_json_find_key(
+                                        tokens, num_tokens,
+                                        (int)(entry - tokens), m, "owned_by");
+                                    if (ow_tok &&
+                                        ow_tok->type == CCODE_JSMN_STRING &&
+                                        ccode_json_token_to_string(
+                                            m, ow_tok, ow_buf,
+                                            sizeof(ow_buf)) == 0)
+                                        fprintf(stderr,
+                                                "  Provider: %s\n", ow_buf);
                                 }
-                                break;
-                            } p = e + 1;
+                            }
                         }
                         if (!found) fprintf(stderr, "  Model not found: %s\n", name);
                         free(m);
@@ -1600,7 +1659,8 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
         }
 
         if (history_count < CCODE_HISTORY_MAX) {
-            memcpy(history[history_count], line, len + 1);
+            memcpy(history + history_count * CCODE_INPUT_LINE_MAX,
+                   line, len + 1);
             history_count++;
         }
 
@@ -1694,6 +1754,7 @@ cleanup:
             fputs("Warning: could not save session.\n", stderr);
     }
     if (conv_initialized) ccode_conversation_destroy(&conv);
+    free(history);
     cleanup_residual_temp_files();
     reset_workspace_state();
     signal(SIGINT, SIG_DFL);

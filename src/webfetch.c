@@ -6,6 +6,7 @@
 #include "permissions/permissions.h"
 #include "platform/platform.h"
 #include "tls_backend.h"
+#include "json.h"
 
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -665,37 +666,6 @@ static void wf_strip_html(const char *html, char *out, size_t out_size) {
     out[o] = '\0';
 }
 
-/* ── JSON string escaping ── */
-
-static char *wf_json_escape(const char *s) {
-    size_t i, len = 0;
-    char *out, *p;
-    if (!s) return NULL;
-    for (i = 0; s[i]; i++) {
-        unsigned char c = (unsigned char)s[i];
-        len += (c == '"' || c == '\\' || c == '\n' || c == '\r' || c == '\t') ? 2 :
-               (c < 0x20) ? 6 : 1;
-    }
-    out = malloc(len + 1);
-    if (!out) return NULL;
-    p = out;
-    for (i = 0; s[i]; i++) {
-        unsigned char c = (unsigned char)s[i];
-        switch (c) {
-        case '"': *p++ = '\\'; *p++ = '"'; break;
-        case '\\': *p++ = '\\'; *p++ = '\\'; break;
-        case '\n': *p++ = '\\'; *p++ = 'n'; break;
-        case '\r': *p++ = '\\'; *p++ = 'r'; break;
-        case '\t': *p++ = '\\'; *p++ = 't'; break;
-        default:
-            if (c < 0x20) { p += snprintf(p, 7, "\\u%04x", c); }
-            else { *p++ = (char)c; }
-        }
-    }
-    *p = '\0';
-    return out;
-}
-
 /* ── Main fetch function ── */
 
 char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
@@ -797,7 +767,7 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             }
         }
         if (req_len <= 0 || (size_t)req_len >= sizeof(req_buf)) {
-            result = strdup("{\"error\":\"Request too large\"}");
+            result = ccode_strdup("{\"error\":\"Request too large\"}");
             goto done;
         }
 
@@ -826,7 +796,7 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             int redirect = 0;
 
             if (!header_end) {
-                result = strdup("{\"error\":\"Malformed HTTP response\"}");
+                result = ccode_strdup("{\"error\":\"Malformed HTTP response\"}");
                 goto done;
             }
 
@@ -834,7 +804,7 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             status_line = header_buf;
 
             if (sscanf(status_line, "%*s %d", &status) != 1) {
-                result = strdup("{\"error\":\"Could not parse HTTP status\"}");
+                result = ccode_strdup("{\"error\":\"Could not parse HTTP status\"}");
                 goto done;
             }
 
@@ -886,7 +856,7 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
                 size_t prefix_len = strlen(prefix);
                 memcpy(result, prefix, prefix_len);
                 pos = prefix_len;
-                esc = wf_json_escape(err_body);
+                esc = ccode_json_escape(err_body);
                 if (esc) {
                     size_t el = strlen(esc);
                     if (pos + el + 32 > 256 + err_len)
@@ -905,7 +875,7 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             size_t body_pos = 0;
 
             body_buf = malloc(body_cap);
-            if (!body_buf) { result = strdup("{\"error\":\"Out of memory\"}"); goto done; }
+            if (!body_buf) { result = ccode_strdup("{\"error\":\"Out of memory\"}"); goto done; }
 
             if (nread > 0) {
                 size_t to_copy = (size_t)nread < body_cap ? (size_t)nread : body_cap - 1;
@@ -969,25 +939,25 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             if (opts->raw_html) {
                 /* Keep the original HTML markup (used by web_search, which
                  * parses result blocks itself). */
-                escaped = wf_json_escape(body_buf ? body_buf : "");
+                escaped = ccode_json_escape(body_buf ? body_buf : "");
             } else {
                 /* Strip HTML tags. */
                 char *plain = malloc(body_len + 1);
                 if (plain) {
                     wf_strip_html(body_buf ? body_buf : "", plain, body_len + 1);
-                    escaped = wf_json_escape(plain);
+                    escaped = ccode_json_escape(plain);
                     free(plain);
                 }
             }
         } else if (strstr(content_type, "application/json") != NULL) {
             /* Return JSON as-is (already valid JSON fragment). */
-            escaped = wf_json_escape(body_buf ? body_buf : "");
+            escaped = ccode_json_escape(body_buf ? body_buf : "");
         } else {
             /* text/plain or anything else: return raw text. */
-            escaped = wf_json_escape(body_buf ? body_buf : "");
+            escaped = ccode_json_escape(body_buf ? body_buf : "");
         }
 
-        if (!escaped) { free(body_buf); return strdup("{\"error\":\"Out of memory\"}"); }
+        if (!escaped) { free(body_buf); return ccode_strdup("{\"error\":\"Out of memory\"}"); }
 
         /* Build result JSON. */
         {
