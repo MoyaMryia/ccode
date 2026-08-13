@@ -27,6 +27,7 @@ int tui_protocol_send_permission_response(struct tui_protocol *protocol, int all
 int tui_protocol_send_resize(struct tui_protocol *protocol, int cols, int rows);
 int tui_protocol_send_clear(struct tui_protocol *protocol);
 int tui_protocol_read_line(struct tui_protocol *protocol, char *line, size_t cap);
+int tui_protocol_exited(struct tui_protocol *protocol, int *exit_code);
 void tui_protocol_stop(struct tui_protocol *protocol);
 int tui_protocol_field(const char *line, const char *field, char *out, size_t cap);
 

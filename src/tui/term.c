@@ -22,13 +22,14 @@ void tui_term_size(struct tui_term *term) {
     }
 }
 
-int tui_term_init(struct tui_term *term) {
+int tui_term_init(struct tui_term *term, int keep_isig) {
     struct termios raw;
     if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) return -1;
     if (tcgetattr(STDIN_FILENO, &saved_termios) != 0) return -1;
 
     raw = saved_termios;
-    raw.c_lflag &= (tcflag_t) ~(ECHO | ICANON | ISIG);
+    raw.c_lflag &= (tcflag_t) ~(ECHO | ICANON);
+    if (!keep_isig) raw.c_lflag &= (tcflag_t) ~ISIG;
     raw.c_iflag &= (tcflag_t) ~(IXON | ICRNL);
     raw.c_cc[VMIN] = 0;
     raw.c_cc[VTIME] = 0;

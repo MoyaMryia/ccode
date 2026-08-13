@@ -216,6 +216,29 @@ int tui_protocol_field(const char *line, const char *field, char *out, size_t ca
     return 0;
 }
 
+int tui_protocol_exited(struct tui_protocol *protocol, int *exit_code) {
+    int status;
+    pid_t waited;
+    if (!protocol || protocol->pid <= 0) return -1;
+    waited = waitpid((pid_t)protocol->pid, &status, WNOHANG);
+    if (waited == 0) return 0;
+    if (waited < 0) {
+        if (errno == EINTR) return 0;
+        if (errno == ECHILD) {
+            protocol->pid = -1;
+            return 1;
+        }
+        return -1;
+    }
+    protocol->pid = -1;
+    if (exit_code) {
+        if (WIFEXITED(status)) *exit_code = WEXITSTATUS(status);
+        else if (WIFSIGNALED(status)) *exit_code = 128 + WTERMSIG(status);
+        else *exit_code = -1;
+    }
+    return 1;
+}
+
 void tui_protocol_stop(struct tui_protocol *protocol) {
     int status;
     int attempts;
