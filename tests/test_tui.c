@@ -1,6 +1,7 @@
 #include "../src/tui/input.h"
 #include "../src/tui/messages.h"
 #include "../src/tui/protocol.h"
+#include "../src/json.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -322,6 +323,39 @@ static int test_protocol_hello_can_disable_thinking(void) {
     return 1;
 }
 
+static int test_protocol_event_escape_round_trip(void) {
+    struct tui_protocol protocol;
+    int pipefd[2];
+    char line[2048];
+    char decoded[512];
+    const char *start, *end;
+    ssize_t length;
+    const char *payload = "he said \"hi\" \\ ok\n\ttab\x01"
+                          "\xe4\xb8\xad\xe6\x96\x87";
+
+    ASSERT(pipe(pipefd) == 0);
+    memset(&protocol, 0, sizeof(protocol));
+    protocol.input_fd = pipefd[1];
+    ASSERT(tui_protocol_send_input(&protocol, payload) == 0);
+    close(pipefd[1]);
+    length = read(pipefd[0], line, sizeof(line) - 1);
+    ASSERT(length > 0);
+    line[length] = '\0';
+    start = strstr(line, "\"text\":\"");
+    ASSERT(start != NULL);
+    start += strlen("\"text\":\"");
+    end = start;
+    while (*end && *end != '"') {
+        if (*end == '\\' && end[1]) end += 2;
+        else end++;
+    }
+    ASSERT(*end == '"');
+    ASSERT(ccode_json_unescape(start, end, decoded, sizeof(decoded)) == 0);
+    ASSERT(strcmp(decoded, payload) == 0);
+    close(pipefd[0]);
+    return 1;
+}
+
 int main(void) {
     TEST(input_editing_controls);
     TEST(input_horizontal_view);
@@ -334,6 +368,7 @@ int main(void) {
     TEST(assistant_markdown_scrolls_wrapped_line);
     TEST(user_message_scrolls_wrapped_line);
     TEST(protocol_recovers_after_oversized_line);
+    TEST(protocol_event_escape_round_trip);
     TEST(protocol_hello_includes_thinking_state);
     TEST(protocol_hello_can_disable_thinking);
     fprintf(stderr, "TUI tests: %d run, %d failed\n", tests_run, tests_failed);

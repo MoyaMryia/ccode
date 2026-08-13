@@ -1,5 +1,7 @@
 #include "protocol.h"
 
+#include "../json.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -21,52 +23,54 @@ static int write_all(int fd, const char *data, size_t length) {
     return 0;
 }
 
-static int json_escape(const char *text, char *out, size_t cap) {
-    unsigned char c;
-    size_t i, pos = 0;
-    if (!text || !out || cap == 0) return -1;
-    for (i = 0; text[i] != '\0'; i++) {
-        c = (unsigned char)text[i];
-        if (pos + 2 >= cap) return -1;
-        if (c == '"' || c == '\\') { out[pos++] = '\\'; out[pos++] = (char)c; }
-        else if (c == '\n') { out[pos++] = '\\'; out[pos++] = 'n'; }
-        else if (c == '\r') { out[pos++] = '\\'; out[pos++] = 'r'; }
-        else if (c == '\t') { out[pos++] = '\\'; out[pos++] = 't'; }
-        else if (c < 0x20) { out[pos++] = '?'; }
-        else out[pos++] = (char)c;
-    }
-    out[pos] = '\0';
-    return 0;
-}
-
+/* Emit one JSON Lines event. The payload is escaped with the shared
+ * ccode_json_escape; an over-long payload fails explicitly (fail-closed)
+ * instead of being truncated, keeping the reader's fixed line buffer safe. */
 static int send_string_event(struct tui_protocol *protocol, const char *type,
                              const char *text) {
-    char escaped[8192];
     char line[8300];
-    if (json_escape(text ? text : "", escaped, sizeof(escaped)) != 0) return -1;
-    snprintf(line, sizeof(line), "{\"type\":\"%s\",\"text\":\"%s\"}\n",
-             type, escaped);
-    return write_all(protocol->input_fd, line, strlen(line));
+    char *escaped;
+    size_t need;
+    int rc = -1;
+    escaped = ccode_json_escape(text ? text : "");
+    if (!escaped) return -1;
+    need = strlen(escaped);
+    if (need <= 8190) {
+        snprintf(line, sizeof(line), "{\"type\":\"%s\",\"text\":\"%s\"}\n",
+                 type, escaped);
+        rc = write_all(protocol->input_fd, line, strlen(line));
+    }
+    free(escaped);
+    return rc;
 }
 
 int tui_protocol_send_hello(struct tui_protocol *protocol, const char *model,
                             const char *workspace, int thinking_enabled,
                             const char *thinking_effort) {
     char line[6000];
-    char escaped_model[1024], escaped_workspace[4096], escaped_effort[64];
+    char *escaped_model;
+    char *escaped_workspace;
+    char *escaped_effort;
+    int rc = -1;
     if (!protocol) return -1;
-    if (json_escape(model ? model : "", escaped_model, sizeof(escaped_model)) != 0 ||
-        json_escape(workspace ? workspace : ".", escaped_workspace,
-                    sizeof(escaped_workspace)) != 0 ||
-        json_escape(thinking_effort ? thinking_effort : "medium", escaped_effort,
-                    sizeof(escaped_effort)) != 0)
-        return -1;
-    snprintf(line, sizeof(line),
-             "{\"type\":\"hello\",\"model\":\"%s\",\"workspace\":\"%s\","
-             "\"thinking\":%s,\"thinking_effort\":\"%s\"}\n",
-             escaped_model, escaped_workspace,
-             thinking_enabled ? "true" : "false", escaped_effort);
-    return write_all(protocol->input_fd, line, strlen(line));
+    escaped_model = ccode_json_escape(model ? model : "");
+    escaped_workspace = ccode_json_escape(workspace ? workspace : ".");
+    escaped_effort = ccode_json_escape(thinking_effort ? thinking_effort
+                                                       : "medium");
+    if (escaped_model && escaped_workspace && escaped_effort &&
+        strlen(escaped_model) <= 1022 && strlen(escaped_workspace) <= 4094 &&
+        strlen(escaped_effort) <= 62) {
+        snprintf(line, sizeof(line),
+                 "{\"type\":\"hello\",\"model\":\"%s\",\"workspace\":\"%s\","
+                 "\"thinking\":%s,\"thinking_effort\":\"%s\"}\n",
+                 escaped_model, escaped_workspace,
+                 thinking_enabled ? "true" : "false", escaped_effort);
+        rc = write_all(protocol->input_fd, line, strlen(line));
+    }
+    free(escaped_model);
+    free(escaped_workspace);
+    free(escaped_effort);
+    return rc;
 }
 
 int tui_protocol_start(struct tui_protocol *protocol, const char *path,
