@@ -116,7 +116,9 @@ struct prepared_tool {
     int use_regex;
     char old_string[4096];
     char new_string[4096];
-    char display[8256];
+    /* Approval display: worst case is a full value + a full content plus
+     * JSON quoting/separator overhead, hence 2 * 4096 + 64. */
+    char display[2 * 4096 + 64];
     char argv[CCODE_MAX_ARGS][256];
     size_t argc;
     int timeout_ms;

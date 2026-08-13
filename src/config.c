@@ -11,6 +11,11 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+/* Key file contents are read into this buffer once at startup; config->api_key
+ * keeps pointing into it for the whole process lifetime, so a function-scope
+ * static is safe here (and avoids exposing the key as a separate heap copy). */
+#define CCODE_API_KEY_FILE_BUF 4096
+
 void ccode_print_usage(const char *program) {
     fprintf(stderr,
         "Usage: %s [options] [-p PROMPT | --interactive]\n"
@@ -79,7 +84,7 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
             else if (key_fd >= 0)
                 close(key_fd);
             if (kf) {
-                static char file_buf[4096];
+                static char file_buf[CCODE_API_KEY_FILE_BUF];
                 size_t pos = 0;
                 int c;
                 int too_long = 0;

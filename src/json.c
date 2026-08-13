@@ -474,6 +474,7 @@ static ccode_jsmntok_t *navigate(ccode_jsmntok_t *tokens, int num_tokens,
     char copy[512];
     char *part;
     char *rest;
+    char *save;
     int current_idx = 0;
 
     if (num_tokens < 1) return NULL;
@@ -483,7 +484,7 @@ static ccode_jsmntok_t *navigate(ccode_jsmntok_t *tokens, int num_tokens,
     copy[sizeof(copy) - 1] = '\0';
     rest = copy;
 
-    while ((part = strtok(rest, ".")) != NULL) {
+    while ((part = strtok_r(rest, ".", &save)) != NULL) {
         rest = NULL;
         if (part[0] == '\0') return NULL;
 
