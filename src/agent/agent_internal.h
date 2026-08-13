@@ -56,6 +56,10 @@ struct ccode_task {
  * list, sub-agent recursion depth and summary dedup caches) lives here so a
  * sub-agent can derive its own copy instead of mutating the parent's state.
  * See AUDIT.md item 3. */
+
+/* Cancel bookkeeping supports up to this many simultaneously active child
+ * process groups (parallel sub-agents plus their command children). */
+#define CCODE_MAX_CANCEL_CHILDREN 16
 struct agent_context {
     char workspace_root[4096];
     size_t workspace_root_len;

@@ -184,6 +184,221 @@ static char *run_subagent(struct agent_context *ctx,
     return subagent_truncate(answer);
 }
 
+/* ── Parallel sub-agent dispatch ──
+ * Read-only sub-agents from the same turn are launched together (fork +
+ * pipe) and run concurrently in their own process. Read-write sub-agents are
+ * never parallelized against each other: without knowing their file targets
+ * the parent cannot guarantee non-overlapping writes, so they stay serial
+ * (see AGENTS.md "子代理规则"). */
+#define CCODE_MAX_PARALLEL_SUBAGENTS 8
+
+struct pending_subagent {
+    char *id;
+    char *task;
+    int read_only;
+    pid_t pid;
+    int pipe_fd;
+    int error;
+    int done;
+    char *buf;
+    size_t buf_len;
+    size_t buf_cap;
+};
+
+/* Collect the 4-byte big-endian length + payload written by a sub-agent
+ * child into a freshly allocated NUL-terminated string. Returns NULL on
+ * malformed or truncated output (the caller reports a structured error). */
+static char *pending_subagent_answer(struct pending_subagent *job) {
+    unsigned long len;
+    char *out;
+    if (job->error || job->buf_len < 4) return NULL;
+    len = ((unsigned long)(unsigned char)job->buf[0] << 24) |
+          ((unsigned long)(unsigned char)job->buf[1] << 16) |
+          ((unsigned long)(unsigned char)job->buf[2] << 8) |
+          ((unsigned long)(unsigned char)job->buf[3]);
+    if (len > SUBAGENT_RESULT_MAX + 64) return NULL;
+    if (job->buf_len != 4 + len) return NULL;
+    out = malloc(len + 1);
+    if (!out) return NULL;
+    memcpy(out, job->buf + 4, len);
+    out[len] = '\0';
+    return out;
+}
+
+/* Launch every job in parallel and append each result to the conversation in
+ * job order. Returns 0 on success, -1 on a fatal (OOM) error. */
+static int run_pending_subagents(struct agent_context *ctx,
+                                 const struct ccode_agent_config *cfg,
+                                 struct ccode_conversation *conv,
+                                 struct pending_subagent *jobs, size_t count) {
+    size_t i;
+    size_t launched = 0;
+
+    for (i = 0; i < count; i++) {
+        int fds[2];
+        pid_t pid;
+        if (pipe(fds) != 0) {
+            jobs[i].pipe_fd = -1;
+            jobs[i].error = 1;
+            continue;
+        }
+        pid = fork();
+        if (pid < 0) {
+            close(fds[0]);
+            close(fds[1]);
+            jobs[i].pipe_fd = -1;
+            jobs[i].error = 1;
+            continue;
+        }
+        if (pid == 0) {
+            /* Child: run the delegated agent loop in-process (isolated by
+             * fork + its own derived context), ship the answer back. */
+            uint32_t len;
+            char *answer;
+            size_t written = 0;
+            size_t j;
+            (void)setpgid(0, 0);
+            /* Close every pipe read end we inherited so the parent sees EOF
+             * exactly when each child finishes. */
+            close(fds[0]);
+            for (j = 0; j < count; j++) {
+                if (jobs[j].pipe_fd >= 0) close(jobs[j].pipe_fd);
+            }
+            answer = run_subagent(ctx, cfg, jobs[i].task, jobs[i].read_only);
+            if (!answer) answer = ccode_strdup("{\"error\":\"Sub-agent failed\"}");
+            len = (uint32_t)strlen(answer);
+            if (len > SUBAGENT_RESULT_MAX + 64) len = (uint32_t)(SUBAGENT_RESULT_MAX + 64);
+            {
+                unsigned char hdr[4];
+                hdr[0] = (unsigned char)(len >> 24);
+                hdr[1] = (unsigned char)(len >> 16);
+                hdr[2] = (unsigned char)(len >> 8);
+                hdr[3] = (unsigned char)len;
+                while (written < 4) {
+                    ssize_t n = write(fds[1], hdr + written, 4 - written);
+                    if (n <= 0) break;
+                    written += (size_t)n;
+                }
+                written = 0;
+                while (written < len) {
+                    ssize_t n = write(fds[1], answer + written, len - written);
+                    if (n <= 0) break;
+                    written += (size_t)n;
+                }
+            }
+            free(answer);
+            close(fds[1]);
+            _exit(0);
+        }
+        close(fds[1]);
+        jobs[i].pid = pid;
+        jobs[i].pipe_fd = fds[0];
+        jobs[i].error = 0;
+        jobs[i].done = 0;
+        jobs[i].buf = NULL;
+        jobs[i].buf_len = 0;
+        jobs[i].buf_cap = 0;
+        launched++;
+    }
+
+    if (launched > 0) {
+        for (i = 0; i < count; i++) {
+            if (jobs[i].pipe_fd >= 0) ccode_cancel_child_register(jobs[i].pid);
+        }
+
+        /* Drain every pipe concurrently so a child writing more than the
+         * pipe buffer cannot deadlock on a sibling's unread data. */
+        for (;;) {
+            struct pollfd pfds[CCODE_MAX_PARALLEL_SUBAGENTS];
+            int nfds = 0;
+            int k;
+            for (i = 0; i < count; i++) {
+                if (jobs[i].pipe_fd >= 0 && !jobs[i].done) {
+                    pfds[nfds].fd = jobs[i].pipe_fd;
+                    pfds[nfds].events = POLLIN;
+                    pfds[nfds].revents = 0;
+                    nfds++;
+                }
+            }
+            if (nfds == 0) break;
+            if (poll(pfds, (nfds_t)nfds, -1) < 0) {
+                if (errno == EINTR) continue;
+                break;
+            }
+            for (i = 0; i < count; i++) {
+                char tmp[4096];
+                ssize_t n;
+                if (jobs[i].pipe_fd < 0 || jobs[i].done) continue;
+                for (k = 0; k < nfds; k++) {
+                    if (pfds[k].fd == jobs[i].pipe_fd) break;
+                }
+                if (k >= nfds) continue;
+                if (!(pfds[k].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+                n = read(jobs[i].pipe_fd, tmp, sizeof(tmp));
+                if (n > 0) {
+                    if (jobs[i].buf_len + (size_t)n > jobs[i].buf_cap) {
+                        size_t new_cap = jobs[i].buf_cap
+                                         ? jobs[i].buf_cap * 2 : 4096;
+                        char *tmp2;
+                        if (new_cap < jobs[i].buf_len + (size_t)n)
+                            new_cap = jobs[i].buf_len + (size_t)n;
+                        if (new_cap > SUBAGENT_RESULT_MAX + 64 + 8) {
+                            jobs[i].done = 1;
+                            jobs[i].error = 1;
+                            continue;
+                        }
+                        tmp2 = realloc(jobs[i].buf, new_cap);
+                        if (!tmp2) {
+                            jobs[i].done = 1;
+                            jobs[i].error = 1;
+                            continue;
+                        }
+                        jobs[i].buf = tmp2;
+                        jobs[i].buf_cap = new_cap;
+                    }
+                    memcpy(jobs[i].buf + jobs[i].buf_len, tmp, (size_t)n);
+                    jobs[i].buf_len += (size_t)n;
+                }
+                if (n == 0) jobs[i].done = 1;
+                if (n < 0 && errno != EAGAIN && errno != EINTR) {
+                    jobs[i].done = 1;
+                    jobs[i].error = 1;
+                }
+            }
+        }
+        ccode_cancel_child_unregister();
+    }
+
+    /* Reap and append results in job order. */
+    for (i = 0; i < count; i++) {
+        char *result;
+        if (jobs[i].pipe_fd >= 0) {
+            close(jobs[i].pipe_fd);
+            jobs[i].pipe_fd = -1;
+            while (waitpid(jobs[i].pid, NULL, 0) < 0 && errno == EINTR) {}
+        }
+        result = pending_subagent_answer(&jobs[i]);
+        if (!result)
+            result = ccode_strdup(
+                "{\"error\":\"Sub-agent failed\"}");
+        if (!result) {
+            free(jobs[i].buf);
+            return -1;
+        }
+        if (ccode_conversation_add_tool_result(conv, jobs[i].id,
+                                               result) != 0) {
+            free(result);
+            free(jobs[i].buf);
+            return -1;
+        }
+        free(result);
+        free(jobs[i].buf);
+        jobs[i].buf = NULL;
+        jobs[i].buf_len = 0;
+    }
+    return 0;
+}
+
 static char *execute_prepared_tool(struct agent_context *ctx,
                                    const struct ccode_agent_config *cfg,
                                    const char *workspace,
@@ -482,6 +697,11 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                     cfg->on_content("\n", cfg->on_content_context);
                 if (!cfg->quiet) putchar('\n');
 
+                {
+                    struct pending_subagent pending[CCODE_MAX_PARALLEL_SUBAGENTS];
+                    size_t pending_count = 0;
+                    struct pending_subagent serial_subagents[CCODE_MAX_PARALLEL_SUBAGENTS];
+                    size_t serial_count = 0;
                 for (i = 0; i < acc.tool_call_count; i++) {
                     char *tool_result;
                     struct prepared_tool prepared;
@@ -647,8 +867,46 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                     ccode_fprint_safe(stderr, prepared.display, "");
                     fputs(")...\n", stderr);
 
-                    tool_result = execute_prepared_tool(ctx, cfg, cfg->workspace,
-                                                        &prepared);
+                    if (prepared.kind == PREPARED_AGENT_TOOL) {
+                        /* Defer sub-agent execution: read-only delegates run
+                         * in parallel after this loop, read-write delegates
+                         * stay serial (their write targets are unknown, so
+                         * parallel launches could race on the same file). */
+                        struct pending_subagent *slot = NULL;
+                        if (prepared.read_only_subagent &&
+                            pending_count < CCODE_MAX_PARALLEL_SUBAGENTS)
+                            slot = &pending[pending_count];
+                        else if (!prepared.read_only_subagent &&
+                                 serial_count < CCODE_MAX_PARALLEL_SUBAGENTS)
+                            slot = &serial_subagents[serial_count];
+                        if (slot) {
+                            memset(slot, 0, sizeof(*slot));
+                            slot->id = ccode_strdup(acc.tool_calls[i].id);
+                            slot->task = ccode_strdup(prepared.value);
+                            slot->read_only = prepared.read_only_subagent;
+                            slot->pipe_fd = -1;
+                            if (slot->id && slot->task) {
+                                if (prepared.read_only_subagent)
+                                    pending_count++;
+                                else
+                                    serial_count++;
+                                continue;
+                            }
+                            free(slot->id);
+                            free(slot->task);
+                            slot->id = NULL;
+                            slot->task = NULL;
+                        }
+                        /* Fall back to an in-process serial run on OOM /
+                         * capacity overflow. */
+                        tool_result = execute_prepared_tool(ctx, cfg,
+                                                            cfg->workspace,
+                                                            &prepared);
+                    } else {
+                        tool_result = execute_prepared_tool(ctx, cfg,
+                                                            cfg->workspace,
+                                                            &prepared);
+                    }
                     if (tool_result) {
                         if (ccode_conversation_add_tool_result(conv,
                                 acc.tool_calls[i].id, tool_result) != 0) {
@@ -673,6 +931,59 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                             break;
                         }
                     }
+                }
+                if (result < 0) {
+                    for (i = 0; i < pending_count; i++) {
+                        free(pending[i].id);
+                        free(pending[i].task);
+                    }
+                    for (i = 0; i < serial_count; i++) {
+                        free(serial_subagents[i].id);
+                        free(serial_subagents[i].task);
+                    }
+                    break;
+                }
+
+                /* Run the deferred read-only sub-agents concurrently, then
+                 * the read-write delegates serially. */
+                if (pending_count > 0) {
+                    if (run_pending_subagents(ctx, cfg, conv,
+                                              pending, pending_count) != 0) {
+                        ccode_sse_accumulator_destroy(&acc);
+                        fprintf(stderr, "Out of memory.\n");
+                        result = -1;
+                    }
+                    for (i = 0; i < pending_count; i++) {
+                        free(pending[i].id);
+                        free(pending[i].task);
+                    }
+                    if (result < 0) break;
+                }
+                for (i = 0; i < serial_count; i++) {
+                    char *sub_result = run_subagent(
+                        ctx, cfg, serial_subagents[i].task,
+                        serial_subagents[i].read_only);
+                    if (!sub_result) sub_result =
+                        ccode_strdup("{\"error\":\"Sub-agent failed\"}");
+                    if (sub_result) {
+                        if (ccode_conversation_add_tool_result(
+                                conv, serial_subagents[i].id,
+                                sub_result) != 0) {
+                            free(sub_result);
+                            ccode_sse_accumulator_destroy(&acc);
+                            fprintf(stderr, "Out of memory.\n");
+                            result = -1;
+                        }
+                        free(sub_result);
+                    } else {
+                        ccode_sse_accumulator_destroy(&acc);
+                        fprintf(stderr, "Out of memory.\n");
+                        result = -1;
+                    }
+                    free(serial_subagents[i].id);
+                    free(serial_subagents[i].task);
+                    if (result < 0) break;
+                }
                 }
                 if (result < 0) break;
             }
@@ -1849,6 +2160,31 @@ void test_change_log_add_denied_entry(const char *tool_name) {
 void test_set_respect_gitignore(int v) {
     agent_ctx.respect_gitignore = v;
     agent_ctx.respect_gitignore_loaded = 1;
+}
+/* Exercise the parallel sub-agent dispatch (fork + pipe + gather) with the
+ * given jobs. The sub-agents themselves run against cfg (the unit-test build
+ * has no network, so they fail fast with a structured error). */
+int test_run_pending_subagents(struct ccode_agent_config *cfg,
+                               struct ccode_conversation *conv,
+                               const char *ids[], const char *tasks[],
+                               const int read_only[], size_t count) {
+    struct pending_subagent jobs[CCODE_MAX_PARALLEL_SUBAGENTS];
+    size_t i;
+    int rc;
+    if (count > CCODE_MAX_PARALLEL_SUBAGENTS) count = CCODE_MAX_PARALLEL_SUBAGENTS;
+    for (i = 0; i < count; i++) {
+        memset(&jobs[i], 0, sizeof(jobs[i]));
+        jobs[i].id = ccode_strdup(ids[i]);
+        jobs[i].task = ccode_strdup(tasks[i]);
+        jobs[i].read_only = read_only[i];
+        jobs[i].pipe_fd = -1;
+    }
+    rc = run_pending_subagents(&agent_ctx, cfg, conv, jobs, count);
+    for (i = 0; i < count; i++) {
+        free(jobs[i].id);
+        free(jobs[i].task);
+    }
+    return rc;
 }
 int test_conversation_has_tool_result(const struct ccode_conversation *conv,
                                       const char *tool_call_id) {

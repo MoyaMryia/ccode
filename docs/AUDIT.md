@@ -10,16 +10,15 @@
 
 **当前是纯单线程、单进程**，没有任何 `pthread`/线程。
 
-`fork()` 只有四处，全是"起子进程、父进程等结果"的串行模式，不是并行：
+连 subagent 的派发方式已经升级：**同一轮的只读子代理并行**（fork + 管道，见下"改进方向"第 4 项），但仍然是"父进程起子进程、父进程等结果"的模型，不是线程并行。`fork()` 的主要位置仍是：
 
 | 位置 | 用途 |
 |------|------|
 | `src/http.c:218` | DNS 解析加超时，fork 子进程跑 `getaddrinfo` |
 | `src/agent/agent_exec.c:126/197` | 执行命令，fork 出 shell / 命令子进程 |
 | `src/webfetch.c:208` | 网页抓取 |
+| `src/agent/agent.c` `run_pending_subagents` | 并行子代理：每轮最多 8 个只读子代理各 fork 一进程跑完整 agent loop，结果走管道回传 |
 | `src/tui/protocol.c:101` | 分离式 TUI 拉起 `ccode-cli` 后端 |
-
-连 subagent 都是**递归在当前进程里跑**（`run_subagent` 直接调 `ccode_agent_process_turn_loop`），不是并行派发。
 
 含义：
 
@@ -89,7 +88,7 @@
 1. ✅ **收敛 JSON 工具层**：`print_session_list()`、`/models*`、`models.c`、`scan_tool_result()` 已全换成 jsmn 封装，`extract_json_string_field()` 空 field 用法已消除。
 2. ✅ **合并重复实现**：`strdup` / JSON 转义 / JSON 反转义 / UTF-8 校验各保留一份（`src/json.h`），其它调用点已改为引用。
 3. ✅ **状态收进 context**：`workspace_root`、`change_log`、`task_list`、`last_*_summary`、`subagent_depth` 已收进 `struct agent_context`，`run_subagent` 的 save/restore 改为基于 context 的派生（子代理自带拷贝，天然隔离）。
-4. **并行 subagent**（路线图 P2）：走多进程 + 管道，父代理预分配不重叠的文件范围，避免冲突。
+4. ✅ **并行 subagent**（路线图 P2）：只读子代理走多进程 + 管道（`run_pending_subagents`），同一轮最多 8 个并行，父进程 poll 同时排空所有管道防死锁；子代理各设独立进程组，取消处理器可同时终止（`agent_cancel.c` 改为多子进程注册）。**读写子代理保持串行**：写目标未知，父代理无法预分配不重叠文件范围，按 AGENTS.md"可能写同一文件的降级为串行"处理。回归覆盖：单元测试 `test_parallel_subagents_dispatch`（fork/管道/顺序/结构化错误）+ e2e `parallel-subagents`（mock 观测到两个子代理请求重叠、双方答案按序回传）。
 5. ✅ 顺手修小问题：`scan_tool_result` 的 `ec+10`、`parse_chunk_size` 的 `digits`、`history` 改堆分配、清理死代码 `ccode_build_chat_request`。剩余：`navigate()` 的 `strtok`、`conversation_compact` 缩进、`config.c` 的 setenv 传参、`display[8256]` 魔法数。
 
 改动时遵守 `AGENTS.md` 的最小改动原则：每一类收敛单独一个变更，配回归测试，别和功能改动混在一起。

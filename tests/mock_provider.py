@@ -8,8 +8,13 @@ import os
 import socket
 import struct
 import time
+import threading
 
 RESPONSES = {}
+
+# Timestamps of in-flight sub-agent requests (parallel-subagents fixture).
+_SUBAGENT_REQ_TIMES = []
+_SUBAGENT_REQ_LOCK = threading.Lock()
 
 def load_responses(fixtures_dir):
     for fname in os.listdir(fixtures_dir):
@@ -88,7 +93,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                 if msg.get("role") == "user" and isinstance(msg.get("content"), str):
                     prefix = "__ccode_test_"
                     if msg["content"].startswith(prefix):
-                        test_mode = msg["content"][len(prefix):]
+                        test_mode = msg["content"][len(prefix):].split(" ")[0]
                     break
         test_chunked = self.headers.get("X-Test-Chunked", "").lower() == "true"
         test_chunk_size = int(self.headers.get("X-Test-Chunk-Size", "1"))
@@ -485,6 +490,68 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                     "choices": [{"index": 0, "delta": {"content": "Fix complete."}, "finish_reason": "stop"}]
                 })}]
 
+        elif test_mode == "parallel-subagents-fixture":
+            msgs = req.get("messages", [])
+            tool_count = sum(1 for m in msgs if m.get("role") == "tool")
+            prompt = ""
+            for m in msgs:
+                if m.get("role") == "user" and isinstance(m.get("content"), str):
+                    prompt = m.get("content", "")
+                    break
+            if " sub-a-delegate" in prompt or " sub-b-delegate" in prompt:
+                # A sub-agent's own request: answer after a delay so the
+                # parent can prove the two delegates ran concurrently.
+                now = time.time()
+                with _SUBAGENT_REQ_LOCK:
+                    overlapping = any(now - t < 1.0
+                                      for t in _SUBAGENT_REQ_TIMES)
+                    _SUBAGENT_REQ_TIMES.append(now)
+                events = [{"data": json.dumps({
+                    "choices": [{"index": 0,
+                                 "delta": {"content": "answer:{};overlap:{}".format(
+                                     prompt, "yes" if overlapping else "no")},
+                                 "finish_reason": None}]
+                })}, {"data": json.dumps({
+                    "choices": [{"index": 0, "delta": {},
+                                 "finish_reason": "stop"}]
+                })}]
+                time.sleep(1.0)
+            elif tool_count == 0:
+                # Parent turn 1: emit two read-only agent_tool calls.
+                events = [{"data": json.dumps({
+                    "choices": [{"index": 0,
+                                 "delta": {"content": "Delegating in parallel..."},
+                                 "finish_reason": None}]
+                })}, {"data": json.dumps({
+                    "choices": [{"index": 0,
+                                 "delta": {"tool_calls": [
+                                     {"index": 0, "id": "call_sub1",
+                                      "type": "function",
+                                      "function": {"name": "agent_tool",
+                                                   "arguments": '{"task":"__ccode_test_parallel-subagents-fixture sub-a-delegate"}'}},
+                                     {"index": 1, "id": "call_sub2",
+                                      "type": "function",
+                                      "function": {"name": "agent_tool",
+                                                   "arguments": '{"task":"__ccode_test_parallel-subagents-fixture sub-b-delegate"}'}}
+                                 ]},
+                                 "finish_reason": None}]
+                })}, {"data": json.dumps({
+                    "choices": [{"index": 0, "delta": {},
+                                 "finish_reason": "tool_calls"}]
+                })}]
+            else:
+                # Parent turn 2: echo what the delegates returned.
+                parts = []
+                for m in msgs:
+                    if m.get("role") == "tool":
+                        parts.append(str(m.get("content", "")))
+                content = "Parallel results: " + " | ".join(parts)
+                events = [{"data": json.dumps({
+                    "choices": [{"index": 0,
+                                 "delta": {"content": content},
+                                 "finish_reason": "stop"}]
+                })}]
+
         elif test_mode == "incomplete":
             events = [
                 {"data": json.dumps({
@@ -625,7 +692,7 @@ def main():
     fixtures_dir = os.path.join(os.path.dirname(__file__), "fixtures")
     if os.path.isdir(fixtures_dir):
         load_responses(fixtures_dir)
-    server = http.server.HTTPServer(("127.0.0.1", port), MockHandler)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), MockHandler)
     print("Mock provider listening on port {}".format(port), file=sys.stderr)
     server.serve_forever()
 

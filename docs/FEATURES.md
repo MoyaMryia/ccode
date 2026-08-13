@@ -58,7 +58,7 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 | 功能 | 优先级 | 状态 | 说明 |
 |------|--------|------|------|
 | 平台真机验证 | P1 | 代码已就位 | Linux 之外各平台的代码写好了，但还没在真机上跑构建/测试矩阵 |
-| 子代理并行化 | P2 | 串行已实现 | 并行需要父代理给子代理预分工作区、避免文件冲突 |
+| 子代理并行化 | P2 | 已实现 | 同一轮的只读子代理并行启动（fork+管道），读写子代理保持串行（写目标未知，避免文件冲突）；每轮最多 8 个并行 |
 | MCP 集成 | P2 | 未开始 | 扩展工具 |
 | 技能系统 | P2 | 未开始 | 最佳实践封装 |
 | 命令级安全收紧 | — | 部分完成 | 当前策略是"先能用，再安全"，命令过滤已落地，后续再补更严的隔离 |
@@ -69,5 +69,5 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（135 agent + 42 json + 28 http + 13 tui + 21 markdown + 5 tty + 5 e2e + 2 streaming）
+3. 现有测试套件全过（136 agent + 42 json + 28 http + 13 tui + 21 markdown + 5 tty + 5 e2e + 2 streaming）
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟
