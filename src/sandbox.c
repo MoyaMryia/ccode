@@ -50,8 +50,8 @@ static const char *const soft_sensitive_patterns[] = {
     "/root/", "/home/", "/.config/",
 };
 
-/* Detect "rm -rf /", "rm -fr /", "rm -r /*" etc. without hitting innocent
- * paths like "rm -rf /tmp/build". */
+/* Detect "rm -rf /", "rm -fr /", and "rm -r /" followed by "*", etc. without
+ * hitting innocent paths like "rm -rf /tmp/build". */
 static int is_word_char(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
            (c >= '0' && c <= '9') || c == '_';

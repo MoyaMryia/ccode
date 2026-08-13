@@ -28,6 +28,7 @@
 #include "../src/webfetch.h"
 #include "../src/websearch.h"
 #include "../src/models.h"
+#include "../src/sandbox.h"
 
 /* Test-only exports declared in agent.c. */
 char *test_exec_read_file(const char *workspace, const char *file_path);
@@ -48,6 +49,8 @@ char *test_exec_tool(const char *workspace, const char *name,
 int test_decode_string(const char *json, char *dest, size_t dest_size);
 int test_prepare_tool_display(const char *name, const char *arguments,
                               char *dest, size_t dest_size);
+int test_conversation_has_tool_result(const struct ccode_conversation *conv,
+                                      const char *tool_call_id);
 
 #define CCODE_FI_OPENAT      1
 #define CCODE_FI_WRITE       2
@@ -2923,7 +2926,7 @@ static int test_build_request_no_thinking(void) {
     ASSERT(ccode_conversation_init(&conv, 4) == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hello") == 0);
     req = ccode_conversation_build_request(&conv, "test-model", NULL,
-                                           0, NULL, NULL);
+                                           0, NULL);
     ASSERT(req != NULL);
     ASSERT(strstr(req, "\"model\":\"test-model\"") != NULL);
     ASSERT(strstr(req, "\"stream\":true") != NULL);
@@ -2939,7 +2942,7 @@ static int test_build_request_thinking_medium(void) {
     ASSERT(ccode_conversation_init(&conv, 4) == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hello") == 0);
     req = ccode_conversation_build_request(&conv, "test-model", NULL,
-                                           1, "medium", NULL);
+                                           1, "medium");
     ASSERT(req != NULL);
     ASSERT(strstr(req, "\"reasoning_effort\":\"medium\"") != NULL);
     ASSERT(strstr(req, "\"stream\":true") != NULL);
@@ -2954,7 +2957,7 @@ static int test_build_request_thinking_high(void) {
     ASSERT(ccode_conversation_init(&conv, 4) == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hello") == 0);
     req = ccode_conversation_build_request(&conv, "test-model", NULL,
-                                           1, "high", NULL);
+                                           1, "high");
     ASSERT(req != NULL);
     ASSERT(strstr(req, "\"reasoning_effort\":\"high\"") != NULL);
     free(req);
@@ -2968,7 +2971,7 @@ static int test_build_request_thinking_default_effort(void) {
     ASSERT(ccode_conversation_init(&conv, 4) == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hi") == 0);
     /* Thinking without an effort level sends the switch only. */
-    req = ccode_conversation_build_request(&conv, "m", NULL, 1, NULL, NULL);
+    req = ccode_conversation_build_request(&conv, "m", NULL, 1, NULL);
     ASSERT(req != NULL);
     ASSERT(strstr(req, "\"thinking\":{\"type\":\"enabled\"}") != NULL);
     ASSERT(strstr(req, "reasoning_effort") == NULL);
@@ -2983,25 +2986,25 @@ static int test_build_request_thinking_switch(void) {
     ASSERT(ccode_conversation_init(&conv, 4) == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hi") == 0);
     /* Off, no effort: no thinking fields at all. */
-    req = ccode_conversation_build_request(&conv, "m", NULL, 0, NULL, NULL);
+    req = ccode_conversation_build_request(&conv, "m", NULL, 0, NULL);
     ASSERT(req != NULL);
     ASSERT(strstr(req, "\"thinking\"") == NULL);
     ASSERT(strstr(req, "reasoning_effort") == NULL);
     free(req);
     /* Thinking only: enabled switch, no effort. */
-    req = ccode_conversation_build_request(&conv, "m", NULL, 1, NULL, NULL);
+    req = ccode_conversation_build_request(&conv, "m", NULL, 1, NULL);
     ASSERT(req != NULL);
     ASSERT(strstr(req, "\"thinking\":{\"type\":\"enabled\"}") != NULL);
     ASSERT(strstr(req, "reasoning_effort") == NULL);
     free(req);
     /* Effort only (always-reasoning providers): effort field, no switch. */
-    req = ccode_conversation_build_request(&conv, "m", NULL, 0, "high", NULL);
+    req = ccode_conversation_build_request(&conv, "m", NULL, 0, "high");
     ASSERT(req != NULL);
     ASSERT(strstr(req, "\"thinking\"") == NULL);
     ASSERT(strstr(req, "\"reasoning_effort\":\"high\"") != NULL);
     free(req);
     /* Both: enabled switch plus effort. */
-    req = ccode_conversation_build_request(&conv, "m", NULL, 1, "high", NULL);
+    req = ccode_conversation_build_request(&conv, "m", NULL, 1, "high");
     ASSERT(req != NULL);
     ASSERT(strstr(req, "\"thinking\":{\"type\":\"enabled\"}") != NULL);
     ASSERT(strstr(req, "\"reasoning_effort\":\"high\"") != NULL);
@@ -3053,13 +3056,13 @@ static int test_request_prefix_stable_across_turns(void) {
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "user one") == 0);
     req1 = ccode_conversation_build_request(&conv, "test-model",
                                             "\"tools\":[{\"x\":1}]", 0,
-                                            NULL, NULL);
+                                            NULL);
     ASSERT(req1 != NULL);
 
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "user two") == 0);
     req2 = ccode_conversation_build_request(&conv, "test-model",
                                             "\"tools\":[{\"x\":1}]", 0,
-                                            NULL, NULL);
+                                            NULL);
     ASSERT(req2 != NULL);
 
     prefix_end = find_messages_prefix_end(req1);
@@ -3082,7 +3085,7 @@ static int test_request_prefix_stable_across_turns(void) {
                                   "next: user\\\"quoted") == 0);
     req3 = ccode_conversation_build_request(&conv, "test-model",
                                             "\"tools\":[{\"x\":1}]", 1,
-                                            "medium", NULL);
+                                            "medium");
     ASSERT(req3 != NULL);
     {
         struct ccode_conversation conv2;
@@ -3103,7 +3106,7 @@ static int test_request_prefix_stable_across_turns(void) {
             "{\"exit_code\":0,\"stdout\":\"line\\n\\u00e9\\u4e2d \\\\\\\"\"}") == 0);
         req_base = ccode_conversation_build_request(&conv2, "test-model",
                                                     "\"tools\":[{\"x\":1}]", 1,
-                                                    "medium", NULL);
+                                                    "medium");
         ASSERT(req_base != NULL);
         base_end = find_messages_prefix_end(req_base);
         ASSERT(base_end > 0);
@@ -3125,6 +3128,7 @@ static int test_session_prune_keep_count(void) {
     int have_old = saved != NULL;
     struct ccode_conversation conv;
     struct ccode_session_metadata meta;
+    struct timespec ts;
     int i;
     int ok = 0;
 
@@ -3145,7 +3149,9 @@ static int test_session_prune_keep_count(void) {
         char path[600];
         snprintf(path, sizeof(path), "%s/s%02d.json", dir, i);
         ASSERT(ccode_conversation_save(&conv, path, NULL, NULL, &meta) == 0);
-        usleep(20000);
+        ts.tv_sec = 0;
+        ts.tv_nsec = 20000000;
+        nanosleep(&ts, NULL);
     }
     ccode_conversation_destroy(&conv);
 
@@ -3170,7 +3176,7 @@ out:
     {
         char cmd[700];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
-        (void)system(cmd);
+        if (system(cmd) != 0) {}
     }
     return ok;
 }

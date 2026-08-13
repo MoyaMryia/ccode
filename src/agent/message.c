@@ -251,9 +251,8 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
                                        const char *model,
                                        const char *tools_json,
                                        int thinking_enabled,
-                                       const char *thinking_effort,
-                                       const char *api_base) {
-                                           char * escaped;
+                                       const char *thinking_effort) {
+    char *escaped;
     size_t cap = estimate_request_size(conv, model);
     size_t pos = 0;
     char *buf = malloc(cap);
