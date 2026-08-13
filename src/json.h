@@ -15,6 +15,11 @@
 
 char *ccode_strdup(const char *s);
 
+/* Append a verbatim NUL-terminated string to a growable buffer (tracked by
+ * *pos / *cap, kept NUL-terminated). Returns 0 on success, -1 on allocation
+ * failure. Canonical dynamic-append helper; do not re-derive private copies. */
+int ccode_append_cstr(char **buf, size_t *pos, size_t *cap, const char *s);
+
 /* JSON-escape a NUL-terminated string into a newly allocated buffer
  * (caller frees). Returns NULL on allocation failure or NULL input. */
 char *ccode_json_escape(const char *input);

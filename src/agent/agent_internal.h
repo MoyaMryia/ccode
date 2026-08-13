@@ -160,8 +160,6 @@ char *exec_write_file(struct agent_context *ctx, const char *workspace,
 char *exec_edit_file(struct agent_context *ctx, const char *workspace,
                            const char *file_path, const char *old_string,
                            const char *new_string);
-int append_cstr_with(char **buf, size_t *pos, size_t *cap,
-                            const char *s);
 int append_json_string_n(char **buf, size_t *pos, size_t *cap,
                                 const char *s, size_t n);
 int is_binary_content(const unsigned char *buf, size_t len);
