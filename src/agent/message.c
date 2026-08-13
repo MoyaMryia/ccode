@@ -364,13 +364,16 @@ static void scan_tool_result(const char *body,
 void ccode_conversation_compact(struct ccode_conversation *conv,
                                  const char *change_log_json,
                                  const char *task_list_json) {
-                                     size_t tool_call_count;
+    size_t tool_call_count;
     size_t command_count;
     size_t truncated_count;
     size_t error_count;
     size_t denied_count;
     size_t summary_len;
     char * summary;
+    /* Drop everything between the first two messages and the last eight:
+     * the system/instruction head and the running tail are preserved, the
+     * middle is replaced by a compacted summary message. */
     size_t keep_first = 2;
     size_t keep_last = 8;
     size_t i, j, write_idx;

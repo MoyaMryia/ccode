@@ -659,6 +659,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
             }
         }
 
+        /* Compact once the conversation is 4/5 full so the request stays
+         * under the provider-side message budget. */
         if (conv->count > CCODE_MAX_MESSAGES * 4 / 5) {
             const char *ch = NULL;
             const char *tk = NULL;
