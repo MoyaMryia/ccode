@@ -74,6 +74,7 @@ make retro-test                                      # QEMU 里构建冒烟（�
 - [功能现状与路线图](docs/FEATURES.md) — 已经做了什么、接下来做什么
 - [开发原则](docs/AGENTS.md) — 给改代码的人看的契约
 - [BasicLinux 3.5.1 适配](docs/BASICLINUX.md) — 老系统移植的记录和踩坑
+- [代码审计与技术债](docs/AUDIT.md) — 可维护性结论、并发现状、技术债清单和收敛方向
 
 ## 许可证
 

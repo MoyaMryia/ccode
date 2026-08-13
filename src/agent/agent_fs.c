@@ -89,17 +89,6 @@ static int verify_file_identity_at(int parent_fd, const char *leaf,
     return 0;
 }
 
-char *ccode_strdup(const char *s) {
-    size_t len;
-    char *copy;
-    if (!s) return NULL;
-    len = strlen(s);
-    copy = malloc(len + 1);
-    if (copy) memcpy(copy, s, len + 1);
-    return copy;
-}
-
-
 static int workspace_root_initialized = 0;
 char workspace_root[4096];
 static size_t workspace_root_len = 0;

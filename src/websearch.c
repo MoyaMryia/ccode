@@ -1,5 +1,6 @@
 #include "websearch.h"
 #include "webfetch.h"
+#include "json.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,12 +10,6 @@
 #define WS_MAX_FIELD   4096
 #define WS_QUERY_MAX   512
 #define WS_BODY_MAX    (1024 * 512)
-
-static char *strdup_wrapper(const char *s) {
-    char *copy = malloc(strlen(s) + 1);
-    if (copy) strcpy(copy, s);
-    return copy;
-}
 
 static size_t ws_url_encode(const char *in, char *out, size_t out_size) {
     static const char hex[] = "0123456789ABCDEF";
@@ -116,29 +111,13 @@ static int ws_append_cstr(char *out, size_t out_size, size_t *pos,
 
 static void ws_append_json_string(char *out, size_t out_size, size_t *pos,
                                   const char *s) {
-    size_t i;
-    ws_append(out, out_size, pos, "\"", 1);
-    for (i = 0; s[i] && *pos + 2 < out_size; i++) {
-        unsigned char c = (unsigned char)s[i];
-        switch (c) {
-        case '"':  ws_append(out, out_size, pos, "\\\"", 2); break;
-        case '\\': ws_append(out, out_size, pos, "\\\\", 2); break;
-        case '\n': ws_append(out, out_size, pos, "\\n", 2); break;
-        case '\r': ws_append(out, out_size, pos, "\\r", 2); break;
-        case '\t': ws_append(out, out_size, pos, "\\t", 2); break;
-        default:
-            if (c < 0x20) {
-                char buf[8];
-                int n = snprintf(buf, sizeof(buf), "\\u%04x", c);
-                if (n > 0 && (size_t)n < sizeof(buf))
-                    ws_append(out, out_size, pos, buf, (size_t)n);
-            } else {
-                ws_append(out, out_size, pos, (const char *)&c, 1);
-            }
-            break;
-        }
+    char *escaped = ccode_json_escape(s ? s : "");
+    if (escaped) {
+        ws_append(out, out_size, pos, "\"", 1);
+        ws_append(out, out_size, pos, escaped, strlen(escaped));
+        free(escaped);
+        ws_append(out, out_size, pos, "\"", 1);
     }
-    ws_append(out, out_size, pos, "\"", 1);
 }
 
 /* Scan for the next b_algo result block and parse one result. Advances the
@@ -269,7 +248,7 @@ char *ccode_web_search(const char *query) {
     char *out = NULL;
 
     if (!query || query[0] == '\0' || strlen(query) > WS_QUERY_MAX)
-        return strdup_wrapper("{\"error\":\"Invalid search query\"}");
+        return ccode_strdup("{\"error\":\"Invalid search query\"}");
 
     ws_url_encode(query, encoded, sizeof(encoded));
     if (!tmpl || strstr(tmpl, "{query}") == NULL)
@@ -278,7 +257,7 @@ char *ccode_web_search(const char *query) {
         const char *marker = strstr(tmpl, "{query}");
         size_t head = (size_t)(marker - tmpl);
         if (head + strlen(encoded) + strlen(marker + 7) >= sizeof(url))
-            return strdup_wrapper("{\"error\":\"Search endpoint too long\"}");
+            return ccode_strdup("{\"error\":\"Search endpoint too long\"}");
         memcpy(url, tmpl, head);
         memcpy(url + head, encoded, strlen(encoded) + 1);
         strncat(url, marker + 7, sizeof(url) - strlen(url) - 1);
@@ -292,13 +271,13 @@ char *ccode_web_search(const char *query) {
     opts.raw_html = 1;
 
     result = ccode_web_fetch(&opts);
-    if (!result) return strdup_wrapper("{\"error\":\"Search failed\"}");
+    if (!result) return ccode_strdup("{\"error\":\"Search failed\"}");
 
     content_start = strstr(result, "\"content\":");
     if (!content_start) {
         /* web_fetch returned an error payload; pass it through. */
         free(result);
-        return strdup_wrapper("{\"error\":\"Search failed\"}");
+        return ccode_strdup("{\"error\":\"Search failed\"}");
     }
     content_start += 10;
     if (*content_start == '"') content_start++;
@@ -341,7 +320,7 @@ char *ccode_web_search(const char *query) {
         }
     }
     free(result);
-    if (!html_text) return strdup_wrapper("{\"error\":\"Search failed\"}");
+    if (!html_text) return ccode_strdup("{\"error\":\"Search failed\"}");
 
     out = ccode_web_search_parse_html(html_text, strlen(html_text));
     free(html_text);

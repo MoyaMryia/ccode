@@ -509,7 +509,7 @@ static int feed_sse(struct sse_parser *parser, const char *data, size_t length,
 static int parse_chunk_size(const char *line, size_t length, size_t *chunk_size) {
     size_t value = 0;
     size_t i;
-    int digits = 0;
+    int have_digit = 0;
     for (i = 0; i < length && line[i] != ';'; i++) {
         unsigned int digit;
         if (line[i] >= '0' && line[i] <= '9') digit = (unsigned int)(line[i] - '0');
@@ -518,9 +518,9 @@ static int parse_chunk_size(const char *line, size_t length, size_t *chunk_size)
         else return -1;
         if (value > (MAX_CHUNK_SIZE - digit) / 16) return -1;
         value = value * 16 + digit;
-        digits = 1;
+        have_digit = 1;
     }
-    if (!digits) return -1;
+    if (!have_digit) return -1;
     *chunk_size = value;
     return 0;
 }

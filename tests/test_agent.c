@@ -1975,6 +1975,44 @@ static int test_duplicate_tool_call_id_detected(void) {
     return 1;
 }
 
+/* ccode_conversation_compact scans dropped tool results for markers. The
+ * scan must be key-based (not substring-based): "exit=0" without the stray
+ * colon that used to appear from "exit_code"+10, plus the denial/truncation
+ * markers from the error fields. */
+static int test_compact_scans_tool_results(void) {
+    struct ccode_conversation conv;
+    int i;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "u0") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "a0") == 0);
+    ASSERT(ccode_conversation_add_tool_result(&conv, "t1",
+        "{\"exit_code\":0,\"timed_out\":true}") == 0);
+    ASSERT(ccode_conversation_add_tool_result(&conv, "t2",
+        "{\"error\":\"Permission denied by user\"}") == 0);
+    ASSERT(ccode_conversation_add_tool_result(&conv, "t3",
+        "{\"error\":\"boom\",\"stdout_truncated\":true,"
+        "\"stderr_truncated\":true}") == 0);
+    for (i = 0; i < 6; i++) {
+        ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "u") == 0);
+        ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "a") == 0);
+    }
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "final") == 0);
+
+    ccode_conversation_compact(&conv, NULL, NULL);
+    ASSERT(conv.count == 11);
+    ASSERT(conv.messages[2].role == CCODE_ROLE_SYSTEM);
+    ASSERT(conv.messages[2].content != NULL);
+    ASSERT(strstr(conv.messages[2].content, " exit=0") != NULL);
+    ASSERT(strstr(conv.messages[2].content, "exit=:0") == NULL);
+    ASSERT(strstr(conv.messages[2].content, " timed_out") != NULL);
+    ASSERT(strstr(conv.messages[2].content, " denied") != NULL);
+    ASSERT(strstr(conv.messages[2].content, " stdout_truncated") != NULL);
+    ASSERT(strstr(conv.messages[2].content, " stderr_truncated") != NULL);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
 static int test_glob_path_scope_restricts_results(void) {
     mkdir_p("fixtures/glob_scope_a");
     mkdir_p("fixtures/glob_scope_b");
@@ -3307,6 +3345,7 @@ int main(void) {
     TEST(task_results_escape_model_content);
     TEST(change_log_retains_truncation_and_denials);
     TEST(duplicate_tool_call_id_detected);
+    TEST(compact_scans_tool_results);
     TEST(load_rejects_strict_schema_and_is_transactional);
     TEST(content_limit_is_exact);
     TEST(save_is_loadable_and_rejects_oversized_state);

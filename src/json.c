@@ -3,11 +3,12 @@
 
 #include <stdio.h>
 #include <ctype.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-static char *ccode_strdup(const char *s) {
+char *ccode_strdup(const char *s) {
     size_t len;
     char *copy;
     if (!s) return NULL;
@@ -17,12 +18,13 @@ static char *ccode_strdup(const char *s) {
     return copy;
 }
 
-static char *json_escape(const char *input) {
+char *ccode_json_escape(const char *input) {
     size_t i;
     size_t length = 0;
     char *output;
     char *cursor;
 
+    if (!input) return NULL;
     for (i = 0; input[i] != '\0'; i++) {
         unsigned char c = (unsigned char)input[i];
         length += (c == '"' || c == '\\' || c == '\b' || c == '\f' || c == '\n' || c == '\r' || c == '\t') ? 2 : (c < 0x20 ? 6 : 1);
@@ -54,144 +56,170 @@ static char *json_escape(const char *input) {
     return output;
 }
 
-char *ccode_build_chat_request(const char *model, const char *prompt) {
-    char *escaped_model = json_escape(model);
-    char *escaped_prompt = json_escape(prompt);
-    char *request;
-    size_t length;
+/* Validate that s is well-formed UTF-8. Returns 0 on success, -1 otherwise. */
+int ccode_valid_utf8(const char *s) {
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        unsigned int cp;
+        size_t count, remaining;
+        if (*p < 0x80U) { p++; continue; }
+        if (*p >= 0xc2U && *p <= 0xdfU) {
+            cp = *p & 0x1fU;
+            count = 1;
+        } else if (*p >= 0xe0U && *p <= 0xefU) {
+            cp = *p & 0x0fU;
+            count = 2;
+        } else if (*p >= 0xf0U && *p <= 0xf4U) {
+            cp = *p & 0x07U;
+            count = 3;
+        } else return -1;
+        p++;
+        remaining = count;
+        while (remaining-- > 0) {
+            if ((*p & 0xc0U) != 0x80U) return -1;
+            cp = (cp << 6) | (*p & 0x3fU);
+            p++;
+        }
+        if ((count == 1 && cp < 0x80U) ||
+            (count == 2 && cp < 0x800U) ||
+            (count == 3 && cp < 0x10000U) ||
+            cp > 0x10ffffU || (cp >= 0xd800U && cp <= 0xdfffU))
+            return -1;
+    }
+    return 0;
+}
 
-    if (!escaped_model || !escaped_prompt) {
-        free(escaped_model);
-        free(escaped_prompt);
-        return NULL;
+static int json_hex_digit(unsigned char c, unsigned int *value) {
+    if (c >= '0' && c <= '9') *value = c - '0';
+    else if (c >= 'a' && c <= 'f') *value = c - 'a' + 10U;
+    else if (c >= 'A' && c <= 'F') *value = c - 'A' + 10U;
+    else return -1;
+    return 0;
+}
+
+static int append_utf8(char *dest, size_t dest_size, size_t *pos,
+                       unsigned int cp) {
+    unsigned char bytes[4];
+    size_t count;
+
+    if (cp == 0) return -1;
+    if (cp < 0x80U) { bytes[0] = (unsigned char)cp; count = 1; }
+    else if (cp < 0x800U) {
+        bytes[0] = (unsigned char)(0xc0U | (cp >> 6));
+        bytes[1] = (unsigned char)(0x80U | (cp & 0x3fU)); count = 2;
+    } else if (cp < 0x10000U) {
+        bytes[0] = (unsigned char)(0xe0U | (cp >> 12));
+        bytes[1] = (unsigned char)(0x80U | ((cp >> 6) & 0x3fU));
+        bytes[2] = (unsigned char)(0x80U | (cp & 0x3fU)); count = 3;
+    } else if (cp <= 0x10ffffU) {
+        bytes[0] = (unsigned char)(0xf0U | (cp >> 18));
+        bytes[1] = (unsigned char)(0x80U | ((cp >> 12) & 0x3fU));
+        bytes[2] = (unsigned char)(0x80U | ((cp >> 6) & 0x3fU));
+        bytes[3] = (unsigned char)(0x80U | (cp & 0x3fU)); count = 4;
+    } else return -1;
+    if (*pos + count + 1 > dest_size) return -1;
+    memcpy(dest + *pos, bytes, count);
+    *pos += count;
+    return 0;
+}
+
+/* Canonical JSON-string unescape: decode the span [src, src_end) (the body
+ * of a JSON string, without the surrounding quotes) into dest. Rejects NUL,
+ * malformed UTF-8, invalid surrogate pairs, bad escapes and dest overflow.
+ * Returns 0 on success, -1 otherwise. */
+int ccode_json_unescape(const char *src, const char *src_end,
+                        char *dest, size_t dest_size) {
+    size_t di = 0;
+    while (src < src_end) {
+        unsigned int cp;
+        unsigned int digit;
+        size_t i;
+        if (*src != '\\') {
+            unsigned char c = (unsigned char)*src;
+            size_t count = 1;
+            if (c == 0) return -1;
+            if (c < 0x80U) {
+                cp = c;
+            } else if (c >= 0xc2U && c <= 0xdfU) {
+                cp = c & 0x1fU; count = 2;
+            } else if (c >= 0xe0U && c <= 0xefU) {
+                cp = c & 0x0fU; count = 3;
+            } else if (c >= 0xf0U && c <= 0xf4U) {
+                cp = c & 0x07U; count = 4;
+            } else return -1;
+            if ((size_t)(src_end - src) < count || di + count >= dest_size)
+                return -1;
+            for (i = 1; i < count; i++) {
+                unsigned char continuation = (unsigned char)src[i];
+                if ((continuation & 0xc0U) != 0x80U) return -1;
+                cp = (cp << 6) | (continuation & 0x3fU);
+            }
+            if ((count == 2 && cp < 0x80U) ||
+                (count == 3 && cp < 0x800U) ||
+                (count == 4 && cp < 0x10000U) || cp > 0x10ffffU ||
+                (cp >= 0xd800U && cp <= 0xdfffU))
+                return -1;
+            memcpy(dest + di, src, count);
+            di += count;
+            src += count;
+            continue;
+        }
+        if (++src >= src_end) return -1;
+        switch (*src++) {
+        case '"': cp = '"'; break;
+        case '\\': cp = '\\'; break;
+        case '/': cp = '/'; break;
+        case 'b': cp = '\b'; break;
+        case 'f': cp = '\f'; break;
+        case 'n': cp = '\n'; break;
+        case 'r': cp = '\r'; break;
+        case 't': cp = '\t'; break;
+        case 'u':
+            if (src_end - src < 4) return -1;
+            cp = 0;
+            for (i = 0; i < 4; i++) {
+                if (json_hex_digit((unsigned char)src[i], &digit) != 0) return -1;
+                cp = (cp << 4) | digit;
+            }
+            src += 4;
+            if (cp >= 0xd800U && cp <= 0xdbffU) {
+                unsigned int low = 0;
+                if (src_end - src < 6 || src[0] != '\\' || src[1] != 'u') return -1;
+                for (i = 0; i < 4; i++) {
+                    if (json_hex_digit((unsigned char)src[2 + i], &digit) != 0) return -1;
+                    low = (low << 4) | digit;
+                }
+                if (low < 0xdc00U || low > 0xdfffU) return -1;
+                cp = 0x10000U + ((cp - 0xd800U) << 10) + (low - 0xdc00U);
+                src += 6;
+            } else if (cp >= 0xdc00U && cp <= 0xdfffU) return -1;
+            break;
+        default: return -1;
+        }
+        if (append_utf8(dest, dest_size, &di, cp) != 0) return -1;
     }
-    length = strlen(escaped_model) + strlen(escaped_prompt) + 100;
-    request = malloc(length);
-    if (request) {
-        snprintf(request, length,
-            "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}],\"stream\":true}",
-            escaped_model, escaped_prompt);
-    }
-    free(escaped_model);
-    free(escaped_prompt);
-    return request;
+    dest[di] = '\0';
+    return 0;
 }
 
 static char *unescape_json_string(const char *js, int start, int end,
                                   size_t max_len) {
     size_t len = (size_t)(end - start);
-    size_t capacity = len < max_len ? len : max_len;
+    size_t capacity;
     char *out;
-    size_t i, o;
+    if (max_len == SIZE_MAX) {
+        capacity = len;
+    } else {
+        capacity = len < max_len ? len : max_len;
+    }
     if (capacity == SIZE_MAX) return NULL;
     out = malloc(capacity + 1);
     if (!out) return NULL;
-    for (i = (size_t)start, o = 0; i < (size_t)end; i++) {
-        if (js[i] == '\\' && i + 1 < (size_t)end) {
-            i++;
-            switch (js[i]) {
-            case '"': if (o >= max_len) goto invalid; out[o++] = '"'; break;
-            case '\\': if (o >= max_len) goto invalid; out[o++] = '\\'; break;
-            case '/': if (o >= max_len) goto invalid; out[o++] = '/'; break;
-            case 'b': if (o >= max_len) goto invalid; out[o++] = '\b'; break;
-            case 'f': if (o >= max_len) goto invalid; out[o++] = '\f'; break;
-            case 'n': if (o >= max_len) goto invalid; out[o++] = '\n'; break;
-            case 'r': if (o >= max_len) goto invalid; out[o++] = '\r'; break;
-            case 't': if (o >= max_len) goto invalid; out[o++] = '\t'; break;
-            case 'u': {
-                unsigned int cp = 0;
-                int j;
-                if ((size_t)end - i <= 4) goto invalid;
-                for (j = 0; j < 4; j++) {
-                    char h = js[i + 1 + j];
-                    cp <<= 4;
-                    if (h >= '0' && h <= '9') cp |= (unsigned int)(h - '0');
-                    else if (h >= 'a' && h <= 'f') cp |= (unsigned int)(h - 'a' + 10);
-                    else if (h >= 'A' && h <= 'F') cp |= (unsigned int)(h - 'A' + 10);
-                    else goto invalid;
-                }
-                i += 4;
-                if (cp >= 0xD800 && cp <= 0xDBFF) {
-                    unsigned int low = 0;
-                    if ((size_t)end - i <= 6 || js[i + 1] != '\\' ||
-                        js[i + 2] != 'u') goto invalid;
-                    for (j = 0; j < 4; j++) {
-                        char h = js[i + 3 + j];
-                        low <<= 4;
-                        if (h >= '0' && h <= '9') low |= (unsigned int)(h - '0');
-                        else if (h >= 'a' && h <= 'f') low |= (unsigned int)(h - 'a' + 10);
-                        else if (h >= 'A' && h <= 'F') low |= (unsigned int)(h - 'A' + 10);
-                        else goto invalid;
-                    }
-                    if (low < 0xDC00 || low > 0xDFFF) goto invalid;
-                    cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
-                    i += 6;
-                } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
-                    goto invalid;
-                }
-                if (cp == 0) goto invalid;
-                if (cp < 0x80) {
-                    if (o >= max_len) goto invalid;
-                    out[o++] = (char)cp;
-                } else if (cp < 0x800) {
-                    if (max_len - o < 2) goto invalid;
-                    out[o++] = (char)(0xC0 | (cp >> 6));
-                    out[o++] = (char)(0x80 | (cp & 0x3F));
-                } else if (cp < 0x10000) {
-                    if (max_len - o < 3) goto invalid;
-                    out[o++] = (char)(0xE0 | (cp >> 12));
-                    out[o++] = (char)(0x80 | ((cp >> 6) & 0x3F));
-                    out[o++] = (char)(0x80 | (cp & 0x3F));
-                } else {
-                    if (max_len - o < 4) goto invalid;
-                    out[o++] = (char)(0xF0 | (cp >> 18));
-                    out[o++] = (char)(0x80 | ((cp >> 12) & 0x3F));
-                    out[o++] = (char)(0x80 | ((cp >> 6) & 0x3F));
-                    out[o++] = (char)(0x80 | (cp & 0x3F));
-                }
-                break;
-            }
-            default: goto invalid;
-            }
-        } else {
-            unsigned char c = (unsigned char)js[i];
-            size_t seq_len;
-            unsigned int cp;
-            size_t j;
-
-            if (c == 0) goto invalid;
-            if (c < 0x80U) {
-                if (o >= max_len) goto invalid;
-                out[o++] = js[i];
-                continue;
-            }
-            if (c >= 0xc2U && c <= 0xdfU) { seq_len = 2; cp = c & 0x1fU; }
-            else if (c >= 0xe0U && c <= 0xefU) { seq_len = 3; cp = c & 0x0fU; }
-            else if (c >= 0xf0U && c <= 0xf4U) { seq_len = 4; cp = c & 0x07U; }
-            else goto invalid;
-            if ((size_t)end - i < seq_len) goto invalid;
-            for (j = 1; j < seq_len; j++) {
-                unsigned char cc = (unsigned char)js[i + j];
-                if (cc < 0x80U || cc > 0xbfU) goto invalid;
-                cp = (cp << 6) | (cc & 0x3fU);
-            }
-            if ((seq_len == 2 && cp < 0x80U) ||
-                (seq_len == 3 && (cp < 0x800U ||
-                 (cp >= 0xd800U && cp <= 0xdfffU))) ||
-                (seq_len == 4 && cp < 0x10000U) ||
-                cp > 0x10ffffU) goto invalid;
-            if (o + seq_len > max_len) goto invalid;
-            memcpy(out + o, js + i, seq_len);
-            o += seq_len;
-            i += seq_len - 1;
-        }
+    if (ccode_json_unescape(js + start, js + end, out, capacity + 1) != 0) {
+        free(out);
+        return NULL;
     }
-    out[o] = '\0';
     return out;
-
- invalid:
-    free(out);
-    return NULL;
 }
 
 /* Unescape a complete JSON string body (without surrounding quotes) exactly
@@ -307,6 +335,67 @@ static ccode_jsmntok_t *find_index_in(ccode_jsmntok_t *tokens, int num_tokens,
         }
     }
     return NULL;
+}
+
+int ccode_json_parse(const char *data, size_t length,
+                     ccode_jsmntok_t *tokens, int maxtok) {
+    ccode_jsmn_parser parser;
+    if (!data || !tokens || maxtok <= 0) return -1;
+    ccode_jsmn_init(&parser);
+    return ccode_jsmn_parse(&parser, data, length, tokens,
+                            (unsigned int)maxtok);
+}
+
+ccode_jsmntok_t *ccode_json_find_key(ccode_jsmntok_t *tokens, int num_tokens,
+                                     int parent_idx, const char *js,
+                                     const char *key) {
+    return find_key_in(tokens, num_tokens, parent_idx, js, key);
+}
+
+ccode_jsmntok_t *ccode_json_find_index(ccode_jsmntok_t *tokens, int num_tokens,
+                                       int parent_idx, int index) {
+    return find_index_in(tokens, num_tokens, parent_idx, index);
+}
+
+char *ccode_json_token_string(const char *js, const ccode_jsmntok_t *tok) {
+    size_t len;
+    char *out;
+    if (!js || !tok || tok->type != CCODE_JSMN_STRING ||
+        tok->start < 0 || tok->end < tok->start) return NULL;
+    len = (size_t)(tok->end - tok->start);
+    out = malloc(len + 1);
+    if (!out) return NULL;
+    if (ccode_json_unescape(js + tok->start, js + tok->end, out, len + 1) != 0) {
+        free(out);
+        return NULL;
+    }
+    return out;
+}
+
+int ccode_json_token_to_string(const char *js, const ccode_jsmntok_t *tok,
+                               char *dest, size_t dest_size) {
+    if (!js || !tok || tok->type != CCODE_JSMN_STRING ||
+        tok->start < 0 || tok->end < tok->start || !dest || dest_size == 0)
+        return -1;
+    return ccode_json_unescape(js + tok->start, js + tok->end,
+                               dest, dest_size);
+}
+
+int ccode_json_token_to_int(const char *js, const ccode_jsmntok_t *tok,
+                            long *value) {
+    long v = 0;
+    int i;
+    if (!js || !tok || tok->type != CCODE_JSMN_PRIMITIVE ||
+        tok->start < 0 || tok->end <= tok->start || !value) return -1;
+    if (js[tok->start] == '-') return -1;
+    for (i = tok->start; i < tok->end; i++) {
+        char c = js[i];
+        if (c < '0' || c > '9') return -1;
+        if (v > (LONG_MAX - (long)(c - '0')) / 10) return -1;
+        v = v * 10 + (long)(c - '0');
+    }
+    *value = v;
+    return 0;
 }
 
 static ccode_jsmntok_t *navigate(ccode_jsmntok_t *tokens, int num_tokens,

@@ -1,74 +1,19 @@
 #include "models.h"
 #include "webfetch.h"
+#include "json.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static char *extract_json_string_field(const char *object,
-                                       const char *field) {
-    const char *start;
-    const char *p;
-    size_t field_len;
-    size_t out_len = 0;
-    char *out;
-    char *q;
-
-    if (!object || !field) return NULL;
-    field_len = strlen(field);
-    start = strstr(object, field);
-    if (!start) return NULL;
-    start += field_len;
-    if (*start != '"') return NULL;
-    start++;
-
-    p = start;
-    while (*p != '\0') {
-        if (*p == '\\' && p[1] != '\0') {
-            p += 2;
-            out_len++;
-        } else if (*p == '"') {
-            break;
-        } else {
-            p++;
-            out_len++;
-        }
-    }
-    if (*p != '"') return NULL;
-
-    out = malloc(out_len + 1);
-    if (!out) return NULL;
-    q = out;
-    p = start;
-    while (*p != '\0' && *p != '"') {
-        if (*p == '\\' && p[1] != '\0') {
-            p++;
-            switch (*p) {
-            case '"': *q++ = '"'; break;
-            case '\\': *q++ = '\\'; break;
-            case '/': *q++ = '/'; break;
-            case 'b': *q++ = '\b'; break;
-            case 'f': *q++ = '\f'; break;
-            case 'n': *q++ = '\n'; break;
-            case 'r': *q++ = '\r'; break;
-            case 't': *q++ = '\t'; break;
-            default: *q++ = *p; break;
-            }
-            p++;
-        } else {
-            *q++ = *p++;
-        }
-    }
-    *q = '\0';
-    return out;
-}
+#define CCODE_MODELS_LIST_MAX_TOKENS 2048
 
 char *ccode_models_fetch(const char *api_base, const char *api_key) {
     struct ccode_web_fetch_opts opts;
     char url[4096];
     char auth_header[4096];
     char *result;
-    char *content_start;
+    char *models_json = NULL;
     size_t url_len;
 
     if (!api_base || !api_key) return NULL;
@@ -108,18 +53,25 @@ char *ccode_models_fetch(const char *api_base, const char *api_key) {
 
     /* Extract just the content field from the web_fetch JSON response.
      * The response format is: {"content":"...","content_type":"...","status":200,"url":"..."} */
-    content_start = strstr(result, "\"content\":");
-    if (!content_start) {
-        /* If the request failed, return the error as-is. */
-        return result;
-    }
-    content_start += strlen("\"content\":");
-
     {
-        char *models_json = extract_json_string_field(content_start, "");
-        if (!models_json) { free(result); return NULL; }
-        free(result);
-        return models_json;
+        ccode_jsmntok_t tokens[64];
+        int num_tokens = ccode_json_parse(result, strlen(result), tokens, 64);
+        ccode_jsmntok_t *content_tok;
+        if (num_tokens <= 0 || tokens[0].type != CCODE_JSMN_OBJECT) {
+            /* If the request failed, return the error as-is. */
+            return result;
+        }
+        content_tok = ccode_json_find_key(tokens, num_tokens, 0, result,
+                                          "content");
+        if (content_tok && content_tok->type == CCODE_JSMN_STRING) {
+            models_json = ccode_json_token_string(result, content_tok);
+            if (models_json) {
+                free(result);
+                return models_json;
+            }
+        }
+        /* No usable content field: pass the raw response through. */
+        return result;
     }
 }
 
@@ -129,9 +81,12 @@ char *ccode_models_fetch(const char *api_base, const char *api_key) {
  * then treat the model as usable rather than fall back on a network error). */
 int ccode_model_verify(const char *api_base, const char *api_key,
                        const char *model) {
+    ccode_jsmntok_t tokens[CCODE_MODELS_LIST_MAX_TOKENS];
+    int num_tokens;
+    ccode_jsmntok_t *data_tok;
     char *models_json;
-    const char *p;
     size_t model_len;
+    int i;
     int found = 0;
 
     if (!api_base || !api_key || !model || model[0] == '\0') return -1;
@@ -140,27 +95,37 @@ int ccode_model_verify(const char *api_base, const char *api_key,
 
     models_json = ccode_models_fetch(api_base, api_key);
     if (!models_json) return -1;
-    if (strstr(models_json, "\"error\"")) {
+
+    num_tokens = ccode_json_parse(models_json, strlen(models_json),
+                                  tokens, CCODE_MODELS_LIST_MAX_TOKENS);
+    if (num_tokens <= 0 || tokens[0].type != CCODE_JSMN_OBJECT) {
+        free(models_json);
+        return -1;
+    }
+    if (ccode_json_find_key(tokens, num_tokens, 0, models_json, "error")) {
+        free(models_json);
+        return -1;
+    }
+    data_tok = ccode_json_find_key(tokens, num_tokens, 0, models_json, "data");
+    if (!data_tok || data_tok->type != CCODE_JSMN_ARRAY) {
         free(models_json);
         return -1;
     }
 
-    /* Search "id" fields tolerating whitespace around the colon
-     * ("id": "model" or "id":"model"). */
-    p = models_json;
-    while ((p = strstr(p, "\"id\"")) != NULL) {
-        const char *q = p + 4;
-        while (*q == ' ' || *q == '\t') q++;
-        if (*q != ':') { p += 4; continue; }
-        q++;
-        while (*q == ' ' || *q == '\t') q++;
-        if (*q != '"') { p += 4; continue; }
-        q++;
-        if (strncmp(q, model, model_len) == 0 && q[model_len] == '"') {
-            found = 1;
-            break;
+    for (i = 0; i < data_tok->size && !found; i++) {
+        ccode_jsmntok_t *entry = ccode_json_find_index(
+            tokens, num_tokens, (int)(data_tok - tokens), i);
+        ccode_jsmntok_t *id_tok;
+        if (!entry || entry->type != CCODE_JSMN_OBJECT) continue;
+        id_tok = ccode_json_find_key(tokens, num_tokens,
+                                     (int)(entry - tokens), models_json,
+                                     "id");
+        if (id_tok && id_tok->type == CCODE_JSMN_STRING) {
+            int slen = id_tok->end - id_tok->start;
+            if ((size_t)slen == model_len &&
+                memcmp(models_json + id_tok->start, model, model_len) == 0)
+                found = 1;
         }
-        p += 4;
     }
     free(models_json);
     return found ? 1 : 0;

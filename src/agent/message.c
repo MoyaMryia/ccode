@@ -3,6 +3,7 @@
 #endif
 
 #include "message.h"
+#include "../json.h"
 #include "../../vendor/jsmn/jsmn.h"
 
 #include <stdio.h>
@@ -16,56 +17,6 @@
 #include <unistd.h>
 #include <limits.h>
 #include <dirent.h>
-
-static char *ccode_strdup(const char *s) {
-    size_t len;
-    char *copy;
-    if (!s) return NULL;
-    len = strlen(s);
-    copy = malloc(len + 1);
-    if (copy) memcpy(copy, s, len + 1);
-    return copy;
-}
-
-static char *json_escape_len(const char *input, size_t *out_len) {
-    size_t dummy;
-    size_t i, length = 0;
-    char *output, *cursor;
-    dummy = 0;
-
-    if (!out_len) out_len = &dummy;
-    if (!input) { *out_len = 0; return NULL; }
-    for (i = 0; input[i] != '\0'; i++) {
-        unsigned char c = (unsigned char)input[i];
-        length += (c == '"' || c == '\\' || c == '\b' || c == '\f' ||
-                   c == '\n' || c == '\r' || c == '\t') ? 2 : (c < 0x20 ? 6 : 1);
-    }
-    output = malloc(length + 1);
-    if (!output) { *out_len = 0; return NULL; }
-    cursor = output;
-    for (i = 0; input[i] != '\0'; i++) {
-        unsigned char c = (unsigned char)input[i];
-        switch (c) {
-        case '"': *cursor++ = '\\'; *cursor++ = '"'; break;
-        case '\\': *cursor++ = '\\'; *cursor++ = '\\'; break;
-        case '\b': *cursor++ = '\\'; *cursor++ = 'b'; break;
-        case '\f': *cursor++ = '\\'; *cursor++ = 'f'; break;
-        case '\n': *cursor++ = '\\'; *cursor++ = 'n'; break;
-        case '\r': *cursor++ = '\\'; *cursor++ = 'r'; break;
-        case '\t': *cursor++ = '\\'; *cursor++ = 't'; break;
-        default:
-            if (c < 0x20) {
-                snprintf(cursor, 7, "\\u%04x", c);
-                cursor += 6;
-            } else {
-                *cursor++ = (char)c;
-            }
-        }
-    }
-    *cursor = '\0';
-    *out_len = (size_t)(cursor - output);
-    return output;
-}
 
 int ccode_conversation_init(struct ccode_conversation *conv, size_t capacity) {
     if (capacity == 0 || capacity > CCODE_MAX_MESSAGES) capacity = CCODE_MAX_MESSAGES;
@@ -262,7 +213,7 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
     buf[0] = '\0';
 
     if (append_cstr(&buf, &pos, &cap, "{\"model\":\"") != 0) goto fail;
-    escaped = json_escape_len(model, NULL);
+    escaped = ccode_json_escape(model);
     if (escaped) { append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
     if (append_cstr(&buf, &pos, &cap, "\",\"messages\":[") != 0) goto fail;
 
@@ -274,7 +225,7 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
 
         if (conv->messages[i].content) {
             if (append_cstr(&buf, &pos, &cap, "\",\"content\":\"") != 0) goto fail;
-            escaped = json_escape_len(conv->messages[i].content, NULL);
+            escaped = ccode_json_escape(conv->messages[i].content);
             if (!escaped) goto fail;
             if (append_cstr(&buf, &pos, &cap, escaped) != 0) {
                 free(escaped);
@@ -299,18 +250,18 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
                 if (j > 0 && append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
                 if (append_cstr(&buf, &pos, &cap,
                         "{\"id\":\"") != 0) goto fail;
-                escaped = json_escape_len(tc->id, NULL);
+                escaped = ccode_json_escape(tc->id);
                 if (escaped) { append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
                 if (append_cstr(&buf, &pos, &cap,
                         "\",\"type\":\"function\",\"function\":{\"name\":\"") != 0)
                     goto fail;
-                escaped = json_escape_len(tc->name, NULL);
+                escaped = ccode_json_escape(tc->name);
                 if (escaped) { append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
                 if (append_cstr(&buf, &pos, &cap,
                         "\",\"arguments\":\"") != 0) goto fail;
                 {
                     const char *                    args = tc->arguments ? tc->arguments : "{}";
-                    escaped = json_escape_len(args, NULL);
+                    escaped = ccode_json_escape(args);
                     if (escaped) { append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
                 }
                 if (append_cstr(&buf, &pos, &cap, "\"}}") != 0) goto fail;
@@ -320,7 +271,7 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
 
         if (conv->messages[i].tool_call_id) {
             if (append_cstr(&buf, &pos, &cap, ",\"tool_call_id\":\"") != 0) goto fail;
-            escaped = json_escape_len(conv->messages[i].tool_call_id, NULL);
+            escaped = ccode_json_escape(conv->messages[i].tool_call_id);
             if (escaped) { append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
             if (append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
         }
@@ -373,43 +324,60 @@ static void ccode_message_cleanup(struct ccode_message *msg) {
 }
 
 /* Scan a JSON tool result body for denial/truncation/error markers.
- * Appends a summary entry to the output buffer. */
+ * Appends a summary entry to the output buffer. The body is parsed as JSON
+ * rather than substring-matched so key order, whitespace and escaped values
+ * cannot break the scan. */
 static void scan_tool_result(const char *body,
                               char *out, size_t out_cap, size_t *pos) {
-    /* Check for denial pattern: {"error":"Permission denied by user"} */
-    if (body && strstr(body, "Permission denied") != NULL) {
-        size_t avail = out_cap - *pos;
-        int n = snprintf(out + *pos, avail, " denied");
+    ccode_jsmn_parser parser;
+    ccode_jsmntok_t tokens[64];
+    int num_tokens;
+    ccode_jsmntok_t *tok;
+    size_t avail;
+    int n;
+
+    if (!body || body[0] == '\0') return;
+    ccode_jsmn_init(&parser);
+    num_tokens = ccode_jsmn_parse(&parser, body, strlen(body), tokens, 64);
+    if (num_tokens <= 0 || tokens[0].type != CCODE_JSMN_OBJECT) return;
+
+    tok = ccode_json_find_key(tokens, num_tokens, 0, body, "error");
+    if (tok && tok->type == CCODE_JSMN_STRING) {
+        char error[128];
+        if (ccode_json_token_to_string(body, tok, error, sizeof(error)) == 0 &&
+            strstr(error, "Permission denied") != NULL) {
+            avail = out_cap - *pos;
+            n = snprintf(out + *pos, avail, " denied");
+            if (n > 0 && (size_t)n < avail) *pos += (size_t)n;
+            return;
+        }
+        avail = out_cap - *pos;
+        n = snprintf(out + *pos, avail, " error");
         if (n > 0 && (size_t)n < avail) *pos += (size_t)n;
-        return;
-    }
-    if (body && strstr(body, "\"error\"") != NULL) {
-        size_t avail = out_cap - *pos;
-        int n = snprintf(out + *pos, avail, " error");
-        if (n > 0 && (size_t)n < avail) *pos += (size_t)n;
-        /* Check for truncation markers. */
-        if (strstr(body, "stdout_truncated") != NULL) {
+        if (ccode_json_find_key(tokens, num_tokens, 0, body,
+                                "stdout_truncated")) {
             n = snprintf(out + *pos, out_cap - *pos, " stdout_truncated");
             if (n > 0 && (size_t)n < out_cap - *pos) *pos += (size_t)n;
         }
-        if (strstr(body, "stderr_truncated") != NULL) {
+        if (ccode_json_find_key(tokens, num_tokens, 0, body,
+                                "stderr_truncated")) {
             n = snprintf(out + *pos, out_cap - *pos, " stderr_truncated");
             if (n > 0 && (size_t)n < out_cap - *pos) *pos += (size_t)n;
         }
         return;
     }
-    /* Check for exit code: {"exit_code":...} */
-    if (body) {
-        const char *ec = strstr(body, "exit_code");
-        if (ec) {
-            size_t avail = out_cap - *pos;
-            int n = snprintf(out + *pos, avail, " exit=%.16s",
-                             ec + 10);
+
+    tok = ccode_json_find_key(tokens, num_tokens, 0, body, "exit_code");
+    if (tok && tok->type == CCODE_JSMN_PRIMITIVE) {
+        long exit_code = 0;
+        if (ccode_json_token_to_int(body, tok, &exit_code) == 0) {
+            avail = out_cap - *pos;
+            n = snprintf(out + *pos, avail, " exit=%ld", exit_code);
             if (n > 0 && (size_t)n < avail) *pos += (size_t)n;
-            if (strstr(body, "timed_out") != NULL) {
-                n = snprintf(out + *pos, out_cap - *pos, " timed_out");
-                if (n > 0 && (size_t)n < out_cap - *pos) *pos += (size_t)n;
-            }
+        }
+        if (ccode_json_find_key(tokens, num_tokens, 0, body, "timed_out")) {
+            n = snprintf(out + *pos, out_cap - *pos, " timed_out");
+            if (n > 0 && (size_t)n < out_cap - *pos) *pos += (size_t)n;
         }
     }
 }
@@ -563,38 +531,6 @@ static const char *role_to_str(enum ccode_role role) {
     }
 }
 
-static int valid_utf8(const char *s) {
-    const unsigned char *p = (const unsigned char *)s;
-    while (*p) {
-        unsigned int cp;
-        size_t count, remaining;
-        if (*p < 0x80U) { p++; continue; }
-        if (*p >= 0xc2U && *p <= 0xdfU) {
-            cp = *p & 0x1fU;
-            count = 1;
-        } else if (*p >= 0xe0U && *p <= 0xefU) {
-            cp = *p & 0x0fU;
-            count = 2;
-        } else if (*p >= 0xf0U && *p <= 0xf4U) {
-            cp = *p & 0x07U;
-            count = 3;
-        } else return -1;
-        p++;
-        remaining = count;
-        while (remaining-- > 0) {
-            if ((*p & 0xc0U) != 0x80U) return -1;
-            cp = (cp << 6) | (*p & 0x3fU);
-            p++;
-        }
-        if ((count == 1 && cp < 0x80U) ||
-            (count == 2 && cp < 0x800U) ||
-            (count == 3 && cp < 0x10000U) ||
-            cp > 0x10ffffU || (cp >= 0xd800U && cp <= 0xdfffU))
-            return -1;
-    }
-    return 0;
-}
-
 static int str_to_role(const char *s, enum ccode_role *out) {
     if (strcmp(s, "system") == 0)    { *out = CCODE_ROLE_SYSTEM;    return 0; }
     if (strcmp(s, "user") == 0)      { *out = CCODE_ROLE_USER;      return 0; }
@@ -664,7 +600,7 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
         if (++persisted_count > CCODE_MAX_MESSAGES) goto done;
         if (conv->messages[i].content &&
             (strlen(conv->messages[i].content) > CCODE_MAX_CONTENT_LEN ||
-             valid_utf8(conv->messages[i].content) != 0))
+             ccode_valid_utf8(conv->messages[i].content) != 0))
             goto done;
         if (!first) fputc(',', f);
         first = 0;
@@ -677,7 +613,7 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
         {
             const char *c = conv->messages[i].content ?
                             conv->messages[i].content : "";
-            esc = json_escape_len(c, NULL);
+            esc = ccode_json_escape(c);
             if (!esc) goto done;
             fputs(",\"content\":\"", f);
             fputs(esc, f);
@@ -693,16 +629,15 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
                 char *e_id, *e_name, *e_args;
                 if (j > 0) fputc(',', f);
                 fputs("{\"id\":\"", f);
-                e_id = json_escape_len(tc->id ? tc->id : "", NULL);
+                e_id = ccode_json_escape(tc->id ? tc->id : "");
                 if (!e_id) goto done;
                 fputs(e_id, f); free(e_id);
                 fputs("\",\"type\":\"function\",\"function\":{\"name\":\"", f);
-                e_name = json_escape_len(tc->name ? tc->name : "", NULL);
+                e_name = ccode_json_escape(tc->name ? tc->name : "");
                 if (!e_name) goto done;
                 fputs(e_name, f); free(e_name);
                 fputs("\",\"arguments\":\"", f);
-                e_args = json_escape_len(tc->arguments ? tc->arguments : "{}",
-                                         NULL);
+                e_args = ccode_json_escape(tc->arguments ? tc->arguments : "{}");
                 if (!e_args) goto done;
                 fputs(e_args, f); free(e_args);
                 fputs("\"}}", f);
@@ -713,7 +648,7 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
         if (conv->messages[i].tool_call_id) {
             char *e_tcid;
             fputs(",\"tool_call_id\":\"", f);
-            e_tcid = json_escape_len(conv->messages[i].tool_call_id, NULL);
+            e_tcid = ccode_json_escape(conv->messages[i].tool_call_id);
             if (!e_tcid) goto done;
             fputs(e_tcid, f); free(e_tcid);
             fputc('"', f);
@@ -803,115 +738,6 @@ static int token_subtree(ccode_jsmntok_t *toks, int num_tokens, int idx) {
         child += sub;
     }
     return size;
-}
-
-static int json_hex_digit(unsigned char c, unsigned int *value) {
-    if (c >= '0' && c <= '9') *value = c - '0';
-    else if (c >= 'a' && c <= 'f') *value = c - 'a' + 10U;
-    else if (c >= 'A' && c <= 'F') *value = c - 'A' + 10U;
-    else return -1;
-    return 0;
-}
-
-static int append_utf8(char *dest, size_t dest_size, size_t *pos,
-                       unsigned int cp) {
-    unsigned char bytes[4];
-    size_t count;
-
-    if (cp == 0) return -1;
-    if (cp < 0x80U) { bytes[0] = (unsigned char)cp; count = 1; }
-    else if (cp < 0x800U) {
-        bytes[0] = (unsigned char)(0xc0U | (cp >> 6));
-        bytes[1] = (unsigned char)(0x80U | (cp & 0x3fU)); count = 2;
-    } else if (cp < 0x10000U) {
-        bytes[0] = (unsigned char)(0xe0U | (cp >> 12));
-        bytes[1] = (unsigned char)(0x80U | ((cp >> 6) & 0x3fU));
-        bytes[2] = (unsigned char)(0x80U | (cp & 0x3fU)); count = 3;
-    } else if (cp <= 0x10ffffU) {
-        bytes[0] = (unsigned char)(0xf0U | (cp >> 18));
-        bytes[1] = (unsigned char)(0x80U | ((cp >> 12) & 0x3fU));
-        bytes[2] = (unsigned char)(0x80U | ((cp >> 6) & 0x3fU));
-        bytes[3] = (unsigned char)(0x80U | (cp & 0x3fU)); count = 4;
-    } else return -1;
-    if (*pos + count + 1 > dest_size) return -1;
-    memcpy(dest + *pos, bytes, count);
-    *pos += count;
-    return 0;
-}
-
-static int unescape_json(const char *src, const char *src_end,
-                         char *dest, size_t dest_size) {
-    size_t di = 0;
-    while (src < src_end) {
-        unsigned int cp;
-        unsigned int digit;
-        size_t i;
-        if (*src != '\\') {
-            unsigned char c = (unsigned char)*src;
-            size_t count = 1;
-            if (c < 0x20U) return -1;
-            if (c < 0x80U) {
-                cp = c;
-            } else if (c >= 0xc2U && c <= 0xdfU) {
-                cp = c & 0x1fU; count = 2;
-            } else if (c >= 0xe0U && c <= 0xefU) {
-                cp = c & 0x0fU; count = 3;
-            } else if (c >= 0xf0U && c <= 0xf4U) {
-                cp = c & 0x07U; count = 4;
-            } else return -1;
-            if ((size_t)(src_end - src) < count || di + count >= dest_size)
-                return -1;
-            for (i = 1; i < count; i++) {
-                unsigned char continuation = (unsigned char)src[i];
-                if ((continuation & 0xc0U) != 0x80U) return -1;
-                cp = (cp << 6) | (continuation & 0x3fU);
-            }
-            if ((count == 2 && cp < 0x80U) ||
-                (count == 3 && cp < 0x800U) ||
-                (count == 4 && cp < 0x10000U) || cp > 0x10ffffU ||
-                (cp >= 0xd800U && cp <= 0xdfffU))
-                return -1;
-            memcpy(dest + di, src, count);
-            di += count;
-            src += count;
-            continue;
-        }
-        if (++src >= src_end) return -1;
-        switch (*src++) {
-        case '"': cp = '"'; break;
-        case '\\': cp = '\\'; break;
-        case '/': cp = '/'; break;
-        case 'b': cp = '\b'; break;
-        case 'f': cp = '\f'; break;
-        case 'n': cp = '\n'; break;
-        case 'r': cp = '\r'; break;
-        case 't': cp = '\t'; break;
-        case 'u':
-            if (src_end - src < 4) return -1;
-            cp = 0;
-            for (i = 0; i < 4; i++) {
-                if (json_hex_digit((unsigned char)src[i], &digit) != 0) return -1;
-                cp = (cp << 4) | digit;
-            }
-            src += 4;
-            if (cp >= 0xd800U && cp <= 0xdbffU) {
-                unsigned int low = 0;
-                if (src_end - src < 6 || src[0] != '\\' || src[1] != 'u') return -1;
-                for (i = 0; i < 4; i++) {
-                    if (json_hex_digit((unsigned char)src[2 + i], &digit) != 0) return -1;
-                    low = (low << 4) | digit;
-                }
-                if (low < 0xdc00U || low > 0xdfffU) return -1;
-                cp = 0x10000U + ((cp - 0xd800U) << 10) + (low - 0xdc00U);
-                src += 6;
-            } else if (cp >= 0xdc00U && cp <= 0xdfffU) return -1;
-            break;
-        default: return -1;
-        }
-        if (append_utf8(dest, dest_size, &di, cp) != 0) return -1;
-    }
-    dest[di] = '\0';
-    return 0;
 }
 
 /* Find a value token by key name within an object. Returns the value token
@@ -1183,7 +1009,7 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
             role_idx = obj_find_val(toks, num_tokens, msg_idx, buf, "role");
             if (role_idx < 0 ||
                 toks[role_idx].type != CCODE_JSMN_STRING) goto load_fail;
-            if (unescape_json(buf + toks[role_idx].start,
+            if (ccode_json_unescape(buf + toks[role_idx].start,
                               buf + toks[role_idx].end,
                               role_str, sizeof(role_str)) != 0) goto load_fail;
             if (str_to_role(role_str, &r) != 0) goto load_fail;
@@ -1203,11 +1029,11 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
                     toks[tcid_idx].type != CCODE_JSMN_STRING) goto load_fail;
                 if (content_idx < 0 ||
                     toks[content_idx].type != CCODE_JSMN_STRING) goto load_fail;
-                if (unescape_json(buf + toks[content_idx].start,
+                if (ccode_json_unescape(buf + toks[content_idx].start,
                                   buf + toks[content_idx].end,
                                   content_buf, sizeof(content_buf)) != 0)
                     goto load_fail;
-                if (unescape_json(buf + toks[tcid_idx].start,
+                if (ccode_json_unescape(buf + toks[tcid_idx].start,
                                   buf + toks[tcid_idx].end,
                                   tcid_buf, sizeof(tcid_buf)) != 0)
                     goto load_fail;
@@ -1222,7 +1048,7 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
                 if (content_idx >= 0) {
                     if (toks[content_idx].type != CCODE_JSMN_STRING)
                         goto load_fail;
-                    if (unescape_json(buf + toks[content_idx].start,
+                    if (ccode_json_unescape(buf + toks[content_idx].start,
                                       buf + toks[content_idx].end,
                                       content_buf, sizeof(content_buf)) != 0)
                         goto load_fail;
@@ -1303,15 +1129,15 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
                             if (args_idx < 0 ||
                                 toks[args_idx].type != CCODE_JSMN_STRING)
                                 goto load_fail;
-                            if (unescape_json(buf + toks[id_idx].start,
+                            if (ccode_json_unescape(buf + toks[id_idx].start,
                                               buf + toks[id_idx].end,
                                               id_buf, sizeof(id_buf)) != 0)
                                 goto load_fail;
-                            if (unescape_json(buf + toks[name_idx].start,
+                            if (ccode_json_unescape(buf + toks[name_idx].start,
                                               buf + toks[name_idx].end,
                                               name_buf, sizeof(name_buf)) != 0)
                                 goto load_fail;
-                            if (unescape_json(buf + toks[args_idx].start,
+                            if (ccode_json_unescape(buf + toks[args_idx].start,
                                               buf + toks[args_idx].end,
                                               args_buf, sizeof(args_buf)) != 0)
                                 goto load_fail;
@@ -1405,7 +1231,7 @@ static int buf_append_cstr(char **buf, size_t *pos, size_t *cap,
 static int buf_append_json_string(char **buf, size_t *pos, size_t *cap,
                                    const char *s) {
     int ret;
-    char *escaped = json_escape_len(s, NULL);
+    char *escaped = ccode_json_escape(s);
     if (!escaped) return -1;
     ret = buf_append_cstr(buf, pos, cap, escaped);
     free(escaped);
