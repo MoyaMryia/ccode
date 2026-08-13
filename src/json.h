@@ -27,6 +27,12 @@ char *ccode_json_escape(const char *input);
 /* Validate that s is well-formed UTF-8. Returns 0 on success, -1 otherwise. */
 int ccode_valid_utf8(const char *s);
 
+/* Decode the UTF-8 sequence starting at s into *codepoint and return its
+ * length in bytes. On invalid or truncated input, *codepoint is set to s[0]
+ * and 1 is returned (single-byte fallback). codepoint may be NULL. */
+size_t ccode_utf8_decode(const unsigned char *s, size_t remaining,
+                         unsigned int *codepoint);
+
 /* Unescape a JSON string span (excluding surrounding quotes) into dest.
  * Rejects NUL, malformed UTF-8, invalid surrogate pairs, overlong escapes
  * and dest overflow. Returns 0 on success, -1 otherwise. */

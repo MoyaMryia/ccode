@@ -7,6 +7,7 @@
 
 #include "../agent/agent.h"
 #include "../config.h"
+#include "../json.h"
 #include "../permissions/permissions.h"
 #include "../models.h"
 
@@ -36,27 +37,21 @@ struct json_session_state {
 };
 
 static int field(const char *line, const char *name, char *out, size_t cap) {
-    size_t length;
     char needle[64];
     const char *start, *end;
     snprintf(needle, sizeof(needle), "\"%s\":\"", name);
     start = strstr(line, needle);
     if (!start) return -1;
     start += strlen(needle);
-    for (length = 0; start[length] && start[length] != '"'; length++) {
-        if (start[length] == '\\' && start[length + 1]) length++;
+    /* Walk to the closing quote, skipping backslash-escaped pairs so a
+     * literal \" inside the value does not terminate the field early. */
+    end = start;
+    while (*end && *end != '"') {
+        if (*end == '\\' && end[1]) end += 2;
+        else end++;
     }
-    end = start + length;
-    if (*end != '"' || length >= cap) return -1;
-    {
-        size_t source = 0, target = 0;
-        while (source < length) {
-            if (start[source] == '\\' && source + 1 < length) source++;
-            out[target++] = start[source++];
-        }
-        out[target] = '\0';
-    }
-    return 0;
+    if (*end != '"' || (size_t)(end - start) >= cap) return -1;
+    return ccode_json_unescape(start, end, out, cap);
 }
 
 static int boolean_field(const char *line, const char *name, int *value) {

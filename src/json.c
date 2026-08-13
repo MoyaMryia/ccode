@@ -110,6 +110,56 @@ int ccode_valid_utf8(const char *s) {
     return 0;
 }
 
+/* Decode the UTF-8 sequence starting at s into *codepoint and return its
+ * length in bytes. On invalid or truncated input, *codepoint is set to s[0]
+ * and 1 is returned (single-byte fallback), matching the auditing loops in
+ * permissions.c / markdown.c so model-derived text is never misdecoded.
+ * codepoint may be NULL when only the length matters. */
+size_t ccode_utf8_decode(const unsigned char *s, size_t remaining,
+                         unsigned int *codepoint) {
+    unsigned int cp;
+
+    if (s[0] < 0x80U) {
+        if (codepoint) *codepoint = s[0];
+        return 1;
+    }
+    if (remaining >= 2 && s[0] >= 0xc2U && s[0] <= 0xdfU &&
+        s[1] >= 0x80U && s[1] <= 0xbfU) {
+        cp = ((unsigned int)(s[0] & 0x1fU) << 6) |
+             (unsigned int)(s[1] & 0x3fU);
+        if (codepoint) *codepoint = cp;
+        return 2;
+    }
+    if (remaining >= 3 && s[0] >= 0xe0U && s[0] <= 0xefU &&
+        s[1] >= 0x80U && s[1] <= 0xbfU &&
+        s[2] >= 0x80U && s[2] <= 0xbfU &&
+        (s[0] != 0xe0U || s[1] >= 0xa0U) &&
+        (s[0] != 0xedU || s[1] <= 0x9fU)) {
+        cp = ((unsigned int)(s[0] & 0x0fU) << 12) |
+             ((unsigned int)(s[1] & 0x3fU) << 6) |
+             (unsigned int)(s[2] & 0x3fU);
+        if (codepoint) *codepoint = cp;
+        return 3;
+    }
+    if (remaining >= 4 && s[0] >= 0xf0U && s[0] <= 0xf4U &&
+        s[1] >= 0x80U && s[1] <= 0xbfU &&
+        s[2] >= 0x80U && s[2] <= 0xbfU &&
+        s[3] >= 0x80U && s[3] <= 0xbfU &&
+        (s[0] != 0xf0U || s[1] >= 0x90U) &&
+        (s[0] != 0xf4U || s[1] <= 0x8fU)) {
+        cp = ((unsigned int)(s[0] & 0x07U) << 18) |
+             ((unsigned int)(s[1] & 0x3fU) << 12) |
+             ((unsigned int)(s[2] & 0x3fU) << 6) |
+             (unsigned int)(s[3] & 0x3fU);
+        if (codepoint) *codepoint = cp;
+        return 4;
+    }
+
+    if (codepoint) *codepoint = s[0];
+    return 1;
+}
+
+
 static int json_hex_digit(unsigned char c, unsigned int *value) {
     if (c >= '0' && c <= '9') *value = c - '0';
     else if (c >= 'a' && c <= 'f') *value = c - 'a' + 10U;

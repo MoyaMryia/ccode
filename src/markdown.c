@@ -1,5 +1,7 @@
 #include "markdown.h"
 
+#include "json.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -18,50 +20,8 @@
 
 /* Mirrors the auditing of permissions.c so that model-derived text is
  * never emitted raw: control characters, C1 bytes and bidirectional
- * override code points are escaped rather than passed to the terminal. */
-
-static size_t md_utf8_sequence(const unsigned char *s, size_t remaining,
-                               unsigned int *codepoint) {
-    unsigned int cp;
-
-    if (s[0] < 0x80U) {
-        *codepoint = s[0];
-        return 1;
-    }
-    if (remaining >= 2 && s[0] >= 0xc2U && s[0] <= 0xdfU &&
-        s[1] >= 0x80U && s[1] <= 0xbfU) {
-        *codepoint = ((unsigned int)(s[0] & 0x1fU) << 6) |
-                     (unsigned int)(s[1] & 0x3fU);
-        return 2;
-    }
-    if (remaining >= 3 && s[0] >= 0xe0U && s[0] <= 0xefU &&
-        s[1] >= 0x80U && s[1] <= 0xbfU &&
-        s[2] >= 0x80U && s[2] <= 0xbfU &&
-        (s[0] != 0xe0U || s[1] >= 0xa0U) &&
-        (s[0] != 0xedU || s[1] <= 0x9fU)) {
-        cp = ((unsigned int)(s[0] & 0x0fU) << 12) |
-             ((unsigned int)(s[1] & 0x3fU) << 6) |
-             (unsigned int)(s[2] & 0x3fU);
-        *codepoint = cp;
-        return 3;
-    }
-    if (remaining >= 4 && s[0] >= 0xf0U && s[0] <= 0xf4U &&
-        s[1] >= 0x80U && s[1] <= 0xbfU &&
-        s[2] >= 0x80U && s[2] <= 0xbfU &&
-        s[3] >= 0x80U && s[3] <= 0xbfU &&
-        (s[0] != 0xf0U || s[1] >= 0x90U) &&
-        (s[0] != 0xf4U || s[1] <= 0x8fU)) {
-        cp = ((unsigned int)(s[0] & 0x07U) << 18) |
-             ((unsigned int)(s[1] & 0x3fU) << 12) |
-             ((unsigned int)(s[2] & 0x3fU) << 6) |
-             (unsigned int)(s[3] & 0x3fU);
-        *codepoint = cp;
-        return 4;
-    }
-
-    *codepoint = s[0];
-    return 1;
-}
+ * override code points are escaped rather than passed to the terminal.
+ * Decoding goes through the shared ccode_utf8_decode in json.h. */
 
 static int md_is_bidi_control(unsigned int cp) {
     return cp == 0x061cU || cp == 0x200eU || cp == 0x200fU ||
@@ -79,7 +39,7 @@ static void emit_text(struct ccode_md_renderer *r, const char *data, size_t len)
 
     while (offset < len) {
         unsigned int cp;
-        size_t length = md_utf8_sequence(s + offset, len - offset, &cp);
+        size_t length = ccode_utf8_decode(s + offset, len - offset, &cp);
 
         if (offset + length > len) break;
 

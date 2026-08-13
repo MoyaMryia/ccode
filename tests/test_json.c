@@ -837,11 +837,43 @@ static int test_append_cstr(void) {
     return 1;
 }
 
+static int test_utf8_decode(void) {
+    unsigned int cp;
+    /* 1-byte ASCII. */
+    ASSERT(ccode_utf8_decode((const unsigned char *)"A", 1, &cp) == 1);
+    ASSERT(cp == 0x41U);
+    /* 2-byte: U+00A9 (c2 a9). */
+    ASSERT(ccode_utf8_decode((const unsigned char *)"\xc2\xa9", 2, &cp) == 2);
+    ASSERT(cp == 0xa9U);
+    /* 3-byte: U+4E2D (e4 b8 ad). */
+    ASSERT(ccode_utf8_decode((const unsigned char *)"\xe4\xb8\xad", 3, &cp) == 3);
+    ASSERT(cp == 0x4e2dU);
+    /* 4-byte: U+1F600 (f0 9f 98 80). */
+    ASSERT(ccode_utf8_decode((const unsigned char *)"\xf0\x9f\x98\x80", 4,
+                             &cp) == 4);
+    ASSERT(cp == 0x1f600U);
+    /* Truncated / invalid sequences fall back to the raw byte. */
+    ASSERT(ccode_utf8_decode((const unsigned char *)"\xc2", 1, &cp) == 1);
+    ASSERT(cp == 0xc2U);
+    ASSERT(ccode_utf8_decode((const unsigned char *)"\xe4\xb8", 2, &cp) == 1);
+    ASSERT(cp == 0xe4U);
+    /* Overlong encoding (c0 80) is rejected with the byte fallback. */
+    ASSERT(ccode_utf8_decode((const unsigned char *)"\xc0\x80", 2, &cp) == 1);
+    ASSERT(cp == 0xc0U);
+    /* Surrogate half (ed a0 80) is rejected with the byte fallback. */
+    ASSERT(ccode_utf8_decode((const unsigned char *)"\xed\xa0\x80", 3, &cp) == 1);
+    ASSERT(cp == 0xedU);
+    /* NULL codepoint output is allowed. */
+    ASSERT(ccode_utf8_decode((const unsigned char *)"A", 1, NULL) == 1);
+    return 1;
+}
+
 int main(void) {
     fprintf(stderr, "=== JSON Unit Tests ===\n");
 
     TEST(json_escape);
     TEST(append_cstr);
+    TEST(utf8_decode);
     TEST(strdup_null_and_copy);
     TEST(valid_utf8);
     TEST(json_unescape_buffer);
