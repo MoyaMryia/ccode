@@ -70,10 +70,26 @@ static int resolve_command_path(const char *command, char *path,
     return -1;
 }
 
-static void terminate_command_group(pid_t child) {
+/* Stop the child's process group: SIGTERM first, then wait up to a grace
+ * period for the direct child to actually exit before escalating to
+ * SIGKILL, so a command that traps SIGTERM gets a chance to clean up.
+ * Returns 1 and stores the exit status in *status when the child was
+ * reaped here (the caller must not waitpid it again); returns 0 when the
+ * caller must still waitpid() to reach a full stop. status may be NULL
+ * when the caller discards the outcome. */
+static int terminate_command_group(pid_t child, int *status) {
+    int waited;
+    int dummy;
+
+    if (!status) status = &dummy;
     if (kill(-child, SIGTERM) != 0 && errno == ESRCH) kill(child, SIGTERM);
-    (void)poll(NULL, 0, 50);
+    for (waited = 0; waited < 500; waited += 20) {
+        if (waitpid(child, status, WNOHANG) == child) return 1;
+        (void)poll(NULL, 0, 20);
+    }
     if (kill(-child, SIGKILL) != 0 && errno == ESRCH) kill(child, SIGKILL);
+    if (waitpid(child, status, WNOHANG) == child) return 1;
+    return 0;
 }
 
 static void consume_command_output(int *fd, char *buffer, size_t *length,
@@ -141,6 +157,22 @@ static int sh_is_bash(void) {
     return cached;
 }
 
+/* Detect C.UTF-8 availability once per process and cache the LANG= entry.
+ * The probe runs in the parent before fork so its extra fork+exec is paid
+ * once per process, not inside every command's child. The retro guest may
+ * lack the locale and falls back to LANG=C. */
+static const char *detect_lang_env(void) {
+    static char cached[64];
+
+    if (cached[0] == '\0') {
+        if (system("locale -a 2>/dev/null | grep -q '^C\\.UTF-8$'") == 0)
+            snprintf(cached, sizeof(cached), "LANG=C.UTF-8");
+        else
+            snprintf(cached, sizeof(cached), "LANG=C");
+    }
+    return cached;
+}
+
 static char *exec_run_command_ex(struct agent_context *ctx, const char *workspace,
                                char * const *argv, size_t argc,
                                int timeout_ms, int allow_shell) {
@@ -162,6 +194,7 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     size_t i;
     char *result;
     size_t result_cap, result_pos;
+    const char *lang_env;
 
     if (argc == 0)
         return ccode_strdup("{\"error\":\"No command specified\"}");
@@ -194,6 +227,7 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
         deadline.tv_nsec -= 1000000000L;
     }
 
+    lang_env = detect_lang_env();
     child = fork();
     if (child < 0) {
         close(stdout_pipe[0]); close(stdout_pipe[1]);
@@ -206,20 +240,13 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
         char *exec_argv[CCODE_MAX_ARGS + 1];
         char *exec_env[12];
         char home_env[4096];
-        char lang_env[64];
         size_t env_count = 0;
-        
+
         // 使用 /tmp 作为 HOME，避免权限问题
         snprintf(home_env, sizeof(home_env), "HOME=/tmp");
-        
-        // 检测 C.UTF-8 是否可用，不可用则回退到 C
-        snprintf(lang_env, sizeof(lang_env), "LANG=C.UTF-8");
-        if (system("locale -a 2>/dev/null | grep -q '^C\\.UTF-8$'") != 0) {
-            snprintf(lang_env, sizeof(lang_env), "LANG=C");
-        }
-        
+
         exec_env[env_count++] = "PATH=/usr/local/bin:/usr/bin:/bin";
-        exec_env[env_count++] = lang_env;
+        exec_env[env_count++] = (char *)lang_env;
         exec_env[env_count++] = home_env;
         exec_env[env_count++] = "GIT_CONFIG_NOSYSTEM=1";
         exec_env[env_count++] = "GIT_TERMINAL_PROMPT=0";
@@ -253,17 +280,17 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     close(stderr_pipe[1]); stderr_pipe[1] = -1;
     ccode_cancel_child_register(child);
     if (ccode_run_setpgid_parent(child, child) != 0 && errno != EACCES && errno != ESRCH) {
-        terminate_command_group(child);
+        int reaped = terminate_command_group(child, NULL);
         close(stdout_pipe[0]); close(stderr_pipe[0]);
-        waitpid(child, NULL, 0);
+        if (!reaped) waitpid(child, NULL, 0);
         ccode_cancel_child_unregister();
         return ccode_strdup("{\"error\":\"Could not isolate command process group\"}");
     }
     if (fcntl(stdout_pipe[0], F_SETFL, fcntl(stdout_pipe[0], F_GETFL) | O_NONBLOCK) != 0 ||
         fcntl(stderr_pipe[0], F_SETFL, fcntl(stderr_pipe[0], F_GETFL) | O_NONBLOCK) != 0) {
-        terminate_command_group(child);
+        int reaped = terminate_command_group(child, NULL);
         close(stdout_pipe[0]); close(stderr_pipe[0]);
-        waitpid(child, NULL, 0);
+        if (!reaped) waitpid(child, NULL, 0);
         ccode_cancel_child_unregister();
         return ccode_strdup("{\"error\":\"Could not configure command output\"}");
     }
@@ -284,7 +311,8 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
                 (now.tv_sec == deadline.tv_sec &&
                  now.tv_nsec >= deadline.tv_nsec))) {
                 timed_out = 1;
-                terminate_command_group(child);
+                if (terminate_command_group(child, &child_status) != 0)
+                    exited = 1;
             }
 
             poll_timeout = (int)((deadline.tv_sec - now.tv_sec) * 1000 +
@@ -336,8 +364,8 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
             exited = 1;
         }
         if (!exited) {
-            terminate_command_group(child);
-            waitpid(child, &child_status, 0);
+            if (terminate_command_group(child, &child_status) == 0)
+                waitpid(child, &child_status, 0);
         }
 
         status = child_status;
@@ -361,12 +389,15 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
         char num[32];
         int n;
 
+        /* Orthogonal facts are reported independently: a process killed by
+         * a signal has no exit code, so exit_code is null there rather than
+         * a fabricated 0 that a caller could misread as success. */
         if (ccode_append_cstr(&result, &result_pos, &result_cap,
                 "{\"exit_code\":") != 0) goto oom;
         if (WIFEXITED(status))
             n = snprintf(num, sizeof(num), "%d", WEXITSTATUS(status));
         else
-            n = snprintf(num, sizeof(num), "0");
+            n = snprintf(num, sizeof(num), "null");
         if (n <= 0 || (size_t)n >= sizeof(num)) goto oom;
         if (ccode_append_cstr(&result, &result_pos, &result_cap, num) != 0)
             goto oom;

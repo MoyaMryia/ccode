@@ -116,7 +116,7 @@ TEST_JSON_SRC = tests/test_json.c src/json.c vendor/jsmn/jsmn.c $(RETRO_SRC)
 TEST_AGENT_SRC = tests/test_agent.c $(AGENT_SRC) src/json.c src/http.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c $(PLATFORM_SRC) $(RETRO_SRC)
 TEST_PERMISSIONS_SRC = $(wildcard tests/test_permissions.c)
 TEST_TUI_SRC = tests/test_tui.c
-TEST_MD_SRC = tests/test_markdown.c src/markdown.c $(RETRO_SRC)
+TEST_MD_SRC = tests/test_markdown.c src/markdown.c src/json.c vendor/jsmn/jsmn.c $(RETRO_SRC)
 TTY_TEST := $(shell python3 -c "import pty" 2>/dev/null && echo 1)
 TEST_TARGETS = test-json test-agent test-http
 TEST_TARGETS += test-tui
@@ -190,14 +190,22 @@ COMBINED_SRC = $(sort src/combined_main.c src/main.c src/cli/main.c $(SRC) $(CLI
 # Split every function/data into its own section and let the linker drop
 # whatever is unreferenced. The vendored mbedTLS/PolarSSL compile all of
 # their library/*.c but only a small TLS-client subset is used, so this is
-# the single largest size win. -s strips the symbol table. --gc-sections is
-# GNU-ld specific, so non-Linux hosts only get -s.
+# the single largest size win. -s strips the symbol table at link time.
+#
+# Per-linker dead-code elimination and stripping:
+#   - GNU ld (Linux):  -Wl,--gc-sections + -s.
+#   - Apple ld (Darwin): no --gc-sections; -Wl,-dead_strip is the direct
+#     equivalent. Do NOT pass -s to Apple ld: Xcode 15's linker declared it
+#     obsolete, and current toolchains reject it (ld error). Strip post-link
+#     with strip(1) instead (POST_LINK_STRIP).
+#   - Other linkers (BSD/Haiku/...): -s only.
 #
 # Retro also shrinks, but conservatively:
 #   - host smoke build (RETRO=1, modern gcc -m32): full set.
 #   - guest native (RETRO_NATIVE=1, egcs 1.1.2 / gcc 2.7.2.3): only -s.
 #     Old gcc lacks -fdata-sections, and --gc-sections over a libc5 static
 #     link with old binutils is not worth risking.
+POST_LINK_STRIP = true
 ifeq ($(RETRO),1)
 ifneq ($(RETRO_NATIVE),1)
 SIZE_CFLAGS = -ffunction-sections -fdata-sections
@@ -208,10 +216,15 @@ SIZE_LDFLAGS = -s
 endif
 else
 SIZE_CFLAGS = -ffunction-sections -fdata-sections
+ifneq ($(findstring apple,$(HOST_MACH)),)
+SIZE_LDFLAGS = -Wl,-dead_strip
+POST_LINK_STRIP = strip
+else
 ifeq ($(findstring linux,$(HOST_MACH)),)
 SIZE_LDFLAGS = -s
 else
 SIZE_LDFLAGS = -Wl,--gc-sections -s
+endif
 endif
 endif
 
@@ -246,13 +259,16 @@ ccode-cli: $(CLI_BIN)
 $(CLI_BIN): $(CLI_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SIZE_CFLAGS) -o $@ $(CLI_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ) $(SIZE_LDFLAGS) $(LDFLAGS) $(LDLIBS)
+	@$(POST_LINK_STRIP) $@
 
 $(COMBINED_BIN): $(COMBINED_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SIZE_CFLAGS) -DCCODE_COMBINED=1 -o $@ $(COMBINED_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ) $(SIZE_LDFLAGS) $(LDFLAGS) $(LDLIBS)
+	@$(POST_LINK_STRIP) $@
 
 $(TUI_BIN): $(OBJ) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $(OBJ) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ) $(SIZE_LDFLAGS) $(LDFLAGS) $(LDLIBS)
+	@$(POST_LINK_STRIP) $@
 
 $(OBJDIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -297,7 +313,7 @@ ifneq ($(TEST_PERMISSIONS_SRC),)
 test-permissions: tests/test_permissions
 	./tests/test_permissions
 
-tests/test_permissions: tests/test_permissions.c src/permissions/permissions.c $(RETRO_SRC)
+tests/test_permissions: tests/test_permissions.c src/permissions/permissions.c src/json.c vendor/jsmn/jsmn.c $(RETRO_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 endif
 

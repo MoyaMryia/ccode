@@ -101,6 +101,10 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
         config->api_key = key;
     }
     config->model = getenv("CCODE_MODEL");
+    {
+        const char *allow_http = getenv("CCODE_ALLOW_HTTP");
+        config->allow_http = allow_http && allow_http[0] == '1';
+    }
 
     {
         /* Read tools are the safe default: the agent can inspect/search the
@@ -234,9 +238,8 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
             continue;
         }
         if (strcmp(argv[i], "--allow-http") == 0) {
-            /* http.c reads CCODE_ALLOW_HTTP at request time (like
-             * CCODE_CA_FILE), so bridge the flag through the environment. */
-            setenv("CCODE_ALLOW_HTTP", "1", 1);
+            /* Explicit request-scoped flag: no setenv bridge into http.c. */
+            config->allow_http = 1;
             continue;
         }
         if (strcmp(argv[i], "--no-markdown") == 0) {

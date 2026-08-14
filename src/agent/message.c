@@ -346,6 +346,11 @@ static void scan_tool_result(const char *body,
         return;
     }
 
+    /* exit_code, signal and timed_out are orthogonal facts: each is
+     * reported on its own, never nested under another one's branch.
+     * exit_code is null (not 0) for signal-killed processes; timed_out
+     * requires the value true because the key is always emitted, false
+     * included. */
     tok = ccode_json_find_key(tokens, num_tokens, 0, body, "exit_code");
     if (tok && tok->type == CCODE_JSMN_PRIMITIVE) {
         long exit_code = 0;
@@ -354,10 +359,22 @@ static void scan_tool_result(const char *body,
             n = snprintf(out + *pos, avail, " exit=%ld", exit_code);
             if (n > 0 && (size_t)n < avail) *pos += (size_t)n;
         }
-        if (ccode_json_find_key(tokens, num_tokens, 0, body, "timed_out")) {
-            n = snprintf(out + *pos, out_cap - *pos, " timed_out");
-            if (n > 0 && (size_t)n < out_cap - *pos) *pos += (size_t)n;
+    }
+    tok = ccode_json_find_key(tokens, num_tokens, 0, body, "signal");
+    if (tok && tok->type == CCODE_JSMN_PRIMITIVE) {
+        long sig = 0;
+        if (ccode_json_token_to_int(body, tok, &sig) == 0) {
+            avail = out_cap - *pos;
+            n = snprintf(out + *pos, avail, " signal=%ld", sig);
+            if (n > 0 && (size_t)n < avail) *pos += (size_t)n;
         }
+    }
+    tok = ccode_json_find_key(tokens, num_tokens, 0, body, "timed_out");
+    if (tok && tok->type == CCODE_JSMN_PRIMITIVE &&
+        tok->end - tok->start == 4 &&
+        strncmp(body + tok->start, "true", 4) == 0) {
+        n = snprintf(out + *pos, out_cap - *pos, " timed_out");
+        if (n > 0 && (size_t)n < out_cap - *pos) *pos += (size_t)n;
     }
 }
 

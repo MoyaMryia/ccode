@@ -327,12 +327,20 @@ static int run_pending_subagents(struct agent_context *ctx,
         for (i = 0; i < count; i++) {
             if (jobs[i].pipe_fd >= 0) ccode_cancel_child_register(jobs[i].pid);
         }
-        /* Launch window over: every child is registered. Unblock SIGINT so a
-         * pending interrupt reaches the handler now and kills the groups. */
-        (void)sigprocmask(SIG_UNBLOCK, &cancel_block, NULL);
+    }
+    /* Launch window over: every child that exists is registered above, so a
+     * pending interrupt now reaches the handler and kills the groups. Unblock
+     * unconditionally — if every fork failed this round (launched == 0) the
+     * mask must still be undone, or SIGINT would stay blocked for the whole
+     * process lifetime. */
+    (void)sigprocmask(SIG_UNBLOCK, &cancel_block, NULL);
 
+    if (launched > 0) {
         /* Drain every pipe concurrently so a child writing more than the
-         * pipe buffer cannot deadlock on a sibling's unread data. */
+         * pipe buffer cannot deadlock on a sibling's unread data. poll is
+         * unbounded (-1): the only upper bound is each child's own internal
+         * deadlines, so with 8 parallel sub-agents (each up to the 300s
+         * request timeout) the parent can wait at most a few minutes. */
         for (;;) {
             struct pollfd pfds[CCODE_MAX_PARALLEL_SUBAGENTS];
             int nfds = 0;
@@ -408,7 +416,10 @@ static int run_pending_subagents(struct agent_context *ctx,
         ccode_cancel_child_unregister();
     }
 
-    /* Reap and append results in job order. */
+    /* Reap and append results in job order. The waitpid below has no
+     * deadline, but by this point each child has either exited (EOF seen)
+     * or been SIGKILLed (oversized/cancel paths above), so it terminates
+     * promptly. */
     for (i = 0; i < count; i++) {
         char *result;
         if (jobs[i].pipe_fd >= 0) {
@@ -684,7 +695,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
         acc.on_reasoning = cfg->on_reasoning ? cfg->on_reasoning
                                              : default_stream_reasoning;
         acc.on_reasoning_context = cfg->on_reasoning_context;
-        result = ccode_stream_chat(cfg->api_base, cfg->api_key, body, &acc);
+        result = ccode_stream_chat(cfg->api_base, cfg->api_key, body,
+                                   cfg->allow_http, &acc);
         free(body);
 
         if (result < 0) {

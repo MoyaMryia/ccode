@@ -46,6 +46,18 @@
 #define IO_TIMEOUT_MS               60000
 #define ERROR_BODY_MAX              4096
 
+/* The SSE parser must hold one partial input line (a recv adds at most
+ * IO_BUF_SIZE bytes at a time) plus one full SSE event: data: lines
+ * accumulate in `event` until the blank line dispatches them, and a single
+ * event's data may legitimately reach the accumulator cap
+ * (CCODE_MAX_SSE_CONTENT_LEN, 100KiB per message). Sizing both buffers to
+ * that cap (plus slack) keeps the parser's per-line limit identical to the
+ * accumulator's instead of cutting valid streams off early at 64KiB. A line
+ * or event beyond the cap still fails the stream explicitly (feed_sse
+ * returns -1), which is the intended fail-closed behavior. */
+#define SSE_EVENT_BUF_SIZE          (CCODE_MAX_SSE_CONTENT_LEN + 1024)
+#define SSE_INPUT_BUF_SIZE          (CCODE_MAX_SSE_CONTENT_LEN + IO_BUF_SIZE)
+
 struct parsed_url {
     int secure;
     int host_is_ipv6;
@@ -55,9 +67,9 @@ struct parsed_url {
 };
 
 struct sse_parser {
-    char input[2 * IO_BUF_SIZE];
+    char input[SSE_INPUT_BUF_SIZE];
     size_t input_used;
-    char event[2 * IO_BUF_SIZE];
+    char event[SSE_EVENT_BUF_SIZE];
     size_t event_used;
 };
 
@@ -201,6 +213,48 @@ struct resolved_addr {
     struct sockaddr_storage addr;
 };
 
+/* Numeric IP literals need no DNS and cannot block on a resolver; build the
+ * single sockaddr directly and skip the forked getaddrinfo child entirely. */
+static int numeric_host_to_addr(const char *host, const char *port,
+                                struct resolved_addr *out) {
+    char *end = NULL;
+    long port_num;
+
+    if (!host || !port || !out) return -1;
+    port_num = strtol(port, &end, 10);
+    if (end == port || *end != '\0' || port_num < 0 || port_num > 65535)
+        return -1;
+    memset(out, 0, sizeof(*out));
+    out->socktype = SOCK_STREAM;
+    out->protocol = IPPROTO_TCP;
+
+    {
+        struct sockaddr_in v4;
+        memset(&v4, 0, sizeof(v4));
+        v4.sin_family = AF_INET;
+        v4.sin_port = htons((unsigned short)port_num);
+        if (inet_pton(AF_INET, host, &v4.sin_addr) == 1) {
+            out->family = AF_INET;
+            out->addrlen = (socklen_t)sizeof(v4);
+            memcpy(&out->addr, &v4, sizeof(v4));
+            return 1;
+        }
+    }
+    {
+        struct sockaddr_in6 v6;
+        memset(&v6, 0, sizeof(v6));
+        v6.sin6_family = AF_INET6;
+        v6.sin6_port = htons((unsigned short)port_num);
+        if (inet_pton(AF_INET6, host, &v6.sin6_addr) == 1) {
+            out->family = AF_INET6;
+            out->addrlen = (socklen_t)sizeof(v6);
+            memcpy(&out->addr, &v6, sizeof(v6));
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Run getaddrinfo in a forked child so the caller can enforce a deadline.
  * If the deadline passes before resolution completes, the child is killed.
  * Returns the number of resolved addresses (>=0) or -1 on failure. */
@@ -210,6 +264,12 @@ static int resolve_with_deadline(const char *host, const char *port,
     int pipefd[2];
     pid_t pid;
     int count = 0;
+    int numeric;
+
+    if (max_addrs < 1) return -1;
+    numeric = numeric_host_to_addr(host, port, &addrs[0]);
+    if (numeric > 0) return 1;
+    if (numeric < 0) return -1;
 
     if (pipe(pipefd) != 0) return -1;
     fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
@@ -651,9 +711,9 @@ static int process_response(char *response, size_t *used, int *headers_complete,
     return 0;
 }
 
-static int http_allow_all(void) {
+static int http_allow_all(int request_flag) {
     const char *allow = getenv("CCODE_ALLOW_HTTP");
-    return allow && allow[0] == '1';
+    return request_flag || (allow && allow[0] == '1');
 }
 
 static void warn_plain_http_once(void) {
@@ -741,8 +801,8 @@ static int stream_chat_plain(const struct parsed_url *url, const char *api_key,
     if (socket_fd < 0) {
         if (loopback_only)
             fprintf(stderr, "http:// endpoints are restricted to loopback. "
-                            "Set CCODE_ALLOW_HTTP=1 to allow remote http "
-                            "(unencrypted, known risk).\n");
+                            "Use --allow-http or CCODE_ALLOW_HTTP=1 to allow "
+                            "remote http (unencrypted, known risk).\n");
         else
             fprintf(stderr, "Could not connect to the http endpoint.\n");
         return -1;
@@ -800,7 +860,8 @@ static int stream_chat_plain(const struct parsed_url *url, const char *api_key,
 
 #if CCODE_TLS_BACKEND == CCODE_TLS_NONE
 int ccode_stream_chat(const char *api_base, const char *api_key,
-                      const char *body, struct ccode_sse_accumulator *acc) {
+                      const char *body, int allow_remote_http,
+                      struct ccode_sse_accumulator *acc) {
     struct parsed_url url;
     int total_timeout = DEFAULT_TOTAL_TIMEOUT_SEC;
     long long total_deadline;
@@ -811,9 +872,9 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
         fprintf(stderr, "HTTP_ONLY builds require a valid local http:// URL and key.\n");
         return -1;
     }
-    if (http_allow_all()) warn_plain_http_once();
+    if (http_allow_all(allow_remote_http)) warn_plain_http_once();
     return stream_chat_plain(&url, api_key, body, acc, total_deadline,
-                             !http_allow_all());
+                             !http_allow_all(allow_remote_http));
 }
 #elif CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
 static int tls_send_no_signal(void *context, const unsigned char *data,
@@ -853,7 +914,8 @@ static int tls_write_all(mbedtls_ssl_context *ssl, mbedtls_net_context *server,
 }
 
 int ccode_stream_chat(const char *api_base, const char *api_key,
-                      const char *body, struct ccode_sse_accumulator *acc) {
+                      const char *body, int allow_remote_http,
+                      struct ccode_sse_accumulator *acc) {
     struct parsed_url url;
     struct sse_parser parser;
     mbedtls_net_context server;
@@ -891,7 +953,7 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
         return -1;
     }
     if (!url.secure) {
-        int allow_all = http_allow_all();
+        int allow_all = http_allow_all(allow_remote_http);
         if (allow_all) warn_plain_http_once();
         return stream_chat_plain(&url, api_key, body, acc, total_deadline,
                                  !allow_all);
@@ -1073,7 +1135,8 @@ static int polarssl_write_all(ssl_context *ssl, const int *fd,
 }
 
 int ccode_stream_chat(const char *api_base, const char *api_key,
-                      const char *body, struct ccode_sse_accumulator *acc) {
+                      const char *body, int allow_remote_http,
+                      struct ccode_sse_accumulator *acc) {
     struct parsed_url url;
     struct sse_parser parser;
     ssl_context ssl;
@@ -1110,7 +1173,7 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
         return -1;
     }
     if (!url.secure) {
-        int allow_all = http_allow_all();
+        int allow_all = http_allow_all(allow_remote_http);
         if (allow_all) warn_plain_http_once();
         return stream_chat_plain(&url, api_key, body, acc, total_deadline,
                                  !allow_all);
