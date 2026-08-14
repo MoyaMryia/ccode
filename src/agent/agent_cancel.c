@@ -50,10 +50,13 @@ void ccode_cancel_signal_handler(int signo) {
     (void)signo;
     ccode_cancel_flag = 1;
     /* Terminate every active child process group (parallel sub-agents each
-     * get their own group via setpgid; kill(-pgid) targets the group). */
+     * get their own group via setpgid; kill(-pgid) targets the group).
+     * Deliberately SIGKILL only, no SIGTERM grace window: the children hold
+     * no recoverable state (their agent_context copies die with them; the
+     * parent reaps and reports failure). A SIGTERM-first sequence would be
+     * dead code, since nothing in the child runs a graceful path. */
     for (i = 0; i < ccode_active_child_count; i++) {
         if (ccode_active_children[i] > 0) {
-            kill(-(pid_t)ccode_active_children[i], SIGTERM);
             kill(-(pid_t)ccode_active_children[i], SIGKILL);
         }
     }

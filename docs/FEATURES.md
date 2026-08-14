@@ -33,9 +33,9 @@
 
 - 命令级过滤：敏感路径（密钥、云凭据）拒绝，破坏性命令（`mkfs`、`dd`、`chown` 等）拒绝
 - 子进程最小环境（不继承任何父环境变量）
-- Landlock 写沙箱（Linux 可用时自动启用，否则退回命令过滤）
+- Landlock 写沙箱（Linux 可用时自动启用，否则退回命令过滤）；沙箱只放行 `/dev` 下已有设备的 `WRITE_FILE`（如 `/dev/null`），不放开设备节点创建/删除，避免 `git` 等常规命令被误伤
 - 密钥文件要求 0600 权限 + 单硬链接
-- http 策略：远程明文 http 需显式放行
+- http 策略：远程明文 http 需显式放行（`--allow-http` 为请求级标志，不再借 `setenv` 传参；`CCODE_ALLOW_HTTP=1` 仅作环境默认值）
 
 ### 跨平台
 
@@ -48,7 +48,8 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 ### 构建与体积
 
 - TLS 内置（mbedTLS / PolarSSL 静态编译进二进制），部署机器上不需要任何系统 TLS 库
-- `-Os` + 函数/数据分节 + 链接期垃圾回收（`--gc-sections`）+ 符号裁剪（`-s`）压体积，单体 `ccode` 约 500K、`ccode-cli` 约 500K、`ccode-tui` 约 43K（HTTPS 构建）
+- `-Os` + 函数/数据分节 + 链接期垃圾回收压体积：GNU ld 用 `--gc-sections` + `-s`，Darwin/Apple Silicon 用 `-Wl,-dead_strip` + 链接后 `strip`（不给 Apple ld 传已废弃的 `-s`）；单体 `ccode` 约 500K、`ccode-cli` 约 500K、`ccode-tui` 约 43K（HTTPS 构建）
+- 分离版 `ccode-tui` 只链 JSON Lines 前端；进程内 TUI/agent 集成仅在 `CCODE_COMBINED` 单体构建中编译，避免前端二进制引用 agent/permission 符号
 - retro 构建同样做体积优化（宿主冒烟全开，guest 原生只裁符号）
 
 ## 路线图

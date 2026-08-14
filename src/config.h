@@ -22,6 +22,7 @@ struct ccode_config {
     long session_max_size;
     int session_keep_count;
     int markdown;
+    int allow_http;
 };
 
 int ccode_parse_args(int argc, char **argv, struct ccode_config *config);

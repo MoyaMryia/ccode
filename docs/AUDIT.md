@@ -4,7 +4,7 @@
 
 ## 一句话结论
 
-代码写得认真、安全边界扎实（原子写、Landlock 沙箱、会话严格校验、TLS 超时控制）。2026-08 已建立公共 JSON 工具层（`src/json.h`，含 `ccode_json_escape` / `ccode_json_unescape` / `ccode_valid_utf8` / `ccode_utf8_decode` / `ccode_append_cstr`）、全局状态已收进 `struct agent_context`、只读子代理已并行化（fork + 管道）且死锁/竞态隐患已修复；动态缓冲 append、JSON 转义与 UTF-8 解码的三族重复实现已全部收敛到工具层。剩余技术债：每请求 fork 一次做 DNS 超时、`--allow-http` 用环境变量当传参通道、取消路径 P4/P5 两个小尾巴，均属独立重构，短期不阻塞。
+代码写得认真、安全边界扎实（原子写、Landlock 沙箱、会话严格校验、TLS 超时控制）。2026-08 已建立公共 JSON 工具层（`src/json.h`，含 `ccode_json_escape` / `ccode_json_unescape` / `ccode_valid_utf8` / `ccode_utf8_decode` / `ccode_append_cstr`）、全局状态已收进 `struct agent_context`、只读子代理已并行化（fork + 管道），并行路径的死锁/竞态隐患（P1-P6）与 SSE 解析上限错位（1b）均已修复，三族重复实现（动态缓冲 append、JSON 转义、UTF-8 解码）全部收敛到工具层。剩余技术债：真实主机名的 DNS 超时仍靠 fork 子进程（数值 IP 已直连不 fork），彻底去除需要异步 DNS/线程或平台 API，属独立重构，短期不阻塞。
 
 ## 并发现状
 
@@ -34,10 +34,15 @@
 - ✅ **P2 fork/注册竞态**：launch 全程 `sigprocmask` 屏蔽 SIGINT，全部 `ccode_cancel_child_register` 之后再放开；子进程 fork 后解除屏蔽（继承的 pending SIGINT 由子代理自身循环处理）。
 - ✅ **P3 管道缺 FD_CLOEXEC**：`pipe()` 两端设 `F_SETFD FD_CLOEXEC`（对齐 `http.c:215-216`），防止子代理内 exec 的后代进程持有写端导致父进程等不到 EOF。
 
-顺带修了一个被上述大答案路径暴露的 SSE 读取缺陷：`sse_parser` 的 `input`/`event` 缓冲翻倍到 `2*IO_BUF_SIZE`。此前 recv 满 32KiB 且上一分片残留半行数据时 `feed_sse` 直接失败（`input_used+length+1` 放不下），任何响应体 >32KiB 的流式响应都会静默失败。
+顺带修了一个被上述大答案路径暴露的 SSE 读取缺陷（详见 1b）：`sse_parser` 的 `input`/`event` 缓冲原本 recv 满 32KiB 且上一分片残留半行数据时 `feed_sse` 会直接失败，任何响应体 >32KiB 的流式响应都会静默失败。
 
-- **P4 SIGTERM 后立刻 SIGKILL**（未改）：`agent_cancel.c` 两连击，SIGTERM 的优雅退出路径永远跑不到，SIGTERM 是死代码。要么只留 SIGKILL 并注明硬取消，要么留退出窗口。
-- **P5（次要）**（未改）：`waitpid` 无时限 + `poll(-1)`，全部依赖子代理内部 deadline。8 个并行子代理各带 300s 总超时，父进程最坏等 5 分钟，可接受但应写进注释。
+- ✅ **P4 SIGTERM 后立刻 SIGKILL**：`agent_cancel.c` 改为只发 SIGKILL 并注明原因——子代理持有不可恢复状态（context 拷贝随进程死亡，父进程统一回收并报告失败），原 SIGTERM 是永远跑不到的死代码。
+- ✅ **P5（次要）**：`waitpid`/`poll(-1)` 的无时限等待已补注释说明上限——子代理退出（EOF）或已被 SIGKILL（超限/取消路径）后才进入 reap，poll 的最坏等待被每个子代理内部 deadline（各 300s 请求超时）约束。
+- ✅ **P6（P2 修复引入的回归）**：`sigprocmask(SIG_UNBLOCK)` 移出 `if (launched > 0)`——若一轮所有 fork 失败（EMFILE/EAGAIN），SIGINT 原本会永久 blocked、进程再也无法 Ctrl-C 取消；现在无条件解除屏蔽（注册仍然先于 unblock，时序不变）。
+
+### 1b. SSE 解析缓冲与累加器上限对齐 ✅
+
+`sse_parser` 的 `input`/`event` 缓冲从拍脑袋的 `2*IO_BUF_SIZE`（64KiB）改为对齐累加器上限 `CCODE_MAX_SSE_CONTENT_LEN`（100KiB）：`SSE_EVENT_BUF_SIZE = 100KiB + 1024`、`SSE_INPUT_BUF_SIZE = 100KiB + IO_BUF_SIZE`（一条合法 data 行最长 100KiB，加上每次 recv 最多 32KiB 的新数据）。单行/单事件超过上限仍显式失败（fail-closed），但解析层的上限与协议层一致，不再出现"协议层能装 100KiB、解析层 64KiB 就挂"的错位。注意：解析器按设计用固定缓冲，单行超限仍是显式流失败而不是恢复。
 
 ### 2. "动态缓冲 append" 家族 — 同一函数 5 份 ✅
 
@@ -54,21 +59,24 @@
 
 ### 5. 每请求 fork 一次做 DNS 超时
 
-`src/http.c:207` `resolve_with_deadline()` 为了给 `getaddrinfo` 加超时，每次连接都 fork 子进程再 kill。动机可理解，但代价偏高，且并发/线程场景下 fork 模型要特别小心。（未改）
+`src/http.c` `resolve_with_deadline()` 已收敛一半：数值 IP 字面量（IPv4/IPv6）现在直接构造 `sockaddr`，不再 fork `getaddrinfo` 子进程；只有真实主机名还需要 deadline-bounded DNS 子进程。完全去掉 fork 需要可移植的非阻塞 DNS（线程/c-ares/平台 API），不属于最小清理。回归：`make test` 全过。
 
 ### 6. 小问题残留
 
 - ✅ `src/json.c` `navigate()`：`strtok` 已换 `strtok_r`（commit `d790c91`）。
-- `src/config.c:234` `--allow-http` 通过 `setenv("CCODE_ALLOW_HTTP","1",1)` 运行时改进程环境变量，再由 `http.c` 请求时才读——用全局环境当传参通道。修复需要把 allow 标志穿过 config/agent/http/webfetch/websearch 多处签名，属独立重构，暂缓。
+- ✅ `src/config.c` `--allow-http` 不再 `setenv("CCODE_ALLOW_HTTP","1",1)` 改进程环境；改为 `config->allow_http` → `agent_config.allow_http` → `ccode_stream_chat(..., allow_remote_http, ...)` 显式传递。`CCODE_ALLOW_HTTP=1` 仍作为环境默认值兼容，HTTP 层在请求侧把显式标志与环境默认做 OR。回归：`make test` 全过。
 - ✅ `src/agent/message.c` `ccode_conversation_compact()` 函数体缩进错位已修正（commit `d790c91`）。
 
 ## 改进方向
 
 按优先级排：
 
-1. ✅ **修并行子代理的 P1/P2/P3**（commit `fb64e1e`）：P1 超限改 kill 子进程组 + 增长路径精确大小；P2 launch 期间屏蔽 SIGINT 后统一注册；P3 补 FD_CLOEXEC。顺带修了被 70KiB 大答案暴露的 SSE 读取缺陷（`sse_parser` 缓冲翻倍到 `2*IO_BUF_SIZE`）。P4/P5 保留，视需要再处理。
+1. ✅ **修并行子代理的 P1/P2/P3**（commit `fb64e1e`）：P1 超限改 kill 子进程组 + 增长路径精确大小；P2 launch 期间屏蔽 SIGINT 后统一注册；P3 补 FD_CLOEXEC。顺带修了被 70KiB 大答案暴露的 SSE 读取缺陷。
 2. ✅ **收掉 append 五胞胎**（commit `a3b65c9`）：统一走 `ccode_append_cstr`（json.h 公共件），四份私有实现删除。
 3. ✅ **合并剩余转义/解码**（commit `8f7e772`）：`protocol.c` 的 `json_escape` 换 `ccode_json_escape`（配套修 `cli/main.c` 的 `field()` 解码）；两份 UTF-8 解码并成 `ccode_utf8_decode`。
 4. ✅ **收尾小问题与魔法数**（commit `d790c91`）：`strtok_r`、缩进错位、`display[8256]`、压缩阈值/keep 计数注释化。`--allow-http` 的 setenv 桥接暂缓（需跨 8 处签名传标志，独立重构）。
+5. ✅ **并行子代理收尾**（P4/P5/P6/1b）：P4 取消路径只留 SIGKILL 并注明硬取消；P5 无时限等待补上限注释；P6 SIGINT unblock 无条件化（修掉 launched==0 时 SIGINT 永久屏蔽的回归）；SSE 解析缓冲对齐 `CCODE_MAX_SSE_CONTENT_LEN`（1b）。回归：`make test` 全过（json 44 / agent 136 / http 28 / tui 14 / markdown 5 / e2e 7 / permissions），RETRO 冒烟过。另修 `tests/test_markdown`、`tests/test_permissions` 的 Makefile 漏链 `json.c`。
 
-改动时遵守 `AGENTS.md` 的最小改动原则：每一类收敛单独一个变更，配回归测试，别和功能改动混在一起。
+6. ✅ **Landlock 不再误伤 `/dev/null`**：单文件 `/dev/null` 规则在当前 ABI 上 `add_rule` 返回 EINVAL；改为只对 `/dev` 放行 `WRITE_FILE`（已有设备可写，设备节点创建/删除仍禁止），否则 `git init/add/commit` 在沙箱里 exit 128。回归：`test_agent` 的 14 个 git 用例恢复，`make test` 全过。
+
+剩余待办（独立重构，暂缓）：真实主机名的 DNS 解析仍用 fork 子进程做截止时间；数值 IP 已直连。要彻底去掉 fork 需要引入线程/异步 DNS 依赖或平台特定 API，超出现阶段最小清理边界。

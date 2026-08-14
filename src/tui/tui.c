@@ -407,6 +407,7 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
     return result;
 }
 
+#ifdef CCODE_COMBINED
 /* ── In-process TUI ──
  *
  * The combined `ccode` binary runs the agent directly in the TUI process
@@ -691,3 +692,4 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
     tui_messages_clear(&messages);
     return 0;
 }
+#endif /* CCODE_COMBINED */

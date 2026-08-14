@@ -132,6 +132,11 @@ int ccode_platform_detect_escaped(pid_t child) {
 #define LL_WRITE_NEW                                                         \
     (LL_WRITE_CORE | (1ULL << 14) /* TRUNCATE */)
 
+/* Opening an existing device for write (e.g. /dev/null) is separate from
+ * creating/removing device nodes. Keep device-node creation rights out of
+ * /dev; only the conventional write path is allowed, and DAC still applies. */
+#define LL_DEV_WRITE_FILE ((1ULL << 1) /* WRITE_FILE */)
+
 static int ll_create_ruleset(unsigned long long handled, int *fd_out) {
     struct landlock_ruleset_attr {
         unsigned long long handled_access_fs;
@@ -194,6 +199,13 @@ int ccode_platform_sandbox_apply(const char *workspace_path) {
         close(ruleset_fd);
         return -1;
     }
+    /* Many legitimate commands (git included) open /dev/null O_RDWR even
+     * when producing no output. Single-file Landlock rules are not accepted
+     * by the ABI in use here, so allow only WRITE_FILE beneath /dev: existing
+     * devices such as /dev/null keep working, while MAKE_CHAR/MAKE_BLOCK and
+     * friends remain denied. Non-fatal so sandboxing still degrades to the
+     * directory rules if /dev is unavailable. */
+    (void)ll_add_path(ruleset_fd, LL_DEV_WRITE_FILE, "/dev");
     if (syscall(__NR_landlock_restrict_self, ruleset_fd, 0) != 0) {
         close(ruleset_fd);
         return -1;

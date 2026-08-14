@@ -23,6 +23,7 @@ struct ccode_agent_config {
     const char *save_session;
     const char *resume_session;
     const char *workspace;
+    int allow_http;
     ccode_content_callback on_content;
     void *on_content_context;
     ccode_content_callback on_reasoning;

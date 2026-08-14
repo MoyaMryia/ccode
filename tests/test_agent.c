@@ -1333,6 +1333,20 @@ static int test_run_command_timeout(void) {
     return 1;
 }
 
+/* Orthogonal reporting: a timed-out command is killed by a signal, so it
+ * has no exit code. exit_code must be null (never a fabricated 0) and the
+ * terminating signal must be reported on its own. */
+static int test_run_command_timeout_reports_null_exit_and_signal(void) {
+    char *argv[] = {"sleep", "10"};
+    char *r = test_exec_run_command("fixtures", argv, 2, 500);
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "\"timed_out\":true") != NULL);
+    ASSERT(strstr(r, "\"exit_code\":null") != NULL);
+    ASSERT(strstr(r, "\"signal\":") != NULL);
+    free(r);
+    return 1;
+}
+
 static int test_run_command_uses_workspace_and_scrubbed_environment(void) {
     char *cwd_argv[] = {"pwd"};
     char *env_argv[] = {"env"};
@@ -2079,6 +2093,32 @@ static int test_compact_scans_tool_results(void) {
     ASSERT(strstr(conv.messages[2].content, " denied") != NULL);
     ASSERT(strstr(conv.messages[2].content, " stdout_truncated") != NULL);
     ASSERT(strstr(conv.messages[2].content, " stderr_truncated") != NULL);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
+/* The exec result always carries a timed_out key, false included, so the
+ * compact scan must test the value, not the key's presence. */
+static int test_compact_ignores_false_timed_out(void) {
+    struct ccode_conversation conv;
+    int i;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "u0") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "a0") == 0);
+    ASSERT(ccode_conversation_add_tool_result(&conv, "t1",
+        "{\"exit_code\":0,\"timed_out\":false,\"signal\":9}") == 0);
+    for (i = 0; i < 6; i++) {
+        ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "u") == 0);
+        ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "a") == 0);
+    }
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "final") == 0);
+
+    ccode_conversation_compact(&conv, NULL, NULL);
+    ASSERT(conv.messages[2].content != NULL);
+    ASSERT(strstr(conv.messages[2].content, " exit=0") != NULL);
+    ASSERT(strstr(conv.messages[2].content, " signal=9") != NULL);
+    ASSERT(strstr(conv.messages[2].content, " timed_out") == NULL);
     ccode_conversation_destroy(&conv);
     return 1;
 }
@@ -3356,6 +3396,7 @@ int main(void) {
     TEST(run_command_poll_eintr_resumes);
     TEST(run_command_nonzero_exit);
     TEST(run_command_timeout);
+    TEST(run_command_timeout_reports_null_exit_and_signal);
     TEST(run_command_uses_workspace_and_scrubbed_environment);
     TEST(run_command_drains_capped_output);
     TEST(run_command_structured_argv);
@@ -3416,6 +3457,7 @@ int main(void) {
     TEST(change_log_retains_truncation_and_denials);
     TEST(duplicate_tool_call_id_detected);
     TEST(compact_scans_tool_results);
+    TEST(compact_ignores_false_timed_out);
     TEST(agent_context_isolation);
     TEST(parallel_subagents_dispatch);
     TEST(load_rejects_strict_schema_and_is_transactional);
