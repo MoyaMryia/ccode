@@ -83,7 +83,7 @@ static int g_reasoning_active = 0;
 void ccode_print_reasoning_delta(const char *content) {
     if (!content) return;
     if (!g_reasoning_active) {
-        fputs("\n\033[2m", stdout);
+        fputs("\n" CCODE_ANSI("2") "", stdout);
         g_reasoning_active = 1;
     }
     ccode_fprint_safe(stdout, content, "");
@@ -92,7 +92,7 @@ void ccode_print_reasoning_delta(const char *content) {
 
 void ccode_print_reasoning_end(void) {
     if (g_reasoning_active) {
-        fputs("\033[0m\n\n", stdout);
+        fputs("" CCODE_ANSI("0") "\n\n", stdout);
         g_reasoning_active = 0;
     }
 }

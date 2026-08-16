@@ -37,6 +37,55 @@
 
 #include "agent_internal.h"
 
+#ifdef _WIN32
+/* ── Native Win32 cancellation ──
+ * No POSIX signals/process groups: children are registered as process
+ * HANDLEs (cast through intptr_t) and terminated with TerminateProcess.
+ * The CRT maps console Ctrl+C onto signal(SIGINT), so the handler contract
+ * towards the agent loop (ccode_cancel_pending) is unchanged. */
+
+static volatile sig_atomic_t ccode_cancel_flag = 0;
+static volatile sig_atomic_t ccode_active_children[CCODE_MAX_CANCEL_CHILDREN];
+static volatile sig_atomic_t ccode_active_child_count = 0;
+static volatile sig_atomic_t ccode_cancel_defaulted = 0;
+
+void ccode_cancel_signal_handler(int signo) {
+    int i;
+    (void)signo;
+    ccode_cancel_flag = 1;
+    for (i = 0; i < ccode_active_child_count; i++) {
+        if (ccode_active_children[i])
+            TerminateProcess((HANDLE)(intptr_t)ccode_active_children[i], 1);
+    }
+    ccode_active_child_count = 0;
+    if (ccode_cancel_defaulted) {
+        signal(SIGINT, SIG_DFL);
+    } else {
+        ccode_cancel_defaulted = 1;
+    }
+}
+
+void ccode_cancel_install(void) {
+    (void)signal(SIGINT, ccode_cancel_signal_handler);
+    ccode_cancel_flag = 0;
+    ccode_active_child_count = 0;
+    ccode_cancel_defaulted = 0;
+}
+
+int ccode_cancel_pending(void) {
+    return ccode_cancel_flag != 0;
+}
+
+void ccode_cancel_child_register(pid_t child) {
+    if (ccode_active_child_count < CCODE_MAX_CANCEL_CHILDREN)
+        ccode_active_children[ccode_active_child_count++] = (sig_atomic_t)child;
+}
+
+void ccode_cancel_child_unregister(void) {
+    ccode_active_child_count = 0;
+}
+
+#else /* !_WIN32 */
 
 /* Cancellation state. Volatile sig_atomic_t because SIGINT writes them from a
  * signal handler; the agent loop reads them via ccode_cancel_pending(). */
@@ -94,3 +143,4 @@ void ccode_cancel_child_register(pid_t child) {
 void ccode_cancel_child_unregister(void) {
     ccode_active_child_count = 0;
 }
+#endif /* _WIN32 */

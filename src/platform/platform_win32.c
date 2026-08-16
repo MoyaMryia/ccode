@@ -120,7 +120,55 @@ int ccode_platform_send_flags(void) {
     return MSG_NOSIGNAL;
 }
 
-#else /* !__CYGWIN__ */
+#elif defined(_WIN32) /* native Win32 (MinGW), XP SP2+ baseline */
+
+/*
+ * Native Windows: no /proc, no POSIX signals, no MSG_NOSIGNAL (winsock
+ * send on a closed socket returns an error instead of raising SIGPIPE).
+ * The write sandbox degrades to the command filter in sandbox.c.
+ */
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+#include "platform.h"
+
+#include <string.h>
+
+int ccode_platform_exe_path(char *buf, size_t cap) {
+    DWORD n;
+    char *p;
+    if (!buf || cap == 0) return -1;
+    n = GetModuleFileNameA(NULL, buf, (DWORD)cap);
+    if (n == 0 || n >= (DWORD)cap) return -1;
+    /* Normalize to forward slashes, matching the rest of the codebase. */
+    for (p = buf; *p; p++)
+        if (*p == '\\') *p = '/';
+    return 0;
+}
+
+int ccode_platform_detect_escaped(pid_t child) {
+    (void)child;
+    return 0;
+}
+
+int ccode_platform_sandbox_apply(const char *workspace_path) {
+    (void)workspace_path;
+    return -1;
+}
+
+int ccode_platform_socket_nosigpipe(int fd) {
+    (void)fd;
+    return 0;
+}
+
+int ccode_platform_send_flags(void) {
+    return 0;
+}
+
+#else /* !__CYGWIN__ && !_WIN32 */
 
 /*
  * Fallback: compiled for a platform this file was not written for (the

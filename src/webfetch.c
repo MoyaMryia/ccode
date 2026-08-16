@@ -27,6 +27,7 @@
 #if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
+#include <mbedtls/error.h>
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509_crt.h>
@@ -195,6 +196,37 @@ static long long wf_now_ms(void) {
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+#ifdef _WIN32
+/* No fork() on native Windows: resolve in-process (blocking); the connect
+ * phase still honours the caller's deadline. */
+static int wf_resolve(const char *host, const char *port,
+                       struct wf_resolved *addrs, int max_addrs,
+                       long long deadline) {
+    struct addrinfo hints;
+    struct addrinfo *result = NULL;
+    struct addrinfo *item;
+    int count = 0;
+    (void)deadline;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = AF_UNSPEC;
+    if (getaddrinfo(host, port, &hints, &result) != 0) return -1;
+    for (item = result; item && count < max_addrs; item = item->ai_next) {
+        struct wf_resolved *ra = &addrs[count];
+        if (item->ai_addrlen > sizeof(ra->addr)) continue;
+        memset(ra, 0, sizeof(*ra));
+        ra->family = item->ai_family;
+        ra->socktype = item->ai_socktype;
+        ra->protocol = item->ai_protocol;
+        ra->addrlen = (socklen_t)item->ai_addrlen;
+        memcpy(&ra->addr, item->ai_addr, item->ai_addrlen);
+        count++;
+    }
+    freeaddrinfo(result);
+    return count > 0 ? count : -1;
+}
+#else
 static int wf_resolve(const char *host, const char *port,
                        struct wf_resolved *addrs, int max_addrs,
                        long long deadline) {
@@ -254,6 +286,7 @@ static int wf_resolve(const char *host, const char *port,
     { int st; if (waitpid(pid, &st, WNOHANG) == 0) { struct timespec ts = {0, 10000000}; nanosleep(&ts, NULL); kill(pid, SIGKILL); waitpid(pid, &st, 0); } }
     return count > 0 ? count : -1;
 }
+#endif /* _WIN32 */
 
 /* ── TCP connect ── */
 
@@ -380,11 +413,24 @@ static int wf_transport_open(struct wf_transport *transport,
                 wf_transport_close(transport);
                 return -1;
             }
-        } else if (mbedtls_x509_crt_parse_path(&transport->ca,
+        }
+#ifdef _WIN32
+        /* No /etc/ssl/certs on Windows: use cacert.pem next to the exe. */
+        else {
+            char ca_path[4400];
+            if (ccode_win32_default_ca_file(ca_path, sizeof(ca_path)) != 0 ||
+                mbedtls_x509_crt_parse_file(&transport->ca, ca_path) != 0) {
+                wf_transport_close(transport);
+                return -1;
+            }
+        }
+#else
+        else if (mbedtls_x509_crt_parse_path(&transport->ca,
                                                 "/etc/ssl/certs") != 0) {
             wf_transport_close(transport);
             return -1;
         }
+#endif
         mbedtls_ssl_conf_authmode(&transport->config,
                                   MBEDTLS_SSL_VERIFY_REQUIRED);
         mbedtls_ssl_conf_ca_chain(&transport->config, &transport->ca, NULL);
@@ -402,13 +448,29 @@ static int wf_transport_open(struct wf_transport *transport,
             if ((tls_result != MBEDTLS_ERR_SSL_WANT_READ &&
                  tls_result != MBEDTLS_ERR_SSL_WANT_WRITE) ||
                 !wf_tls_wait(transport, tls_result, deadline)) {
+                char errbuf[160];
+                mbedtls_strerror(tls_result, errbuf, sizeof(errbuf));
+                fprintf(stderr, "web_fetch TLS handshake failed: %s\n",
+                        errbuf);
                 wf_transport_close(transport);
                 return -1;
             }
         }
-        if (mbedtls_ssl_get_verify_result(&transport->ssl) != 0) {
-            wf_transport_close(transport);
-            return -1;
+        {
+            uint32_t verify_flags = mbedtls_ssl_get_verify_result(
+                &transport->ssl);
+            if (verify_flags != 0) {
+                char verify_buf[256];
+                mbedtls_x509_crt_verify_info(verify_buf, sizeof(verify_buf),
+                                             "! ", verify_flags);
+                fprintf(stderr, "web_fetch certificate verification "
+                                "failed: %s", verify_buf);
+                if (verify_flags & MBEDTLS_X509_BADCERT_EXPIRED)
+                    fprintf(stderr, "The certificate validity check failed; "
+                                    "check the system clock.\n");
+                wf_transport_close(transport);
+                return -1;
+            }
         }
     }
 #elif CCODE_TLS_BACKEND == CCODE_TLS_POLARSSL

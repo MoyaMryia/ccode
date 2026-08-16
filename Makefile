@@ -7,6 +7,12 @@ override CPPFLAGS += -D_POSIX_C_SOURCE=200112L
 # Host triplet from the toolchain (e.g. x86_64-linux-gnu, x86_64-apple-darwin23,
 # aarch64-apple-darwin23, x86_64-portbld-freebsd14, riscv64-linux-gnu). Used to
 # pick the platform implementation and gate x86/Apple-specific flags below.
+# WIN32=1 pins the MinGW cross compiler first so HOST_MACH (and everything it
+# drives: platform_*.c selection, x86_64-linux flag gating) sees the target
+# triplet i686-w64-mingw32, not the host's.
+ifeq ($(WIN32),1)
+CC = i686-w64-mingw32-gcc
+endif
 HOST_MACH := $(shell $(CC) -dumpmachine 2>/dev/null)
 
 # Darwin: _POSIX_C_SOURCE alone hides BSD/POSIX.1-2008 extensions that the
@@ -110,6 +116,11 @@ endif
 ifneq (,$(findstring cygwin,$(HOST_MACH))$(findstring msys,$(HOST_MACH)))
 PLATFORM_SRC = src/platform/platform_win32.c
 endif
+# Native Windows via MinGW-w64 (e.g. i686-w64-mingw32): GetModuleFileName +
+# winsock, no MSG_NOSIGNAL (no SIGPIPE on Windows).
+ifneq ($(findstring mingw,$(HOST_MACH)),)
+PLATFORM_SRC = src/platform/platform_win32.c
+endif
 AGENT_SRC = src/agent/agent.c src/agent/agent_cancel.c src/agent/agent_fs.c src/agent/agent_args.c src/agent/agent_prepare.c src/agent/agent_exec.c src/agent/agent_output.c src/agent/message.c
 SRC = src/main.c src/config.c src/tui/tui.c src/tui/term.c src/tui/render.c src/tui/input.c src/tui/messages.c src/tui/status.c src/tui/theme.c src/tui/protocol.c src/markdown.c src/json.c vendor/jsmn/jsmn.c $(PLATFORM_SRC)
 TEST_JSON_SRC = tests/test_json.c src/json.c vendor/jsmn/jsmn.c $(RETRO_SRC)
@@ -145,6 +156,29 @@ override CPPFLAGS += -I$(MBEDTLS_DIR)/include
 endif
 endif
 
+# ── Native Win32 (MinGW-w64) cross build ──
+# Activated by WIN32=1. Produces ccode / ccode-cli as PE32 executables that
+# run on Windows XP SP2+ and Win7 (32-bit, msvcrt.dll, subsystem 5.01,
+# _WIN32_WINNT=0x0501, no Vista+ APIs). The ANSI TUI is not built (XP/Win7
+# consoles have no VT processing); bare ccode starts the interactive REPL.
+# Requires: i686-w64-mingw32-gcc (apt: gcc-mingw-w64-i686).
+ifeq ($(WIN32),1)
+override CPPFLAGS += -D_WIN32_WINNT=0x0501 -DCCODE_WIN32=1 \
+	-Isrc/win32/include -Ivendor/musl-regex \
+	-include src/win32/win32_compat.h \
+	-DMBEDTLS_PLATFORM_STD_SNPRINTF=__mingw_snprintf \
+	-DMBEDTLS_PLATFORM_STD_VSNPRINTF=__mingw_vsnprintf
+# gnu99: the compat header uses the GNU ,##__VA_ARGS__ variadic-macro idiom.
+override CFLAGS := -Os -std=gnu99 -Wall -Wextra $(filter-out -std=c99 -Wpedantic,$(CFLAGS))
+override LDFLAGS += -static -static-libgcc \
+	-Wl,--major-subsystem-version,5,--minor-subsystem-version,1
+LDLIBS += -lws2_32 -ladvapi32
+WIN32_PORT_SRC = src/win32/win32_compat.c src/win32/win32_console.c \
+	vendor/musl-regex/fnmatch.c vendor/musl-regex/regcomp.c \
+	vendor/musl-regex/regexec.c vendor/musl-regex/regerror.c \
+	vendor/musl-regex/tre-mem.c
+endif
+
 # RETRO=1 wins over HTTP_ONLY/mbedTLS: force the libc5 / 2.2.26 build.
 ifeq ($(RETRO),1)
 BUILD_MODE = retro
@@ -175,16 +209,39 @@ ifneq ($(TEST_PERMISSIONS_SRC),)
 TEST_TARGETS += test-permissions
 endif
 
+# WIN32=1 gets its own object dir (BUILD_MODE stays "https" so the vendored
+# mbedTLS rules apply) and skips the termios/ANSI TUI sources.
+ifeq ($(WIN32),1)
+OBJDIR = .build/win32
+else
 OBJDIR = .build/$(BUILD_MODE)
+endif
 OBJ = $(addprefix $(OBJDIR)/,$(SRC:.c=.o))
 TUI_BIN = $(OBJDIR)/ccode-tui
 CLI_BIN = $(OBJDIR)/ccode-cli
 COMBINED_BIN = $(OBJDIR)/ccode
+ifeq ($(WIN32),1)
+# MinGW's gcc appends .exe to extension-less -o names; name the outputs
+# accordingly and keep the top-level copies as *.exe so a WIN32=1 build
+# never clobbers the host's Linux ccode/ccode-cli binaries.
+TUI_BIN = $(OBJDIR)/ccode-tui.exe
+CLI_BIN = $(OBJDIR)/ccode-cli.exe
+COMBINED_BIN = $(OBJDIR)/ccode.exe
+endif
 CLI_SRC = src/cli/main.c src/config.c src/http.c src/json.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c $(AGENT_SRC) src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c $(PLATFORM_SRC)
+ifeq ($(WIN32),1)
+CLI_SRC += $(WIN32_PORT_SRC)
+endif
 # 单体 ccode：进程内 TUI + CLI 合一个二进制。$(sort) 去掉 SRC/CLI_SRC
 # 里重叠的 config.c/markdown.c/platform；main.c 与 cli/main.c 的 main() 在
 # -DCCODE_COMBINED 下被排除，由 combined_main.c 提供分发入口。
+# WIN32=1: 单体 = CLI + 进程内 TUI（控制台 API 渲染，win32_console.c 解释
+# ANSI；fork 后端 protocol.c 与 termios 不可用，故排除）。
+ifeq ($(WIN32),1)
+COMBINED_SRC = $(sort src/combined_main.c $(filter-out src/tui/protocol.c,$(SRC)) $(CLI_SRC))
+else
 COMBINED_SRC = $(sort src/combined_main.c src/main.c src/cli/main.c $(SRC) $(CLI_SRC))
+endif
 
 # ── Binary size optimization ──
 # Split every function/data into its own section and let the linker drop
@@ -242,9 +299,24 @@ MBEDTLS_OBJ = $(addprefix $(OBJDIR)/,$(MBEDTLS_SRC:.c=.o))
 MBEDTLS_CFLAGS = -Os -std=c99 -w $(SIZE_CFLAGS) $(X86_GNU_FLAGS)
 endif
 
+ifeq ($(WIN32),1)
+all: ccode ccode-cli
+else
 all: ccode ccode-cli ccode-tui
+endif
 .PHONY: all
 
+ifeq ($(WIN32),1)
+# 单体二进制：自带 TUI + CLI（进程内运行，不 fork 后端）。
+ccode: $(COMBINED_BIN)
+	cp $< ./ccode.exe
+
+ccode-tui: $(TUI_BIN)
+	cp $< ./ccode-tui.exe
+
+ccode-cli: $(CLI_BIN)
+	cp $< ./ccode-cli.exe
+else
 # 单体二进制：自带 TUI + CLI（进程内运行，不 fork 后端）。
 ccode: $(COMBINED_BIN)
 	@tmp=$@.$$$$; cp $< $$tmp && mv -f $$tmp $@
@@ -255,6 +327,7 @@ ccode-tui: $(TUI_BIN)
 
 ccode-cli: $(CLI_BIN)
 	@tmp=$@.$$$$; cp $< $$tmp && mv -f $$tmp $@
+endif
 
 $(CLI_BIN): $(CLI_SRC) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ)
 	@mkdir -p $(dir $@)

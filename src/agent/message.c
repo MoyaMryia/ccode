@@ -1229,6 +1229,10 @@ const char *ccode_session_dir(void) {
     }
 
     home = getenv("HOME");
+#ifdef _WIN32
+    /* HOME is not set by default on Windows; fall back to the profile dir. */
+    if (!home || !home[0]) home = getenv("USERPROFILE");
+#endif
     if (!home || strlen(home) >= sizeof(dir) - 20) return NULL;
     len = snprintf(dir, sizeof(dir), "%s/.ccode/sessions", home);
     if (len <= 0 || len >= sizeof(dir)) return NULL;

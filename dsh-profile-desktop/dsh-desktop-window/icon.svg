@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b2a6b"/>
+      <stop offset="1" stop-color="#0a0f24"/>
+    </linearGradient>
+    <linearGradient id="strap" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8aa5ff"/>
+      <stop offset="1" stop-color="#4d6bfe"/>
+    </linearGradient>
+    <linearGradient id="cross" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b9c8ff"/>
+      <stop offset="1" stop-color="#6d84ff"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="26" fill="url(#bg)" stroke="#2c3f8f" stroke-width="3"/>
+  <!-- harness straps forming an H -->
+  <g fill="url(#strap)">
+    <rect x="34" y="28" width="16" height="72" rx="8"/>
+    <rect x="78" y="28" width="16" height="72" rx="8"/>
+  </g>
+  <!-- woven crossbar strap over the uprights -->
+  <rect x="28" y="56" width="72" height="16" rx="8" fill="url(#cross)"/>
+  <!-- buckle holes -->
+  <g fill="#0a0f24">
+    <rect x="38.5" y="40" width="7" height="7" rx="2"/>
+    <rect x="82.5" y="81" width="7" height="7" rx="2"/>
+    <rect x="60.5" y="60.5" width="7" height="7" rx="2"/>
+  </g>
+  <!-- buckle glints -->
+  <g fill="#dbe4ff">
+    <rect x="40" y="41.5" width="4" height="4" rx="1.2"/>
+    <rect x="84" y="82.5" width="4" height="4" rx="1.2"/>
+    <rect x="62" y="62" width="4" height="4" rx="1.2"/>
+  </g>
+</svg>

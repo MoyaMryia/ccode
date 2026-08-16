@@ -4,6 +4,18 @@
 #include <sys/types.h>
 #include "message.h"
 
+/* Cosmetic ANSI sequences in status/diagnostic output. The native Windows
+ * build targets XP/Win7 consoles, which have no VT processing, so these
+ * compile to empty strings there (adjacent-literal concatenation cannot
+ * carry a runtime condition). Runtime-gated rendering (markdown content)
+ * uses ccode_platform_ansi() directly instead. Usage:
+ * "prefix " CCODE_ANSI("33") "colored" CCODE_ANSI("0") " suffix". */
+#ifdef _WIN32
+#define CCODE_ANSI(seq) ""
+#else
+#define CCODE_ANSI(seq) "\033[" seq "m"
+#endif
+
 typedef void (*ccode_content_callback)(const char *content, void *context);
 
 struct ccode_agent_config {

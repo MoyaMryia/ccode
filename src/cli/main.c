@@ -10,6 +10,7 @@
 #include "../json.h"
 #include "../permissions/permissions.h"
 #include "../models.h"
+#include "../platform/platform.h"
 
 struct json_permission_context {
     int output_fd;
@@ -552,6 +553,11 @@ int ccode_cli_main(int argc, char **argv) {
         ccode_print_content_set_markdown(0);
         return run_json_mode(&config);
     }
+#ifdef _WIN32
+    /* Markdown rendering is ANSI-based; XP/Win7 consoles would show raw
+     * escape sequences, so fall back to plain text there. */
+    if (!ccode_platform_ansi()) config.markdown = 0;
+#endif
     ccode_print_content_set_markdown(config.markdown);
 
     memset(&agent, 0, sizeof(agent));
