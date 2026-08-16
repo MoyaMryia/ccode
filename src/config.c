@@ -77,12 +77,24 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
             int key_fd = open(key_file, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
             struct stat key_st;
             FILE *kf = NULL;
+#ifdef _WIN32
+            /* No POSIX permission bits / link counts in the CRT stat: the
+             * 0600 + single-link checks are unenforceable, so only require a
+             * regular file. ACLs are the Windows equivalent and are left to
+             * the user. */
+            if (key_fd >= 0 && fstat(key_fd, &key_st) == 0 &&
+                S_ISREG(key_st.st_mode))
+                kf = fdopen(key_fd, "rb");
+            else if (key_fd >= 0)
+                close(key_fd);
+#else
             if (key_fd >= 0 && fstat(key_fd, &key_st) == 0 &&
                 S_ISREG(key_st.st_mode) && key_st.st_nlink == 1 &&
                 (key_st.st_mode & 0077) == 0)
                 kf = fdopen(key_fd, "rb");
             else if (key_fd >= 0)
                 close(key_fd);
+#endif
             if (kf) {
                 static char file_buf[CCODE_API_KEY_FILE_BUF];
                 size_t pos = 0;
@@ -196,6 +208,11 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
         if (strcmp(argv[i], "--tui") == 0) {
             config->interactive = 1;
             config->tui = 1;
+            continue;
+        }
+        if (strcmp(argv[i], "--no-tui") == 0) {
+            /* Escape hatch (mainly the Windows build): force the line-based
+             * REPL when a bare invocation would start the TUI. */
             continue;
         }
         if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {

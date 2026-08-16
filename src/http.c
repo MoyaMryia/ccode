@@ -257,7 +257,45 @@ static int numeric_host_to_addr(const char *host, const char *port,
 
 /* Run getaddrinfo in a forked child so the caller can enforce a deadline.
  * If the deadline passes before resolution completes, the child is killed.
- * Returns the number of resolved addresses (>=0) or -1 on failure. */
+ * Returns the number of resolved addresses (>=0) or -1 on failure.
+ *
+ * Native Win32 has no fork(): resolve in-process (blocking) and rely on the
+ * connect-phase deadline only. */
+#ifdef _WIN32
+static int resolve_with_deadline(const char *host, const char *port,
+                                 struct resolved_addr *addrs, int max_addrs,
+                                 long long deadline) {
+    struct addrinfo hints;
+    struct addrinfo *result = NULL;
+    struct addrinfo *item;
+    int count = 0;
+    int numeric;
+    (void)deadline;
+
+    if (max_addrs < 1) return -1;
+    numeric = numeric_host_to_addr(host, port, &addrs[0]);
+    if (numeric > 0) return 1;
+    if (numeric < 0) return -1;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = AF_UNSPEC;
+    if (getaddrinfo(host, port, &hints, &result) != 0) return -1;
+    for (item = result; item && count < max_addrs; item = item->ai_next) {
+        struct resolved_addr *ra = &addrs[count];
+        if (item->ai_addrlen > sizeof(ra->addr)) continue;
+        memset(ra, 0, sizeof(*ra));
+        ra->family = item->ai_family;
+        ra->socktype = item->ai_socktype;
+        ra->protocol = item->ai_protocol;
+        ra->addrlen = (socklen_t)item->ai_addrlen;
+        memcpy(&ra->addr, item->ai_addr, item->ai_addrlen);
+        count++;
+    }
+    freeaddrinfo(result);
+    return count > 0 ? count : -1;
+}
+#else
 static int resolve_with_deadline(const char *host, const char *port,
                                  struct resolved_addr *addrs, int max_addrs,
                                  long long deadline) {
@@ -337,6 +375,7 @@ static int resolve_with_deadline(const char *host, const char *port,
     }
     return count > 0 ? count : -1;
 }
+#endif /* _WIN32 */
 
 static int connect_tcp(const char *host, const char *port, long long deadline,
                        int loopback_only) {
@@ -979,10 +1018,24 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
             fprintf(stderr, "Could not load CCODE_CA_FILE.\n");
             goto cleanup;
         }
-    } else if (mbedtls_x509_crt_parse_path(&ca, "/etc/ssl/certs") != 0) {
+    }
+#ifdef _WIN32
+    /* No /etc/ssl/certs on Windows: use cacert.pem next to the exe. */
+    else {
+        char ca_path[4400];
+        if (ccode_win32_default_ca_file(ca_path, sizeof(ca_path)) != 0 ||
+            mbedtls_x509_crt_parse_file(&ca, ca_path) != 0) {
+            fprintf(stderr, "Could not load CA certificates (put cacert.pem "
+                            "next to ccode.exe or set CCODE_CA_FILE).\n");
+            goto cleanup;
+        }
+    }
+#else
+    else if (mbedtls_x509_crt_parse_path(&ca, "/etc/ssl/certs") != 0) {
         fprintf(stderr, "Could not load system CA certificates.\n");
         goto cleanup;
     }
+#endif
     mbedtls_ssl_conf_rng(&config, mbedtls_ctr_drbg_random, &rng);
     mbedtls_ssl_conf_ca_chain(&config, &ca, NULL);
     if (mbedtls_ssl_setup(&ssl, &config) != 0 ||
@@ -1004,14 +1057,27 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
             if ((tls_result != MBEDTLS_ERR_SSL_WANT_READ &&
                  tls_result != MBEDTLS_ERR_SSL_WANT_WRITE) ||
                 tls_wait(&server, tls_result, deadline) != 1) {
-                fprintf(stderr, "TLS handshake failed or timed out.\n");
+                char errbuf[160];
+                mbedtls_strerror(tls_result, errbuf, sizeof(errbuf));
+                fprintf(stderr, "TLS handshake failed or timed out: %s\n",
+                        errbuf);
                 goto cleanup;
             }
         }
     }
-    if (mbedtls_ssl_get_verify_result(&ssl) != 0) {
-        fprintf(stderr, "TLS certificate verification failed.\n");
-        goto cleanup;
+    {
+        uint32_t verify_flags = mbedtls_ssl_get_verify_result(&ssl);
+        if (verify_flags != 0) {
+            char verify_buf[256];
+            mbedtls_x509_crt_verify_info(verify_buf, sizeof(verify_buf),
+                                         "! ", verify_flags);
+            fprintf(stderr, "TLS certificate verification failed: %s",
+                    verify_buf);
+            if (verify_flags & MBEDTLS_X509_BADCERT_EXPIRED)
+                fprintf(stderr, "The certificate validity check failed; "
+                                "check the system clock.\n");
+            goto cleanup;
+        }
     }
     {
         int header_length = snprintf(header, sizeof(header),

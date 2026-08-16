@@ -160,7 +160,7 @@ static char *run_subagent(struct agent_context *ctx,
         sub_cfg.tools_enabled = 0;
     }
 
-    fprintf(stderr, "  \033[2m[sub-agent] depth %d, %s\033[0m\n",
+    fprintf(stderr, "  " CCODE_ANSI("2") "[sub-agent] depth %d, %s" CCODE_ANSI("0") "\n",
             sub_ctx.subagent_depth,
             read_only ? "read-only" : "read-write");
 
@@ -207,7 +207,9 @@ struct pending_subagent {
 
 /* Collect the 4-byte big-endian length + payload written by a sub-agent
  * child into a freshly allocated NUL-terminated string. Returns NULL on
- * malformed or truncated output (the caller reports a structured error). */
+ * malformed or truncated output (the caller reports a structured error).
+ * Only used by the fork-based POSIX dispatch below. */
+#ifndef _WIN32
 static char *pending_subagent_answer(struct pending_subagent *job) {
     unsigned long len;
     char *out;
@@ -224,7 +226,32 @@ static char *pending_subagent_answer(struct pending_subagent *job) {
     out[len] = '\0';
     return out;
 }
+#endif /* !_WIN32 (pending_subagent_answer) */
 
+#ifdef _WIN32
+/* Native Win32 has no fork(): run the sub-agents sequentially in-process.
+ * Read-only parallelism is a latency optimization, not a semantic
+ * requirement; results are identical, appended in job order. */
+static int run_pending_subagents(struct agent_context *ctx,
+                                 const struct ccode_agent_config *cfg,
+                                 struct ccode_conversation *conv,
+                                 struct pending_subagent *jobs, size_t count) {
+    size_t i;
+    for (i = 0; i < count; i++) {
+        char *result = run_subagent(ctx, cfg, jobs[i].task, jobs[i].read_only);
+        if (!result)
+            result = ccode_strdup("{\"error\":\"Sub-agent failed\"}");
+        if (!result) return -1;
+        if (ccode_conversation_add_tool_result(conv, jobs[i].id,
+                                               result) != 0) {
+            free(result);
+            return -1;
+        }
+        free(result);
+    }
+    return 0;
+}
+#else
 /* Launch every job in parallel and append each result to the conversation in
  * job order. Returns 0 on success, -1 on a fatal (OOM) error. */
 static int run_pending_subagents(struct agent_context *ctx,
@@ -448,6 +475,7 @@ static int run_pending_subagents(struct agent_context *ctx,
     }
     return 0;
 }
+#endif /* _WIN32 */
 
 static char *execute_prepared_tool(struct agent_context *ctx,
                                    const struct ccode_agent_config *cfg,
@@ -617,7 +645,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
         size_t i;
 
         if (ccode_cancel_pending()) {
-            fprintf(stderr, "\n  \033[33m[cancelled]\033[0m  agent loop aborted "
+            fprintf(stderr, "\n  " CCODE_ANSI("33") "[cancelled]" CCODE_ANSI("0") "  agent loop aborted "
                     "by user interrupt\n");
             return 130;
         }
@@ -659,8 +687,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                 long el = (long)(now_ts.tv_sec - turn0_ts.tv_sec);
                 char line[256];
                 int n = snprintf(line, sizeof(line),
-                        "\n\033[2mturn %d  mode=%s  workspace=%s  changes=%d  "
-                        "elapsed=%lds\033[0m\n",
+                        "\n" CCODE_ANSI("2") "turn %d  mode=%s  workspace=%s  changes=%d  "
+                        "elapsed=%lds" CCODE_ANSI("0") "\n",
                         turn + 1, mode_label, ctx->workspace_root[0] ? ctx->workspace_root
                                                                  : "(none)",
                         ctx->change_count, el);
@@ -771,7 +799,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         tid = acc.tool_calls[i].id
                             ? acc.tool_calls[i].id : "unknown";
                         fprintf(stderr,
-                                "  \033[33m[refused]\033[0m  incomplete tool call "
+                                "  " CCODE_ANSI("33") "[refused]" CCODE_ANSI("0") "  incomplete tool call "
                                 "(index=%d id=", acc.tool_calls[i].index);
                         ccode_fprint_safe(stderr, tid, "unknown");
                         fputs(")\n", stderr);
@@ -788,7 +816,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         const char *deny =
                             "{\"error\":\"Tool arguments too large\"}";
                         fprintf(stderr,
-                                "  \033[33m[refused]\033[0m  oversized arguments "
+                                "  " CCODE_ANSI("33") "[refused]" CCODE_ANSI("0") "  oversized arguments "
                                 "(index=%d)\n",
                                 acc.tool_calls[i].index);
                         if (append_tool_error(conv,
@@ -803,7 +831,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
 
                     if (conversation_has_tool_result(conv,
                                                      acc.tool_calls[i].id)) {
-                        fputs("  \033[33m[refused]\033[0m  duplicate tool_call_id: ",
+                        fputs("  " CCODE_ANSI("33") "[refused]" CCODE_ANSI("0") "  duplicate tool_call_id: ",
                               stderr);
                         ccode_fprint_safe(stderr, acc.tool_calls[i].id,
                                           "(unknown)");
@@ -819,7 +847,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                     }
 
                     if (!cfg->read_only_tools && !cfg->tools_enabled) {
-                        fputs("  \033[33m[denied]\033[0m  ", stderr);
+                        fputs("  " CCODE_ANSI("33") "[denied]" CCODE_ANSI("0") "  ", stderr);
                         ccode_fprint_safe(stderr, acc.tool_calls[i].name,
                                           "(unknown)");
                         fputs(": tools are not enabled\n", stderr);
@@ -835,7 +863,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                     }
                     if (!is_enabled_tool(acc.tool_calls[i].name,
                                          cfg->tools_enabled)) {
-                        fputs("  \033[33m[denied]\033[0m  ", stderr);
+                        fputs("  " CCODE_ANSI("33") "[denied]" CCODE_ANSI("0") "  ", stderr);
                         ccode_fprint_safe(stderr, acc.tool_calls[i].name,
                                           "(unknown)");
                         fputs(": unavailable\n", stderr);
@@ -867,7 +895,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                             acc.tool_calls[i].name, NULL, &prepared);
                     }
                     if (prepare_error) {
-                        fputs("  \033[33m[refused]\033[0m  ", stderr);
+                        fputs("  " CCODE_ANSI("33") "[refused]" CCODE_ANSI("0") "  ", stderr);
                         ccode_fprint_safe(stderr, acc.tool_calls[i].name,
                                           "(unknown)");
                         fputs(": invalid arguments\n", stderr);
@@ -897,7 +925,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         preq.auto_approve = cfg->auto_approve;
 
                         if (!ccode_permission_ask(&preq)) {
-                            fputs("  \033[33m[denied]\033[0m  ", stderr);
+                            fputs("  " CCODE_ANSI("33") "[denied]" CCODE_ANSI("0") "  ", stderr);
                             ccode_fprint_safe(stderr, acc.tool_calls[i].name,
                                               "(unknown)");
                             fputc('\n', stderr);
@@ -913,7 +941,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         }
                     }
 
-                    fputs("  \033[33m[run]\033[0m  ", stderr);
+                    fputs("  " CCODE_ANSI("33") "[run]" CCODE_ANSI("0") "  ", stderr);
                     ccode_fprint_safe(stderr, acc.tool_calls[i].name,
                                       "(unknown)");
                     fputc('(', stderr);
@@ -974,7 +1002,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         /* Never leave the model without a tool response: a
                          * silent gap would stall the agent loop or make the
                          * next request violate the assistant/tool pairing. */
-                        fputs("  \033[33m[error]\033[0m  tool execution "
+                        fputs("  " CCODE_ANSI("33") "[error]" CCODE_ANSI("0") "  tool execution "
                               "returned no result\n", stderr);
                         if (append_tool_error(conv, acc.tool_calls[i].id,
                                 "{\"error\":\"Tool execution failed\"}") != 0) {
@@ -1166,7 +1194,7 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
         int i;
         putchar('\n');
         if (ctx->change_count > 0) {
-            printf("\033[1mSession summary:\033[0m\n");
+            printf("" CCODE_ANSI("1") "Session summary:" CCODE_ANSI("0") "\n");
             for (i = 0; i < ctx->change_count; i++) {
                 if (strcmp(ctx->change_log[i].type, "command") == 0) {
                     char extra[80] = "";
@@ -1196,7 +1224,7 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
             }
         }
         if (ctx->task_count > 0) {
-            printf("\033[1mTasks:\033[0m\n");
+            printf("" CCODE_ANSI("1") "Tasks:" CCODE_ANSI("0") "\n");
             for (i = 0; i < ctx->task_count; i++) {
                 fputs("  [", stdout);
                 ccode_fprint_safe(stdout, ctx->task_list[i].status, "");
@@ -1413,7 +1441,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
         size_t len;
         int turn_result;
 
-        fprintf(stderr, "\n\033[1m> \033[0m");
+        fprintf(stderr, "\n" CCODE_ANSI("1") "> " CCODE_ANSI("0") "");
         fflush(stderr);
 
         if (!fgets(line, sizeof(line), stdin)) {
@@ -2084,7 +2112,7 @@ cleanup:
         int i;
         if (ctx->change_count > 0) {
             putchar('\n');
-            printf("\033[1mSession summary:\033[0m\n");
+            printf("" CCODE_ANSI("1") "Session summary:" CCODE_ANSI("0") "\n");
             for (i = 0; i < ctx->change_count; i++) {
                 if (strcmp(ctx->change_log[i].type, "command") == 0) {
                     char extra[80] = "";

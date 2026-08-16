@@ -17,7 +17,10 @@ enum tui_key {
     TUI_KEY_END,
     TUI_KEY_PAGE_UP,
     TUI_KEY_PAGE_DOWN,
-    TUI_KEY_DELETE
+    TUI_KEY_DELETE,
+    /* Native Win32 console: the terminal resized (WINDOW_BUFFER_SIZE_EVENT).
+     * POSIX reports resizes via SIGWINCH instead. */
+    TUI_KEY_RESIZE
 };
 
 /* keep_isig: when non-zero, leave ISIG enabled so Ctrl-C generates SIGINT

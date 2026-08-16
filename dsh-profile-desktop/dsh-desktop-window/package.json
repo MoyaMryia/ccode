@@ -1,0 +1,19 @@
+{
+  "name": "dsh-desktop-window",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop window front for the dsh web profile: opens the served GUI in a GTK WebKit webview window.",
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

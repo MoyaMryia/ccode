@@ -11,6 +11,8 @@
  *   - `ccode-cli` (symlink/rename)  -> CLI backend
  */
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 int ccode_tui_main_inprocess(int argc, char **argv);
@@ -37,7 +39,48 @@ static int is_cli_invocation(int argc, char **argv) {
     return 0;
 }
 
+#ifdef _WIN32
+/*
+ * Native Windows build: the TUI runs through the console-API renderer
+ * (win32_console.c) instead of termios/ANSI. Bare `ccode` starts the
+ * in-process TUI when attached to a console; when stdin/stdout are
+ * redirected (pipes, files) it falls back to the line-based REPL so the
+ * binary stays scriptable. Explicit CLI flags work unchanged.
+ */
+int main(int argc, char **argv) {
+    if (is_cli_invocation(argc, argv)) return ccode_cli_main(argc, argv);
+    if (isatty(0) && isatty(1)) {
+        int i;
+        for (i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--no-tui") == 0) break;
+        }
+        if (i >= argc) return ccode_tui_main_inprocess(argc, argv);
+    }
+    {
+        int i;
+        char **repl_argv = malloc(sizeof(char *) * (size_t)(argc + 2));
+        if (!repl_argv) return 1;
+        for (i = 0; i < argc; i++) {
+            repl_argv[i] = argv[i];
+            if (strcmp(argv[i], "--tui") == 0) {
+                if (isatty(0) && isatty(1)) {
+                    free(repl_argv);
+                    return ccode_tui_main_inprocess(argc, argv);
+                }
+                fprintf(stderr, "--tui requires a console; falling back to "
+                                "the interactive REPL.\n");
+            }
+        }
+        repl_argv[argc] = "--interactive";
+        repl_argv[argc + 1] = NULL;
+        i = ccode_cli_main(argc + 1, repl_argv);
+        free(repl_argv);
+        return i;
+    }
+}
+#else
 int main(int argc, char **argv) {
     if (is_cli_invocation(argc, argv)) return ccode_cli_main(argc, argv);
     return ccode_tui_main_inprocess(argc, argv);
 }
+#endif /* _WIN32 */

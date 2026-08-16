@@ -128,4 +128,18 @@ int ccode_platform_socket_nosigpipe(int fd);
  */
 int ccode_platform_send_flags(void);
 
+/*
+ * Whether the stdout/stderr terminal understands ANSI escape sequences.
+ * Always true on POSIX terminals; on native Windows it is true only when
+ * ENABLE_VIRTUAL_TERMINAL_PROCESSING was accepted (Win10+), false on XP/7
+ * consoles, so callers fall back to plain output instead of emitting
+ * escape-sequence garbage.
+ */
+#ifdef _WIN32
+int ccode_win32_ansi_ok(void);
+#define ccode_platform_ansi ccode_win32_ansi_ok
+#else
+static inline int ccode_platform_ansi(void) { return 1; }
+#endif
+
 #endif /* CCODE_PLATFORM_H */

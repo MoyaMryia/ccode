@@ -1,7 +1,9 @@
 #include "tui.h"
 #include "input.h"
 #include "messages.h"
+#ifndef _WIN32
 #include "protocol.h"
+#endif
 #include "render.h"
 #include "status.h"
 #include "term.h"
@@ -20,10 +22,14 @@ static volatile sig_atomic_t tui_stop;
 static volatile sig_atomic_t tui_resize_pending;
 
 static void tui_handle_signal(int signo) {
+#ifndef _WIN32
     if (signo == SIGWINCH) tui_resize_pending = 1;
-    else tui_stop = 1;
+    else
+#endif
+    tui_stop = 1;
 }
 
+#ifndef _WIN32
 static const char *tui_find_backend(const char *requested) {
     static char same_dir[PATH_MAX];
     const char *env_path;
@@ -133,6 +139,8 @@ static void tui_process_backend(struct tui_protocol *protocol,
     }
 }
 
+#endif /* !_WIN32 (fork-path helpers) */
+
 static void tui_draw(struct tui_term *term, struct tui_messages *messages,
                      struct tui_input *input, const char *model, const char *workspace,
                      int permission_pending,
@@ -172,6 +180,7 @@ static void tui_draw(struct tui_term *term, struct tui_messages *messages,
     fflush(stdout);
 }
 
+#ifndef _WIN32
 int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
                   int argc, char **argv) {
     struct tui_term term;
@@ -406,6 +415,7 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
     tui_messages_clear(&messages);
     return result;
 }
+#endif /* !_WIN32 (fork-based TUI) */
 
 #ifdef CCODE_COMBINED
 /* ── In-process TUI ──
@@ -463,13 +473,27 @@ static int inproc_permission_ask(struct ccode_permission_request *req,
     tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, text);
     tui_inproc_redraw(ctx, 1);
     for (;;) {
+#ifdef _WIN32
+        /* WaitForSingleObject is not interrupted by the CRT signal thread,
+         * so poll and honor the cancellation flag explicitly. */
+        int key = tui_term_read_key(100);
+        if (ccode_cancel_pending()) return 0;
+        if (key < 0) continue;
+#else
         int key = tui_term_read_key(-1);
+#endif
         if (key == 'y' || key == 'Y') return 1;
         if (key == 'n' || key == 'N' || key == 27 || key == 3) return 0;
     }
 }
 
 static void inproc_restore_signals(void) {
+#ifdef _WIN32
+    /* The CRT supports SIGINT/SIGTERM via signal(); the other POSIX
+     * signals do not exist on Windows. */
+    (void)signal(SIGINT, tui_handle_signal);
+    (void)signal(SIGTERM, tui_handle_signal);
+#else
     struct sigaction action;
     memset(&action, 0, sizeof(action));
     action.sa_handler = tui_handle_signal;
@@ -480,6 +504,7 @@ static void inproc_restore_signals(void) {
     sigaction(SIGQUIT, &action, NULL);
     action.sa_handler = SIG_IGN;
     sigaction(SIGPIPE, &action, NULL);
+#endif
 }
 
 static void inproc_run_agent(struct ccode_agent_config *cfg, const char *prompt,
@@ -638,6 +663,7 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
         }
         key = tui_term_read_key(16);
         if (key < 0) continue;
+        if (key == TUI_KEY_RESIZE) { tui_resize_pending = 1; continue; }
         if (key == TUI_KEY_UP || key == TUI_KEY_PAGE_UP ||
             key == TUI_KEY_DOWN || key == TUI_KEY_PAGE_DOWN) {
             int viewport = term.rows - 5;

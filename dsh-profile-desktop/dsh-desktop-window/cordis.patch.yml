@@ -1,0 +1,11 @@
+# dsh-desktop-window bundle patch: rides over dsh-base + dsh-web-app (the web
+# profile stack) and inserts one row that opens the served GUI in a native
+# webview window. The row injects webStartup so the URL follows --host/--port
+# exactly like the webserver row does.
+- insert:
+    - id: desktop-window
+      name: 'dsh-desktop-window'
+      inject: [webStartup]
+      config:
+        url: !!js ('http://' + (ctx.webStartup.host ?? '127.0.0.1') + ':' + (ctx.webStartup.port ?? 3080))
+        exitOnClose: true

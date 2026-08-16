@@ -25,7 +25,9 @@ static void tui_fill_agent(struct ccode_agent_config *agent_cfg,
     if (!agent_cfg->workspace) agent_cfg->workspace = ".";
 }
 
-/* 分离的 TUI 前端：fork ccode-cli 当后端，走 JSON Lines 协议。 */
+#ifndef _WIN32
+/* 分离的 TUI 前端：fork ccode-cli 当后端，走 JSON Lines 协议。
+ * (Windows 构建只有进程内 TUI；fork 后端走 POSIX pipe/fork，不可移植。) */
 int ccode_tui_main(int argc, char **argv) {
     struct ccode_config config;
     struct ccode_agent_config agent_cfg;
@@ -38,6 +40,7 @@ int ccode_tui_main(int argc, char **argv) {
     (void)config.tui; /* --tui is accepted for compatibility, not required. */
     return ccode_tui_run(&agent_cfg, config.backend, argc, argv);
 }
+#endif
 
 #ifdef CCODE_COMBINED
 /* 进程内 TUI：不 fork 后端，直接在当前进程里跑 agent（省一个进程）。 */

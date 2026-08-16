@@ -469,6 +469,12 @@ void ccode_agent_context_init(struct agent_context *ctx) {
 }
 
 static int open_absolute_directory(const char *path) {
+#ifdef _WIN32
+    /* The POSIX component walk starts from open("/") — meaningless on
+     * Windows (no single filesystem root). Open the fully-resolved path
+     * directly; the compat layer hands back a virtual directory fd. */
+    return open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+#else
     char copy[4096];
     char *component;
     char *next;
@@ -497,6 +503,7 @@ static int open_absolute_directory(const char *path) {
         component = next + 1;
     }
     return dir_fd;
+#endif /* _WIN32 */
 }
 
 int init_workspace(struct agent_context *ctx, const char *workspace) {

@@ -121,7 +121,16 @@ int mbedtls_platform_win32_vsnprintf(char *s, size_t n, const char *fmt, va_list
         return -1;
     }
 
-#if defined(_TRUNCATE)
+    /* ccode WinXP/Win7 port: vsnprintf_s does not exist in XP's msvcrt.dll
+     * (the import would make the exe fail to start). MinGW's own conforming
+     * __mingw_vsnprintf (libmingwex, statically linked) works everywhere. */
+#if defined(__MINGW32__)
+    ret = __mingw_vsnprintf(s, n, fmt, arg);
+    if (ret < 0 || (size_t) ret == n) {
+        s[n-1] = '\0';
+        ret = -1;
+    }
+#elif defined(_TRUNCATE)
     ret = vsnprintf_s(s, n, _TRUNCATE, fmt, arg);
 #else
     ret = vsnprintf(s, n, fmt, arg);
