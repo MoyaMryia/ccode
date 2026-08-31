@@ -2,6 +2,11 @@
 
 终端里的 AI 编码助手。它连上任何 OpenAI 兼容的 Chat Completions API，在本地帮你读代码、改文件、跑命令。零遥测，本地优先。
 
+必须承认：TUI仍然存在不少问题，但是cli工作得很好，尤其是当你安装其他Agent的时候不给npm就罢工的时候（尤其是对于一个riscv的机器来说）
+
+
+It *WORKS*, that's fine.
+
 ## 它能做什么
 
 - 交互式对话（REPL）或单条提问，二选一
