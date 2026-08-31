@@ -8,6 +8,7 @@
 
 - 交互式 REPL 和单条提问两种模式
 - TUI 与 CLI 双模式：单体 `ccode`（进程内 TUI + CLI，不 fork 子进程），另有分离的 `ccode-tui` + `ccode-cli`（JSON Lines 协议，供其他前端复用）
+- 进程内 TUI（单体默认）slash 命令与 CLI REPL 对齐：`/help /clear /exit /history /model /models[/search|info] /sessions[/delete|rename|export] /resume /session[new|switch|list] /thinking /reasoning`；`/compact` 明确不支持。每轮经会话链（resume+save 同一会话文件）保持对话上下文
 - thinking / reasoning_effort 两个字段独立控制（`--thinking` / `--reasoning[-effort]`，REPL 里 `/thinking` `/reasoning`）
 - 流式输出：每个 SSE 增量到达就立即显示
 - Markdown → ANSI 渲染（标题、加粗、斜体、代码块、列表、引用、链接），带控制字符消毒

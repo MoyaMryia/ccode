@@ -131,6 +131,7 @@ TEST_MD_SRC = tests/test_markdown.c src/markdown.c src/json.c vendor/jsmn/jsmn.c
 TTY_TEST := $(shell python3 -c "import pty" 2>/dev/null && echo 1)
 TEST_TARGETS = test-json test-agent test-http
 TEST_TARGETS += test-tui
+TEST_TARGETS += test-tui-commands
 TEST_TARGETS += test-markdown
 ifneq ($(TTY_TEST),)
 TEST_TARGETS += test-tty
@@ -398,6 +399,10 @@ test-tui: tests/test_tui
 
 tests/test_tui: $(TEST_TUI_SRC) src/tui/input.c src/tui/messages.c src/tui/render.c src/tui/protocol.c src/markdown.c src/json.c vendor/jsmn/jsmn.c $(RETRO_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
+
+# 单体 ccode 的进程内 TUI slash 命令（pty 驱动，需要 Python3）。
+test-tui-commands: ccode
+	python3 ./tests/test_tui_commands.py
 
 test-markdown: tests/test_markdown
 	./tests/test_markdown

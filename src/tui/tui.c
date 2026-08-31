@@ -8,6 +8,8 @@
 #include "status.h"
 #include "term.h"
 #include "theme.h"
+#include "../json.h"
+#include "../models.h"
 #include "../platform/platform.h"
 #include "../permissions/permissions.h"
 
@@ -436,6 +438,16 @@ struct tui_inproc_ctx {
     int *follow_bottom;
     int thinking_enabled;
     char thinking_effort[16];
+    struct ccode_agent_config *config;
+    char model_buf[256];
+    /* Session chaining: when session_path is set, each turn resumes this
+     * session file and saves back to it, so conversation context persists
+     * across turns (same semantics as the CLI JSON backend). */
+    char session_path[4096];
+    const char *base_save;
+    const char *base_resume;
+    char **history;
+    int history_count;
 };
 
 static void tui_inproc_redraw(struct tui_inproc_ctx *ctx, int permission_pending) {
@@ -510,6 +522,16 @@ static void inproc_restore_signals(void) {
 static void inproc_run_agent(struct ccode_agent_config *cfg, const char *prompt,
                              struct tui_inproc_ctx *ctx) {
     cfg->prompt = prompt;
+    if (ctx->session_path[0]) {
+        /* Only resume once the file exists: the first turn of a fresh chain
+         * starts an empty conversation and creates the file on save. */
+        cfg->resume_session =
+            access(ctx->session_path, F_OK) == 0 ? ctx->session_path : NULL;
+        cfg->save_session = ctx->session_path;
+    } else {
+        cfg->resume_session = ctx->base_resume;
+        cfg->save_session = ctx->base_save;
+    }
     cfg->thinking_enabled = ctx->thinking_enabled;
     cfg->thinking_effort = ctx->thinking_effort[0] ? ctx->thinking_effort : NULL;
     cfg->on_content = inproc_on_content;
@@ -527,6 +549,221 @@ static void inproc_run_agent(struct ccode_agent_config *cfg, const char *prompt,
              0, ctx->thinking_enabled, ctx->thinking_effort, *ctx->scroll_offset);
 }
 
+#define INPROC_HISTORY_MAX 64
+#define INPROC_LIST_MAX 256
+
+static void inproc_msg(struct tui_inproc_ctx *ctx, const char *text) {
+    tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, text);
+}
+
+static void inproc_history_add(struct tui_inproc_ctx *ctx, const char *text) {
+    if (ctx->history_count >= INPROC_HISTORY_MAX) {
+        free(ctx->history[0]);
+        memmove(ctx->history, ctx->history + 1,
+                sizeof(char *) * (size_t)(INPROC_HISTORY_MAX - 1));
+        ctx->history_count = INPROC_HISTORY_MAX - 1;
+    }
+    ctx->history[ctx->history_count] = ccode_strdup(text);
+    if (ctx->history[ctx->history_count]) ctx->history_count++;
+}
+
+/* /models [search K | info NAME]: list, keyword-filter, or describe the
+ * upstream model list. Falls back to the raw response body when the JSON
+ * shape is unrecognized (same as the CLI backend). */
+static void inproc_list_models(struct tui_inproc_ctx *ctx, const char *cmd) {
+    char *models;
+    ccode_jsmntok_t tokens[2048];
+    ccode_jsmntok_t *data;
+    int num_tokens;
+    int i;
+    int n = 0;
+    const char *keyword = NULL;
+    const char *info = NULL;
+
+    if (strncmp(cmd, "/models search ", 15) == 0) keyword = cmd + 15;
+    else if (strncmp(cmd, "/models info ", 13) == 0) info = cmd + 13;
+
+    models = ccode_models_fetch(ctx->config->api_base, ctx->config->api_key);
+    if (!models) {
+        inproc_msg(ctx, "Could not fetch model list.");
+        return;
+    }
+    num_tokens = ccode_json_parse(models, strlen(models), tokens, 2048);
+    if (num_tokens > 0 && tokens[0].type == CCODE_JSMN_OBJECT &&
+        ccode_json_find_key(tokens, num_tokens, 0, models, "error")) {
+        /* Upstream failed (webfetch reports failures as {"error":...}). */
+        inproc_msg(ctx, "Could not fetch model list.");
+        free(models);
+        return;
+    }
+    data = (num_tokens > 0 && tokens[0].type == CCODE_JSMN_OBJECT)
+               ? ccode_json_find_key(tokens, num_tokens, 0, models, "data")
+               : NULL;
+    if (!data || data->type != CCODE_JSMN_ARRAY) {
+        inproc_msg(ctx, "Could not fetch model list.");
+        free(models);
+        return;
+    }
+    for (i = 0; i < data->size && n < INPROC_LIST_MAX; i++) {
+        ccode_jsmntok_t *entry = ccode_json_find_index(
+            tokens, num_tokens, (int)(data - tokens), i);
+        ccode_jsmntok_t *id_tok;
+        char id_buf[256];
+        char line[320];
+        if (!entry || entry->type != CCODE_JSMN_OBJECT) continue;
+        id_tok = ccode_json_find_key(tokens, num_tokens,
+                                     (int)(entry - tokens), models, "id");
+        if (!id_tok || id_tok->type != CCODE_JSMN_STRING ||
+            ccode_json_token_to_string(models, id_tok, id_buf,
+                                       sizeof(id_buf)) != 0)
+            continue;
+        if (info) {
+            if (strcmp(id_buf, info) == 0) {
+                ccode_jsmntok_t *ow = ccode_json_find_key(
+                    tokens, num_tokens, (int)(entry - tokens), models,
+                    "owned_by");
+                char ow_buf[128];
+                snprintf(line, sizeof(line), "Model: %s", id_buf);
+                inproc_msg(ctx, line);
+                if (ow && ow->type == CCODE_JSMN_STRING &&
+                    ccode_json_token_to_string(models, ow, ow_buf,
+                                               sizeof(ow_buf)) == 0) {
+                    snprintf(line, sizeof(line), "Provider: %s", ow_buf);
+                    inproc_msg(ctx, line);
+                }
+                break;
+            }
+            continue;
+        }
+        if (keyword && !strstr(id_buf, keyword)) continue;
+        if (ctx->config->model && strcmp(id_buf, ctx->config->model) == 0)
+            snprintf(line, sizeof(line), "  * %s", id_buf);
+        else
+            snprintf(line, sizeof(line), "    %s", id_buf);
+        inproc_msg(ctx, line);
+        n++;
+    }
+    if (info)
+        inproc_msg(ctx, "Model not found.");
+    else if (n == 0)
+        inproc_msg(ctx, "No matching models.");
+    free(models);
+}
+
+static void inproc_list_sessions(struct tui_inproc_ctx *ctx) {
+    char *sessions = ccode_session_list();
+    ccode_jsmntok_t tokens[2048];
+    ccode_jsmntok_t *arr;
+    int num_tokens;
+    int i;
+    int n = 0;
+
+    if (!sessions) {
+        inproc_msg(ctx, "Could not list sessions.");
+        return;
+    }
+    num_tokens = ccode_json_parse(sessions, strlen(sessions), tokens, 2048);
+    /* ccode_session_list() returns {"sessions":[...]} (empty dir -> []). */
+    arr = (num_tokens > 0 && tokens[0].type == CCODE_JSMN_OBJECT)
+              ? ccode_json_find_key(tokens, num_tokens, 0, sessions,
+                                    "sessions")
+              : (num_tokens > 0 && tokens[0].type == CCODE_JSMN_ARRAY)
+                    ? tokens
+                    : NULL;
+    if (!arr || arr->type != CCODE_JSMN_ARRAY) {
+        inproc_msg(ctx, "Could not list sessions.");
+        free(sessions);
+        return;
+    }
+    for (i = 0; i < arr->size && n < INPROC_LIST_MAX; i++) {
+        ccode_jsmntok_t *entry = ccode_json_find_index(
+            tokens, num_tokens, (int)(arr - tokens), i);
+        ccode_jsmntok_t *tok;
+        char name_buf[CCODE_SESSION_NAME_MAX];
+        char line[512];
+        long size = 0;
+        long msgs = 0;
+        if (!entry || entry->type != CCODE_JSMN_OBJECT) continue;
+        tok = ccode_json_find_key(tokens, num_tokens,
+                                  (int)(entry - tokens), sessions, "name");
+        if (!tok || tok->type != CCODE_JSMN_STRING ||
+            ccode_json_token_to_string(sessions, tok, name_buf,
+                                       sizeof(name_buf)) != 0)
+            continue;
+        tok = ccode_json_find_key(tokens, num_tokens,
+                                  (int)(entry - tokens), sessions, "size");
+        if (tok) ccode_json_token_to_int(sessions, tok, &size);
+        tok = ccode_json_find_key(tokens, num_tokens,
+                                  (int)(entry - tokens), sessions, "messages");
+        if (tok) ccode_json_token_to_int(sessions, tok, &msgs);
+        snprintf(line, sizeof(line), "  %d. %s (%ld bytes, %ld msgs)",
+                 i + 1, name_buf, size, msgs);
+        inproc_msg(ctx, line);
+        n++;
+    }
+    if (n == 0) inproc_msg(ctx, "No saved sessions.");
+    free(sessions);
+}
+
+static void inproc_export_session(struct tui_inproc_ctx *ctx,
+                                  const char *args) {
+    char name[256];
+    char fmt[32];
+    char out_path[512];
+    char full[4096];
+    char msg[600];
+    const char *ext = "json";
+    char *exported;
+    FILE *out;
+    int n;
+
+    n = sscanf(args, "%255s %31s", name, fmt);
+    if (n < 1) {
+        inproc_msg(ctx, "Usage: /sessions export NAME [json|md|txt]");
+        return;
+    }
+    if (n >= 2) ext = fmt;
+    exported = ccode_session_export(name, ext);
+    if (!exported) {
+        inproc_msg(ctx, "Could not export session.");
+        return;
+    }
+    {
+        size_t nl = strlen(name);
+        if (nl > 5 && strcmp(name + nl - 5, ".json") == 0) nl -= 5;
+        if (strcmp(ext, "md") == 0 || strcmp(ext, "markdown") == 0)
+            snprintf(out_path, sizeof(out_path), "%.*s.md", (int)nl, name);
+        else if (strcmp(ext, "txt") == 0 || strcmp(ext, "text") == 0)
+            snprintf(out_path, sizeof(out_path), "%.*s.txt", (int)nl, name);
+        else
+            snprintf(out_path, sizeof(out_path), "%.*s.json", (int)nl, name);
+    }
+    snprintf(full, sizeof(full), "%s/%s",
+             ctx->workspace[0] ? ctx->workspace : ".", out_path);
+    out = fopen(full, "wb");
+    if (!out) {
+        inproc_msg(ctx, "Could not write export file.");
+        free(exported);
+        return;
+    }
+    fputs(exported, out);
+    fclose(out);
+    free(exported);
+    snprintf(msg, sizeof(msg), "Session exported to: %s", out_path);
+    inproc_msg(ctx, msg);
+}
+
+/* Join a session name onto the session directory. Returns 0 and fills
+ * path on success. */
+static int inproc_session_path(const char *name, char *path, size_t cap) {
+    const char *dir = ccode_session_dir();
+    if (!dir || name[0] == '\0' || strchr(name, '/'))
+        return -1;
+    if (snprintf(path, cap, "%s/%s", dir, name) >= (int)cap)
+        return -1;
+    return 0;
+}
+
 /* Handle a slash command in-process. Returns 1 if the TUI should exit. */
 static int inproc_handle_command(struct tui_inproc_ctx *ctx, const char *cmd) {
     char msg[512];
@@ -536,12 +773,169 @@ static int inproc_handle_command(struct tui_inproc_ctx *ctx, const char *cmd) {
         ccode_agent_summary_cache_reset();
         *ctx->scroll_offset = 0;
         *ctx->follow_bottom = 1;
+        if (ctx->base_save) unlink(ctx->base_save);
+        ctx->base_resume = NULL;
+        ctx->session_path[0] = '\0';
+        inproc_msg(ctx, "Conversation cleared.");
         return 0;
     }
     if (strcmp(cmd, "/help") == 0) {
-        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM,
-                         "Commands: /help /clear /exit /thinking on|off "
-                         "/reasoning on|off|effort");
+        inproc_msg(ctx,
+                   "Commands: /help /clear /exit /history /compact\n"
+                   "  /model [NAME] | /model default [NAME]\n"
+                   "  /models [search KEYWORD | info NAME]\n"
+                   "  /sessions [delete NAME | rename OLD NEW | export NAME [FORMAT]]\n"
+                   "  /resume [NAME] | /resume --list\n"
+                   "  /session new [NAME] | /session switch NAME | /session list\n"
+                   "  /thinking on|off | /reasoning on|off|effort low|medium|high|xhigh|max");
+        return 0;
+    }
+    if (strcmp(cmd, "/history") == 0) {
+        char header[64];
+        int i;
+        snprintf(header, sizeof(header), "Session history (%d prompts):",
+                 ctx->history_count);
+        inproc_msg(ctx, header);
+        for (i = 0; i < ctx->history_count; i++) {
+            char line[64];
+            snprintf(line, sizeof(line), "  [%d] ", i + 1);
+            tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, line);
+            tui_messages_append_last(ctx->messages, TUI_MSG_SYSTEM,
+                                     ctx->history[i]);
+        }
+        return 0;
+    }
+    if (strcmp(cmd, "/models") == 0 || strncmp(cmd, "/models ", 8) == 0) {
+        inproc_list_models(ctx, cmd);
+        return 0;
+    }
+    if (strcmp(cmd, "/model") == 0) {
+        char msg[300];
+        snprintf(msg, sizeof(msg), "Current model: %s",
+                 ctx->config->model ? ctx->config->model : "(none)");
+        inproc_msg(ctx, msg);
+        return 0;
+    }
+    if (strncmp(cmd, "/model default", 14) == 0 &&
+        (cmd[14] == '\0' || cmd[14] == ' ')) {
+        const char *def = cmd[14] == ' ' ? cmd + 15 : "";
+        if (def[0] == '\0') {
+            const char *cur = getenv("CCODE_MODEL");
+            char msg[300];
+            snprintf(msg, sizeof(msg), "Default model: %s",
+                     cur ? cur : "(not set)");
+            inproc_msg(ctx, msg);
+        } else {
+            char msg[300];
+            setenv("CCODE_MODEL", def, 1);
+            snprintf(msg, sizeof(msg), "Default model set to: %.270s", def);
+            inproc_msg(ctx, msg);
+        }
+        return 0;
+    }
+    if (strncmp(cmd, "/model ", 7) == 0 && cmd[7] != '\0') {
+        ctx->config->model = ctx->model_buf;
+        ctx->model = ctx->model_buf;
+        snprintf(ctx->model_buf, sizeof(ctx->model_buf), "%.*s",
+                 (int)sizeof(ctx->model_buf) - 1, cmd + 7);
+        {
+            char msg[300];
+            snprintf(msg, sizeof(msg), "Model switched to: %s",
+                     ctx->config->model);
+            inproc_msg(ctx, msg);
+        }
+        return 0;
+    }
+    if (strcmp(cmd, "/sessions") == 0 || strcmp(cmd, "/session list") == 0) {
+        inproc_list_sessions(ctx);
+        return 0;
+    }
+    if (strncmp(cmd, "/sessions delete ", 17) == 0) {
+        if (cmd[17] == '\0' || ccode_session_delete(cmd + 17) != 0)
+            inproc_msg(ctx, "Usage: /sessions delete NAME");
+        else
+            inproc_msg(ctx, "Session deleted.");
+        return 0;
+    }
+    if (strncmp(cmd, "/sessions rename ", 17) == 0) {
+        char old_n[256], new_n[256];
+        if (sscanf(cmd + 17, "%255s %255s", old_n, new_n) != 2 ||
+            ccode_session_rename(old_n, new_n) != 0)
+            inproc_msg(ctx, "Usage: /sessions rename OLD NEW");
+        else {
+            char msg[600];
+            snprintf(msg, sizeof(msg), "Session renamed: %s -> %s",
+                     old_n, new_n);
+            inproc_msg(ctx, msg);
+        }
+        return 0;
+    }
+    if (strncmp(cmd, "/sessions export ", 17) == 0) {
+        inproc_export_session(ctx, cmd + 17);
+        return 0;
+    }
+    if (strcmp(cmd, "/resume --list") == 0) {
+        inproc_list_sessions(ctx);
+        return 0;
+    }
+    if (strncmp(cmd, "/resume", 7) == 0 &&
+        (cmd[7] == '\0' || cmd[7] == ' ')) {
+        const char *name = cmd[7] == ' ' ? cmd + 8 : "";
+        char recent[CCODE_SESSION_NAME_MAX];
+        char path[4096];
+        if (name[0] == '\0' &&
+            ccode_session_most_recent(recent, sizeof(recent)) == 0)
+            name = recent;
+        if (name[0] == '\0') {
+            inproc_msg(ctx, "No saved sessions found.");
+        } else if (inproc_session_path(name, path, sizeof(path)) != 0) {
+            inproc_msg(ctx, "Invalid session name.");
+        } else {
+            snprintf(ctx->session_path, sizeof(ctx->session_path), "%s",
+                     path);
+            inproc_msg(ctx,
+                       "Session resumed (takes effect on the next message).");
+        }
+        return 0;
+    }
+    if (strncmp(cmd, "/session new", 12) == 0 &&
+        (cmd[12] == '\0' || cmd[12] == ' ')) {
+        const char *name = cmd[12] == ' ' ? cmd + 13 : "";
+        size_t nl = strlen(name);
+        char path[4096];
+        if (name[0] == '\0') {
+            ctx->base_save = NULL;
+            ctx->base_resume = NULL;
+            ctx->session_path[0] = '\0';
+            inproc_msg(ctx, "New unnamed session started.");
+        } else if (nl < 6 || strcmp(name + nl - 5, ".json") != 0 ||
+                   inproc_session_path(name, path, sizeof(path)) != 0) {
+            inproc_msg(ctx, "Invalid session name.");
+        } else {
+            snprintf(ctx->session_path, sizeof(ctx->session_path), "%s",
+                     path);
+            inproc_msg(ctx, "New session started.");
+        }
+        return 0;
+    }
+    if (strncmp(cmd, "/session switch ", 16) == 0) {
+        const char *name = cmd + 16;
+        size_t nl = strlen(name);
+        char path[4096];
+        if (nl < 6 || strcmp(name + nl - 5, ".json") != 0 ||
+            inproc_session_path(name, path, sizeof(path)) != 0) {
+            inproc_msg(ctx, "Invalid session name.");
+        } else {
+            snprintf(ctx->session_path, sizeof(ctx->session_path), "%s",
+                     path);
+            inproc_msg(ctx, "Session switched.");
+        }
+        return 0;
+    }
+    if (strcmp(cmd, "/compact") == 0) {
+        inproc_msg(ctx,
+                   "/compact is not supported in the in-process TUI "
+                   "(use ccode -i).");
         return 0;
     }
     if (strcmp(cmd, "/thinking") == 0) {
@@ -634,6 +1028,23 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
     if (config->thinking_effort)
         snprintf(ctx.thinking_effort, sizeof(ctx.thinking_effort), "%s",
                  config->thinking_effort);
+    ctx.config = config;
+    ctx.base_save = config->save_session;
+    ctx.base_resume = config->resume_session;
+    ctx.session_path[0] = '\0';
+    ctx.history_count = 0;
+    ctx.history = calloc(INPROC_HISTORY_MAX, sizeof(char *));
+    if (!ctx.history) {
+        tui_term_cleanup(&term);
+        fprintf(stderr, "Out of memory.\n");
+        return 1;
+    }
+    /* Own the model string so /model can switch it in place. */
+    if (config->model) {
+        snprintf(ctx.model_buf, sizeof(ctx.model_buf), "%s", config->model);
+        config->model = ctx.model_buf;
+        ctx.model = ctx.model_buf;
+    }
 
     inproc_restore_signals();
 
@@ -699,9 +1110,13 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
         if (key == '\r' || key == '\n') {
             if (input.len == 0) continue;
             if (input.text[0] == '/') {
-                if (inproc_handle_command(&ctx, input.text)) break;
+                if (inproc_handle_command(&ctx, input.text)) {
+                    tui_input_clear(&input);
+                    goto inproc_exit;
+                }
             } else {
                 tui_messages_add(&messages, TUI_MSG_USER, input.text);
+                inproc_history_add(&ctx, input.text);
                 inproc_run_agent(config, input.text, &ctx);
             }
             tui_input_clear(&input);
@@ -714,8 +1129,14 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
         if (tui_input_key(&input, key)) dirty = 1;
     }
 
+inproc_exit:
     tui_term_cleanup(&term);
     tui_messages_clear(&messages);
+    {
+        int i;
+        for (i = 0; i < ctx.history_count; i++) free(ctx.history[i]);
+        free(ctx.history);
+    }
     return 0;
 }
 #endif /* CCODE_COMBINED */
