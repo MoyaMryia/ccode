@@ -34,6 +34,16 @@ def start_mock():
     return proc
 
 
+def wait_for(check, timeout=5.0):
+    """Poll check() until truthy or timeout; returns the last value."""
+    deadline = time.time() + timeout
+    result = check()
+    while not result and time.time() < deadline:
+        time.sleep(0.1)
+        result = check()
+    return result
+
+
 def main():
     session_dir = tempfile.mkdtemp(prefix="ccode_tui_cmd_sess_")
     workspace = tempfile.mkdtemp(prefix="ccode_tui_cmd_ws_")
@@ -87,23 +97,28 @@ def main():
             ("/models", "Could not fetch model list."),
             ("/sessions", "No saved sessions."),
             ("/session new bad", "Invalid session name."),
-            ("/session new tui_cmd_test.json", "New session started."),
             ("/compact", "not supported in the in-process TUI"),
         ]:
             send(cmd, marker)
             if marker not in buf:
                 failures.append("missing %r after %r" % (marker, cmd))
 
-        # A chained prompt turns into a saved session file (context chain).
+        # A bare prompt mints an auto session chain (context inheritance).
         send("hello", "You said: hello")
-        time.sleep(0.5)
-        chain = os.path.join(session_dir, "tui_cmd_test.json")
-        if not os.path.exists(chain):
-            failures.append("session chain file not created")
+        if not wait_for(lambda: [f for f in os.listdir(session_dir)
+                                 if f.startswith("auto-")]):
+            failures.append("auto session file not created on first prompt")
 
-        send("/history", "[1] hello")
-        if "[1] hello" not in buf:
-            failures.append("history missing recorded prompt")
+        # A named chain via /session new, then a turn onto it.
+        send("/session new tui_cmd_test.json", "New session started.")
+        send("again", "You said: again")
+        if not wait_for(lambda: os.path.exists(
+                os.path.join(session_dir, "tui_cmd_test.json"))):
+            failures.append("named session chain file not created")
+
+        send("/history", "[2] again")
+        if "[1] hello" not in buf or "[2] again" not in buf:
+            failures.append("history missing recorded prompts")
 
         send("/resume --list", "tui_cmd_test.json")
         if "tui_cmd_test.json" not in buf:

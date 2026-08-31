@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 static volatile sig_atomic_t tui_stop;
@@ -445,7 +446,6 @@ struct tui_inproc_ctx {
      * across turns (same semantics as the CLI JSON backend). */
     char session_path[4096];
     const char *base_save;
-    const char *base_resume;
     char **history;
     int history_count;
 };
@@ -519,9 +519,22 @@ static void inproc_restore_signals(void) {
 #endif
 }
 
+static int inproc_session_path(const char *name, char *path, size_t cap);
+
 static void inproc_run_agent(struct ccode_agent_config *cfg, const char *prompt,
                              struct tui_inproc_ctx *ctx) {
     cfg->prompt = prompt;
+    if (!ctx->session_path[0] && !ctx->base_save) {
+        /* Default: lazily mint an auto-named session chain so consecutive
+         * turns share conversation context (same as the line-based REPL).
+         * /clear or /session new starts a fresh chain on the next turn. */
+        char name[80];
+        snprintf(name, sizeof(name), "auto-%ld-%d.json",
+                 (long)time(NULL), (int)getpid());
+        if (inproc_session_path(name, ctx->session_path,
+                                sizeof(ctx->session_path)) != 0)
+            ctx->session_path[0] = '\0';
+    }
     if (ctx->session_path[0]) {
         /* Only resume once the file exists: the first turn of a fresh chain
          * starts an empty conversation and creates the file on save. */
@@ -529,7 +542,7 @@ static void inproc_run_agent(struct ccode_agent_config *cfg, const char *prompt,
             access(ctx->session_path, F_OK) == 0 ? ctx->session_path : NULL;
         cfg->save_session = ctx->session_path;
     } else {
-        cfg->resume_session = ctx->base_resume;
+        cfg->resume_session = NULL;
         cfg->save_session = ctx->base_save;
     }
     cfg->thinking_enabled = ctx->thinking_enabled;
@@ -774,7 +787,6 @@ static int inproc_handle_command(struct tui_inproc_ctx *ctx, const char *cmd) {
         *ctx->scroll_offset = 0;
         *ctx->follow_bottom = 1;
         if (ctx->base_save) unlink(ctx->base_save);
-        ctx->base_resume = NULL;
         ctx->session_path[0] = '\0';
         inproc_msg(ctx, "Conversation cleared.");
         return 0;
@@ -905,7 +917,6 @@ static int inproc_handle_command(struct tui_inproc_ctx *ctx, const char *cmd) {
         char path[4096];
         if (name[0] == '\0') {
             ctx->base_save = NULL;
-            ctx->base_resume = NULL;
             ctx->session_path[0] = '\0';
             inproc_msg(ctx, "New unnamed session started.");
         } else if (nl < 6 || strcmp(name + nl - 5, ".json") != 0 ||
@@ -1030,7 +1041,6 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
                  config->thinking_effort);
     ctx.config = config;
     ctx.base_save = config->save_session;
-    ctx.base_resume = config->resume_session;
     ctx.session_path[0] = '\0';
     ctx.history_count = 0;
     ctx.history = calloc(INPROC_HISTORY_MAX, sizeof(char *));
@@ -1038,6 +1048,11 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
         tui_term_cleanup(&term);
         fprintf(stderr, "Out of memory.\n");
         return 1;
+    }
+    /* An explicit --resume starts the chain from that session file. */
+    if (config->resume_session) {
+        snprintf(ctx.session_path, sizeof(ctx.session_path), "%s",
+                 config->resume_session);
     }
     /* Own the model string so /model can switch it in place. */
     if (config->model) {

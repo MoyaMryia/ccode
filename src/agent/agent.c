@@ -1165,7 +1165,11 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
             reset_workspace_state(&agent_ctx);
             return 1;
         }
-        fprintf(stderr, "Resumed session (%zu messages loaded).\n", conv.count);
+        /* The in-process TUI renders via on_content callbacks; a raw stderr
+         * note here would garble its screen. */
+        if (!cfg->on_content)
+            fprintf(stderr, "Resumed session (%zu messages loaded).\n",
+                    conv.count);
     }
 
     if ((cfg->read_only_tools || cfg->tools_enabled) &&
