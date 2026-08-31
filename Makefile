@@ -446,6 +446,13 @@ install: ccode ccode-cli ccode-tui
 
 .PHONY: install
 
+uninstall:
+	rm -f $(DESTDIR)$(BINDIR)/ccode $(DESTDIR)$(BINDIR)/ccode-tui \
+	      $(DESTDIR)$(BINDIR)/ccode-cli
+	rm -f $(DESTDIR)$(MANDIR)/ccode.1 $(DESTDIR)$(MANDIR)/ccode-cli.1
+
+.PHONY: uninstall
+
 clean:
 	rm -rf .build
 	rm -f ccode ccode-tui ccode-cli tests/test_json tests/test_agent tests/test_permissions tests/test_tui tests/test_markdown

@@ -51,6 +51,7 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 - TLS 内置（mbedTLS / PolarSSL 静态编译进二进制），部署机器上不需要任何系统 TLS 库
 - `-Os` + 函数/数据分节 + 链接期垃圾回收压体积：GNU ld 用 `--gc-sections` + `-s`，Darwin/Apple Silicon 用 `-Wl,-dead_strip` + 链接后 `strip`（不给 Apple ld 传已废弃的 `-s`）；单体 `ccode` 约 500K、`ccode-cli` 约 500K、`ccode-tui` 约 43K（HTTPS 构建）
 - 分离版 `ccode-tui` 只链 JSON Lines 前端；进程内 TUI/agent 集成仅在 `CCODE_COMBINED` 单体构建中编译，避免前端二进制引用 agent/permission 符号
+- `make install` / `make uninstall`：装/卸 `ccode` `ccode-cli` `ccode-tui` 与 man 页到 `$(DESTDIR)$(PREFIX)/bin`、`$(PREFIX)/share/man/man1`（PREFIX 默认 /usr/local）
 - retro 构建同样做体积优化（宿主冒烟全开，guest 原生只裁符号）
 
 ## 路线图
