@@ -181,18 +181,30 @@ static int json_permission_ask(struct ccode_permission_request *request,
     struct json_permission_context *permission = context;
     char line[4096];
     char event[4096];
+    char reason[256];
     int allow;
 
+    if (request) request->deny_reason[0] = '\0';
     snprintf(event, sizeof(event), "%s: %s (workspace: %s)",
              request->tool_name ? request->tool_name : "unknown",
              request->target ? request->target : "",
              request->workspace_root ? request->workspace_root : ".");
     json_print_fd(permission->output_fd, "permission_request", event);
     if (!fgets(line, sizeof(line), stdin)) return 0;
-    if (!strstr(line, "\"type\":\"permission_response\"")) return 0;
-    allow = strstr(line, "\"allow\":true") != NULL ||
-            strstr(line, "\"decision\":\"allow\"") != NULL;
-    json_print_fd(permission->output_fd, "permission_result", allow ? "allowed" : "denied");
+    if (strstr(line, "\"type\":\"permission_response\"")) {
+        allow = strstr(line, "\"allow\":true") != NULL ||
+                strstr(line, "\"decision\":\"allow\"") != NULL;
+        if (!allow && request &&
+            field(line, "reason", reason, sizeof(reason)) == 0)
+            snprintf(request->deny_reason, sizeof(request->deny_reason),
+                     "%s", reason);
+        json_print_fd(permission->output_fd, "permission_result",
+                      allow ? "allowed" : "denied");
+        return allow;
+    }
+    allow = ccode_permission_parse_reply(line, request);
+    json_print_fd(permission->output_fd, "permission_result",
+                  allow ? "allowed" : "denied");
     return allow;
 }
 

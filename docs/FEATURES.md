@@ -32,7 +32,8 @@
 
 ### 安全
 
-- 命令级过滤：敏感路径（密钥、云凭据）拒绝，破坏性命令（`mkfs`、`dd`、`chown` 等）拒绝
+- 命令级过滤：敏感路径（密钥、云凭据）拒绝，破坏性命令（`mkfs`、`dd`、`chown` 等）拒绝；工具结果带具体原因回给模型
+- 工具审批：`y` 批准、`n` 拒绝；其它输入视为拒绝并把原文作为原因回给模型
 - 子进程最小环境（不继承任何父环境变量）
 - Landlock 写沙箱（Linux 可用时自动启用，否则退回命令过滤）；沙箱只放行 `/dev` 下已有设备的 `WRITE_FILE`（如 `/dev/null`），不放开设备节点创建/删除，避免 `git` 等常规命令被误伤
 - 密钥文件要求 0600 权限 + 单硬链接
@@ -72,5 +73,5 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（136 agent + 44 json + 28 http + 14 tui + 21 markdown + 5 tty + 7 e2e + 2 streaming）
+3. 现有测试套件全过（138 agent + 44 json + 28 http + 14 tui + 21 markdown + 5 tty + 7 e2e + 2 streaming）
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟

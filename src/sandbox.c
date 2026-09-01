@@ -117,9 +117,11 @@ static int has_word(const char *haystack, const char *word) {
     return 0;
 }
 
-int ccode_command_mentions_destructive(const char *text) {
+int ccode_command_mentions_destructive_why(const char *text,
+                                           char *reason, size_t reason_size) {
     const char *env;
     size_t i;
+    if (reason && reason_size > 0) reason[0] = '\0';
     if (!text) return 0;
     env = getenv("CCODE_DISABLE_COMMAND_FILTER");
     if (env && strcmp(env, "1") == 0) return 0;
@@ -133,9 +135,17 @@ int ccode_command_mentions_destructive(const char *text) {
                 strstr(text, "seek=") == NULL)
                 continue;
         }
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "mentions destructive command '%s'",
+                     destructive_commands[i]);
         return 1;
     }
     return 0;
+}
+
+int ccode_command_mentions_destructive(const char *text) {
+    return ccode_command_mentions_destructive_why(text, NULL, 0);
 }
 
 /* True when `text` references a path under `ws` (component boundary).
@@ -163,22 +173,42 @@ static int arg_touches_workspace(const char *text, const char *ws) {
     return 0;
 }
 
-int ccode_command_is_sensitive(const char *text, const char *workspace) {
+int ccode_command_is_sensitive_why(const char *text, const char *workspace,
+                                   char *reason, size_t reason_size) {
     const char *env;
     size_t i;
+    if (reason && reason_size > 0) reason[0] = '\0';
     if (!text) return 0;
     env = getenv("CCODE_DISABLE_COMMAND_FILTER");
     if (env && strcmp(env, "1") == 0) return 0;
-    if (is_rm_root(text)) return 1;
+    if (is_rm_root(text)) {
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "refuses rm of filesystem root");
+        return 1;
+    }
     for (i = 0; i < sizeof(hard_sensitive_patterns) /
                       sizeof(hard_sensitive_patterns[0]); i++) {
-        if (has_substr_ci(text, hard_sensitive_patterns[i])) return 1;
+        if (!has_substr_ci(text, hard_sensitive_patterns[i])) continue;
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "mentions sensitive path '%s'",
+                     hard_sensitive_patterns[i]);
+        return 1;
     }
     for (i = 0; i < sizeof(soft_sensitive_patterns) /
                       sizeof(soft_sensitive_patterns[0]); i++) {
         if (!has_substr_ci(text, soft_sensitive_patterns[i])) continue;
         if (arg_touches_workspace(text, workspace)) continue;
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "mentions path outside workspace ('%s')",
+                     soft_sensitive_patterns[i]);
         return 1;
     }
     return 0;
+}
+
+int ccode_command_is_sensitive(const char *text, const char *workspace) {
+    return ccode_command_is_sensitive_why(text, workspace, NULL, 0);
 }

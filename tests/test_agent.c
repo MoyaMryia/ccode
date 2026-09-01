@@ -2916,8 +2916,13 @@ static int test_command_sensitive_paths(void) {
         "ls /home 2>/dev/null || echo nope",  /* /home/ with slash only */
     };
     size_t i;
-    for (i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++)
+    for (i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++) {
+        char why[256];
         ASSERT(ccode_command_is_sensitive(blocked[i], NULL) == 1);
+        ASSERT(ccode_command_is_sensitive_why(blocked[i], NULL,
+                                              why, sizeof(why)) == 1);
+        ASSERT(why[0] != '\0');
+    }
     for (i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++)
         ASSERT(ccode_command_is_sensitive(allowed[i], NULL) == 0);
     /* Workspace tolerance: paths under the workspace root pass even
@@ -2950,8 +2955,13 @@ static int test_command_destructive_words(void) {
         "chmod 755 run.sh && ./run.sh",
     };
     size_t i;
-    for (i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++)
+    for (i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++) {
+        char why[256];
         ASSERT(ccode_command_mentions_destructive(blocked[i]) == 1);
+        ASSERT(ccode_command_mentions_destructive_why(blocked[i],
+                                                      why, sizeof(why)) == 1);
+        ASSERT(why[0] != '\0');
+    }
     for (i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++)
         ASSERT(ccode_command_mentions_destructive(allowed[i]) == 0);
     return 1;
@@ -2967,17 +2977,28 @@ static int test_command_sandbox_enforced(void) {
     r = test_exec_tool("fixtures", "bash", "{\"command\":\"cat /etc/shadow\"}");
     ASSERT(r != NULL);
     ASSERT(strstr(r, "sensitive paths") != NULL);
+    ASSERT(strstr(r, "\"reason\":\"") != NULL);
+    ASSERT(strstr(r, "/etc/shadow") != NULL);
     free(r);
 
     r = test_exec_tool("fixtures", "bash", "{\"command\":\"rm -rf /\"}");
     ASSERT(r != NULL);
     ASSERT(strstr(r, "sensitive paths") != NULL);
+    ASSERT(strstr(r, "filesystem root") != NULL);
     free(r);
 
     r = test_exec_tool("fixtures", "bash",
                        "{\"command\":\"dd if=/dev/zero of=/tmp/x\"}");
     ASSERT(r != NULL);
     ASSERT(strstr(r, "Destructive") != NULL);
+    ASSERT(strstr(r, "mentions destructive command 'dd'") != NULL);
+    free(r);
+
+    r = test_exec_tool("fixtures", "run_command",
+                       "{\"argv\":[\"cat\",\"/etc/shadow\"]}");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "sensitive paths") != NULL);
+    ASSERT(strstr(r, "/etc/shadow") != NULL);
     free(r);
 
     r = test_exec_tool("fixtures", "bash", "{\"command\":\"echo hi\"}");

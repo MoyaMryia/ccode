@@ -134,7 +134,10 @@ char *ccode_strdup(const char *s);
 int append_fixed_cstr(char *buf, size_t cap, size_t *pos,
                              const char *value);
 int append_json_escaped_fixed(char *buf, size_t cap, size_t *pos,
-                                     const char *value);
+                                      const char *value);
+char *format_tool_error_reason(const char *error, const char *reason);
+char *command_policy_refuse(struct agent_context *ctx,
+                            const struct prepared_tool *prepared);
 void change_log_reset(struct agent_context *ctx);
 void change_log_add_ex(struct agent_context *ctx, const char *type,
                               const char *target, int exit_code,

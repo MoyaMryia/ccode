@@ -3,6 +3,8 @@
 
 #include "platform/platform.h"
 
+#include <stddef.h>
+
 /* Command-level path filtering: refuse commands that reference sensitive
  * paths (ssh keys, cloud credentials, shadow, etc.). Returns 1 when the
  * command must be refused, 0 when it is allowed. */
@@ -11,9 +13,13 @@
  * tolerated when the referenced path is inside the workspace. Hard
  * patterns (credentials, /etc/shadow, key material) are always refused. */
 int ccode_command_is_sensitive(const char *text, const char *workspace);
+int ccode_command_is_sensitive_why(const char *text, const char *workspace,
+                                   char *reason, size_t reason_size);
 
 /* Refuse destructive commands (mkfs, dd, chown, ...) appearing as a word in
  * the command text. Returns 1 when the command must be refused. */
 int ccode_command_mentions_destructive(const char *text);
+int ccode_command_mentions_destructive_why(const char *text,
+                                           char *reason, size_t reason_size);
 
 #endif

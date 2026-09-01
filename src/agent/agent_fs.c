@@ -276,6 +276,27 @@ int append_json_escaped_fixed(char *buf, size_t cap, size_t *pos,
     return 0;
 }
 
+char *format_tool_error_reason(const char *error, const char *reason) {
+    char buf[768];
+    size_t pos = 0;
+
+    buf[0] = '\0';
+    if (!error) error = "Tool refused";
+    if (append_fixed_cstr(buf, sizeof(buf), &pos, "{\"error\":\"") != 0 ||
+        append_json_escaped_fixed(buf, sizeof(buf), &pos, error) != 0 ||
+        append_fixed_cstr(buf, sizeof(buf), &pos, "\"") != 0)
+        return ccode_strdup("{\"error\":\"Tool refused\"}");
+    if (reason && reason[0] != '\0') {
+        if (append_fixed_cstr(buf, sizeof(buf), &pos, ",\"reason\":\"") != 0 ||
+            append_json_escaped_fixed(buf, sizeof(buf), &pos, reason) != 0 ||
+            append_fixed_cstr(buf, sizeof(buf), &pos, "\"") != 0)
+            return ccode_strdup("{\"error\":\"Tool refused\"}");
+    }
+    if (append_fixed_cstr(buf, sizeof(buf), &pos, "}") != 0)
+        return ccode_strdup("{\"error\":\"Tool refused\"}");
+    return ccode_strdup(buf);
+}
+
 /* ── Change tracking ── */
 
 void change_log_reset(struct agent_context *ctx) {

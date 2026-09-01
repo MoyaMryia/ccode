@@ -913,6 +913,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
 
                     {
                         struct ccode_permission_request preq;
+                        char *policy_error;
+                        char *deny_json;
                         preq.tool_name = acc.tool_calls[i].name;
                         preq.target = prepared.display;
                         preq.workspace_root = ctx->workspace_root;
@@ -923,6 +925,26 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                                          prepared.kind != PREPARED_DELETE_FILE &&
                                          prepared.kind != PREPARED_MOVE_FILE;
                         preq.auto_approve = cfg->auto_approve;
+                        preq.deny_reason[0] = '\0';
+
+                        policy_error = command_policy_refuse(ctx, &prepared);
+                        if (policy_error) {
+                            fputs("  " CCODE_ANSI("33") "[refused]" CCODE_ANSI("0") "  ", stderr);
+                            ccode_fprint_safe(stderr, acc.tool_calls[i].name,
+                                              "(unknown)");
+                            fputc('\n', stderr);
+                            change_log_add_denied(ctx, acc.tool_calls[i].name);
+                            if (append_tool_error(conv, acc.tool_calls[i].id,
+                                                  policy_error) != 0) {
+                                free(policy_error);
+                                ccode_sse_accumulator_destroy(&acc);
+                                fprintf(stderr, "Out of memory.\n");
+                                result = -1;
+                                break;
+                            }
+                            free(policy_error);
+                            continue;
+                        }
 
                         if (!ccode_permission_ask(&preq)) {
                             fputs("  " CCODE_ANSI("33") "[denied]" CCODE_ANSI("0") "  ", stderr);
@@ -930,13 +952,19 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                                               "(unknown)");
                             fputc('\n', stderr);
                             change_log_add_denied(ctx, acc.tool_calls[i].name);
-                            if (append_tool_error(conv, acc.tool_calls[i].id,
-                                    "{\"error\":\"Permission denied by user\"}") != 0) {
+                            deny_json = format_tool_error_reason(
+                                "Permission denied by user",
+                                preq.deny_reason);
+                            if (!deny_json ||
+                                append_tool_error(conv, acc.tool_calls[i].id,
+                                                  deny_json) != 0) {
+                                free(deny_json);
                                 ccode_sse_accumulator_destroy(&acc);
                                 fprintf(stderr, "Out of memory.\n");
                                 result = -1;
                                 break;
                             }
+                            free(deny_json);
                             continue;
                         }
                     }

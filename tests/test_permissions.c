@@ -164,6 +164,24 @@ int main(void) {
     assert(strchr(output, '\007') == NULL);
     free(output);
 
+    {
+        struct ccode_permission_request parsed;
+        memset(&parsed, 0, sizeof(parsed));
+        assert(ccode_permission_parse_reply("y\n", &parsed) == 1);
+        assert(parsed.deny_reason[0] == '\0');
+        assert(ccode_permission_parse_reply("Y", &parsed) == 1);
+        assert(ccode_permission_parse_reply("yes", &parsed) == 1);
+        assert(ccode_permission_parse_reply("n\n", &parsed) == 0);
+        assert(parsed.deny_reason[0] == '\0');
+        assert(ccode_permission_parse_reply("N", &parsed) == 0);
+        assert(parsed.deny_reason[0] == '\0');
+        assert(ccode_permission_parse_reply("", &parsed) == 0);
+        assert(ccode_permission_parse_reply("n too dangerous\n", &parsed) == 0);
+        assert(strcmp(parsed.deny_reason, "too dangerous") == 0);
+        assert(ccode_permission_parse_reply("don't touch /etc\n", &parsed) == 0);
+        assert(strcmp(parsed.deny_reason, "don't touch /etc") == 0);
+    }
+
     puts("permission display escaping tests passed");
     return 0;
 }

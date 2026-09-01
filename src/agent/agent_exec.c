@@ -41,6 +41,45 @@
 /* GIT_CEILING_DIRECTORIES environment entry, set by exec_git_command. */
 static char git_ceiling_environment[4096 + 32];
 
+static char *command_reject_json(const char *error, const char *reason) {
+    return format_tool_error_reason(error, reason);
+}
+
+char *command_policy_refuse(struct agent_context *ctx,
+                            const struct prepared_tool *prepared) {
+    char why[256];
+    const char *workspace;
+    size_t i;
+
+    if (!prepared) return NULL;
+    workspace = ctx && ctx->workspace_initialized ? ctx->workspace_root : NULL;
+    if (prepared->kind == PREPARED_RUN_COMMAND) {
+        for (i = 0; i < prepared->argc; i++) {
+            if (ccode_command_is_sensitive_why(prepared->argv[i], workspace,
+                                               why, sizeof(why)))
+                return command_reject_json(
+                    "Command may access sensitive paths", why);
+            if (ccode_command_mentions_destructive_why(prepared->argv[i],
+                                                       why, sizeof(why)))
+                return command_reject_json(
+                    "Destructive command is not allowed", why);
+        }
+        return NULL;
+    }
+    if (prepared->kind == PREPARED_BASH) {
+        if (ccode_command_is_sensitive_why(prepared->value, workspace,
+                                           why, sizeof(why)))
+            return command_reject_json(
+                "Command may access sensitive paths", why);
+        if (ccode_command_mentions_destructive_why(prepared->value,
+                                                   why, sizeof(why)))
+            return command_reject_json(
+                "Destructive command is not allowed", why);
+        return NULL;
+    }
+    return NULL;
+}
+
 #ifdef _WIN32
 /* ────────────────────────────────────────────────────────────────────
  * Native Win32 execution backend (CreateProcess + reader threads).
@@ -248,13 +287,18 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
         return ccode_strdup("{\"error\":\"Shell string execution is not allowed\"}");
     if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
-    for (i = 0; i < argc; i++) {
-        if (ccode_command_is_sensitive(argv[i], ctx->workspace_root))
-            return ccode_strdup(
-                "{\"error\":\"Command may access sensitive paths\"}");
-        if (ccode_command_mentions_destructive(argv[i]))
-            return ccode_strdup(
-                "{\"error\":\"Destructive command is not allowed\"}");
+    {
+        char why[256];
+        for (i = 0; i < argc; i++) {
+            if (ccode_command_is_sensitive_why(argv[i], ctx->workspace_root,
+                                               why, sizeof(why)))
+                return command_reject_json(
+                    "Command may access sensitive paths", why);
+            if (ccode_command_mentions_destructive_why(argv[i],
+                                                       why, sizeof(why)))
+                return command_reject_json(
+                    "Destructive command is not allowed", why);
+        }
     }
 
     if (resolve_command_path(argv[0], executable, sizeof(executable)) != 0)
@@ -619,13 +663,18 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
      * patterns can be tolerated for paths inside the workspace. */
     if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
-    for (i = 0; i < argc; i++) {
-        if (ccode_command_is_sensitive(argv[i], ctx->workspace_root))
-            return ccode_strdup(
-                "{\"error\":\"Command may access sensitive paths\"}");
-        if (ccode_command_mentions_destructive(argv[i]))
-            return ccode_strdup(
-                "{\"error\":\"Destructive command is not allowed\"}");
+    {
+        char why[256];
+        for (i = 0; i < argc; i++) {
+            if (ccode_command_is_sensitive_why(argv[i], ctx->workspace_root,
+                                               why, sizeof(why)))
+                return command_reject_json(
+                    "Command may access sensitive paths", why);
+            if (ccode_command_mentions_destructive_why(argv[i],
+                                                       why, sizeof(why)))
+                return command_reject_json(
+                    "Destructive command is not allowed", why);
+        }
     }
 
     if (ccode_run_pipe(stdout_pipe) != 0 || ccode_run_pipe(stderr_pipe) != 0) {
