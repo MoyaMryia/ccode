@@ -119,13 +119,39 @@ void ccode_cancel_signal_handler(int signo) {
     }
 }
 
+/* SIGTERM/SIGHUP: terminate every active command process group (same set the
+ * SIGINT handler knows about), then re-raise the signal with the default
+ * disposition so the process dies as expected instead of hanging. */
+static void ccode_terminate_signal_handler(int signo) {
+    int i;
+    for (i = 0; i < ccode_active_child_count; i++) {
+        if (ccode_active_children[i] > 0)
+            kill(-(pid_t)ccode_active_children[i], SIGKILL);
+    }
+    ccode_active_child_count = 0;
+    signal(signo, SIG_DFL);
+    raise(signo);
+}
+
 void ccode_cancel_install(void) {
     struct sigaction sa;
+    struct sigaction term;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = ccode_cancel_signal_handler;
     sa.sa_flags = SA_RESTART;
     (void)sigemptyset(&sa.sa_mask);
     (void)sigaction(SIGINT, &sa, NULL);
+    /* SIGTERM/SIGHUP get a cleanup-then-die handler: kill the command
+     * process groups we started, then restore the default action and
+     * re-raise so the process still terminates with the right status. This
+     * prevents a `kill <ccode-cli>` from orphaning an in-flight command's
+     * process group. */
+    memset(&term, 0, sizeof(term));
+    term.sa_handler = ccode_terminate_signal_handler;
+    term.sa_flags = SA_RESTART;
+    (void)sigemptyset(&term.sa_mask);
+    (void)sigaction(SIGTERM, &term, NULL);
+    (void)sigaction(SIGHUP, &term, NULL);
     ccode_cancel_flag = 0;
     ccode_active_child_count = 0;
     ccode_cancel_defaulted = 0;

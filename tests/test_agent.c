@@ -437,6 +437,28 @@ static int test_run_command_nul_is_not_truncated(void) {
     return 1;
 }
 
+static int test_run_command_background_descendant_killed(void) {
+    char *r;
+    struct timespec ts;
+
+    unlink("fixtures/bg_marker");
+    test_reset_workspace();
+    r = test_exec_tool("fixtures", "bash",
+        "{\"command\":\"{ sleep 2; touch bg_marker; } >/dev/null 2>&1 & "
+        "echo started\"}");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "\"exit_code\":0") != NULL);
+    free(r);
+
+    /* If the command's process group was not reaped after the direct child
+     * exited, the backgrounded subshell survives and creates the marker. */
+    ts.tv_sec = 3;
+    ts.tv_nsec = 0;
+    nanosleep(&ts, NULL);
+    ASSERT(access("fixtures/bg_marker", F_OK) != 0);
+    return 1;
+}
+
 static int test_run_command_binary_output_is_omitted(void) {
     char *argv[] = {"python3", "-c",
                     "import os,sys; sys.stdout.buffer.write(os.urandom(1024))"};
@@ -4111,6 +4133,7 @@ int main(int argc, char **argv) {
 
     /* Phase 2: run_command tests */
     TEST(run_command_nul_is_not_truncated);
+    TEST(run_command_background_descendant_killed);
     TEST(run_command_binary_output_is_omitted);
     TEST(run_command_simple_echo);
     TEST(run_command_fast_no_output_reaped);

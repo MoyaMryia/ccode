@@ -832,6 +832,15 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
                 waitpid(child, &child_status, 0);
         }
 
+        /* The direct child is gone. Any background job it left in the same
+         * process group (e.g. `sleep 30 &`) is still alive; terminate the
+         * group so a single tool call cannot leak a process past its
+         * completion. The pgid stays allocated while members exist, and the
+         * kill is a no-op (ESRCH) once the group is empty. Timeout and
+         * not-yet-exited paths already killed the group above. */
+        if (!timed_out)
+            (void)kill(-child, SIGKILL);
+
         status = child_status;
     }
 
