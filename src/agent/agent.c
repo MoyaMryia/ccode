@@ -2257,6 +2257,10 @@ int test_prepare_tool_display(const char *name, const char *arguments,
     n = snprintf(dest, dest_size, "%s", prepared.display);
     return n >= 0 && (size_t)n < dest_size ? 0 : -1;
 }
+const char *test_prepare_tool_error(const char *name, const char *arguments) {
+    struct prepared_tool prepared;
+    return prepare_tool(name, arguments, &prepared);
+}
 void test_change_log_reset(void) { change_log_reset(&agent_ctx); }
 int test_change_log_count(void) { return agent_ctx.change_count; }
 const char *test_change_log_serialize(void) { return change_log_serialize(&agent_ctx); }

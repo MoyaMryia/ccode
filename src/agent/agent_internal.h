@@ -14,6 +14,9 @@
 
 /* Limits shared across the agent translation units. */
 #define MAX_TOOL_OUTPUT (1024 * 50)
+/* Max {"arguments": ...} envelopes the tool-argument unwrapper will peel;
+ * deeper nesting is rejected instead of followed. */
+#define CCODE_MAX_TOOL_ARG_WRAP 8
 #define CCODE_MAX_ARGUMENT_LEN   4095
 #define CCODE_MAX_ARGS           16
 #define CCODE_RUN_COMMAND_TIMEOUT 120000

@@ -50,6 +50,7 @@ char *test_exec_tool(const char *workspace, const char *name,
 int test_decode_string(const char *json, char *dest, size_t dest_size);
 int test_prepare_tool_display(const char *name, const char *arguments,
                               char *dest, size_t dest_size);
+const char *test_prepare_tool_error(const char *name, const char *arguments);
 int test_conversation_has_tool_result(const struct ccode_conversation *conv,
                                       const char *tool_call_id);
 
@@ -862,6 +863,361 @@ static int test_tool_arguments_are_strict(void) {
     free(long_json);
     ASSERT(r != NULL && strstr(r, "Invalid glob arguments") != NULL);
     free(r);
+    return 1;
+}
+
+/* ── Tool argument shape matrix ──
+ * Models emit tool arguments in several shapes: the plain object, the
+ * OpenAI/DeepSeek-wire {"arguments": ...} envelope in object or JSON-string
+ * form, sometimes nested several levels deep, plus malformed and hostile
+ * variants. This matrix checks that every valid shape prepares cleanly
+ * (including multi-key payloads that overflowed the old 8-token unwrap
+ * buffer) and that every invalid shape fails with a recognizable error
+ * instead of crashing or collapsing into a misleading per-tool message. */
+struct arg_shape {
+    const char *tool;
+    const char *args;
+    const char *want_error; /* NULL means it must prepare successfully */
+};
+
+static int check_arg_shape(const struct arg_shape *c) {
+    const char *err = test_prepare_tool_error(c->tool, c->args);
+    if (c->want_error == NULL) {
+        if (err != NULL) {
+            fprintf(stderr, "    %s args=%s: expected OK, got '%s'\n",
+                    c->tool, c->args, err);
+            return 0;
+        }
+        return 1;
+    }
+    if (err == NULL) {
+        fprintf(stderr, "    %s args=%s: expected error '%s', got OK\n",
+                c->tool, c->args, c->want_error);
+        return 0;
+    }
+    if (strstr(err, c->want_error) == NULL) {
+        fprintf(stderr, "    %s args=%s: expected error containing '%s', got '%s'\n",
+                c->tool, c->args, c->want_error, err);
+        return 0;
+    }
+    return 1;
+}
+
+/* dst = {"arguments":<inner>} */
+static void wrap_object_envelope(char *dst, size_t cap, const char *inner) {
+    snprintf(dst, cap, "{\"arguments\":%s}", inner);
+}
+
+/* dst = {"arguments":"<json-escaped inner>"} */
+static void wrap_string_envelope(char *dst, size_t cap, const char *inner) {
+    char esc[16000];
+    size_t i = 0, j = 0;
+    while (inner[i] != '\0' && j + 2 < sizeof(esc)) {
+        if (inner[i] == '"' || inner[i] == '\\') esc[j++] = '\\';
+        esc[j++] = inner[i++];
+    }
+    esc[j] = '\0';
+    snprintf(dst, cap, "{\"arguments\":\"%s\"}", esc);
+}
+
+static int test_tool_argument_shapes(void) {
+    static const struct arg_shape cases[] = {
+        /* plain payloads */
+        { "read_file", "{\"file_path\":\"x\"}", NULL },
+        { "grep", "{\"pattern\":\"n\",\"path\":\"src\",\"context\":1}", NULL },
+        { "run_command", "{\"argv\":[\"true\"],\"timeout_ms\":1000}", NULL },
+
+        /* single object envelope; the multi-key inner payloads are the
+         * exact shape that overflowed the old 8-token unwrap buffer */
+        { "read_file", "{\"arguments\":{\"file_path\":\"x\"}}", NULL },
+        { "grep", "{\"arguments\":{\"pattern\":\"n\",\"path\":\"src\",\"context\":1}}", NULL },
+        { "grep", "{\"arguments\":{\"pattern\":\"n\",\"include\":\"*.c\",\"path\":\"src\",\"context\":0}}", NULL },
+        { "run_command", "{\"arguments\":{\"argv\":[\"echo\",\"a\",\"b\"],\"timeout_ms\":1000}}", NULL },
+        { "web_fetch", "{\"arguments\":{\"url\":\"http://127.0.0.1/\",\"method\":\"GET\",\"timeout\":5}}", NULL },
+
+        /* single JSON-string envelope */
+        { "read_file", "{\"arguments\":\"{\\\"file_path\\\":\\\"x\\\"}\"}", NULL },
+        { "grep", "{\"arguments\":\"{\\\"pattern\\\":\\\"n\\\",\\\"path\\\":\\\"src\\\",\\\"context\\\":1}\"}", NULL },
+        { "run_command", "{\"arguments\":\"{\\\"argv\\\":[\\\"true\\\"],\\\"timeout_ms\\\":1000}\"}", NULL },
+
+        /* malformed / not JSON at all */
+        { "read_file", "", "Could not parse tool arguments" },
+        { "read_file", "[]", "Could not parse tool arguments" },
+        { "read_file", "{\"file_path\":", "Could not parse tool arguments" },
+        { "read_file", "{\"file_path\":\"x\"} trailing", "Could not parse tool arguments" },
+        { "read_file", "{\"arguments\":\"{bad}\"}", "Could not parse tool arguments" },
+
+        /* envelope whose value is neither an object nor a string */
+        { "read_file", "{\"arguments\":42}", "envelope" },
+
+        /* extra outer key is not a valid envelope: per-tool rejection */
+        { "read_file", "{\"arguments\":{\"file_path\":\"x\"},\"extra\":1}",
+          "Invalid read_file arguments" },
+        /* envelope stripped, bad payload: per-tool rejection */
+        { "read_file", "{\"arguments\":{}}", "Invalid read_file arguments" },
+        { "read_file", "{\"arguments\":{\"file_path\":\"~/.ssh/id_rsa\"}}",
+          "Home-relative paths are not allowed" },
+
+        /* hostile intents stay rejected after any unwrapping */
+        { "run_command", "{\"argv\":[\"sh\",\"-c\",\"echo hi\"]}",
+          "Shell string execution is not allowed" },
+        { "run_command", "{\"arguments\":{\"argv\":[\"sh\",\"-c\",\"echo hi\"]}}",
+          "Shell string execution is not allowed" },
+        { "bash", "{\"command\":\"cat ~/secret\"}",
+          "Home-relative paths are not allowed" },
+        { "bash", "{\"arguments\":{\"command\":\"cat ~/secret\"}}",
+          "Home-relative paths are not allowed" },
+        { "write_file", "{\"file_path\":\"~/x\",\"content\":\"y\"}",
+          "Home-relative paths are not allowed" },
+
+        /* whitespace/formatting around the envelope must not matter */
+        { "read_file", "  { \"arguments\" : { \"file_path\" : \"x\" } }  ", NULL },
+        { "read_file", "{\n\"arguments\":\n{\"file_path\":\"x\"}\n}", NULL },
+
+        /* envelope value of the wrong JSON type */
+        { "read_file", "{\"arguments\":null}", "envelope" },
+        { "read_file", "{\"arguments\":true}", "envelope" },
+        { "read_file", "{\"arguments\":[1,2]}", "envelope" },
+        { "read_file", "{\"arguments\":[]}", "envelope" },
+
+        /* strictness: trailing data / multiple roots / BOM / raw control */
+        { "read_file", "{\"arguments\":{\"file_path\":\"x\"}}x",
+          "Could not parse tool arguments" },
+        { "read_file",
+          "{\"arguments\":{\"file_path\":\"x\"}}{\"arguments\":{\"file_path\":\"y\"}}",
+          "Could not parse tool arguments" },
+        { "read_file", "\xEF\xBB\xBF{\"file_path\":\"x\"}",
+          "Could not parse tool arguments" },
+        { "read_file", "{\"file_path\":\"a\nb\"}",
+          "Could not parse tool arguments" },
+
+        /* an escaped key name is not the literal envelope key */
+        { "read_file", "{\"argu\\u006dents\":{\"file_path\":\"x\"}}",
+          "Invalid read_file arguments" },
+
+        /* duplicate / unknown keys that only appear after unwrapping */
+        { "read_file",
+          "{\"arguments\":{\"file_path\":\"x\",\"file_path\":\"y\"}}",
+          "Invalid read_file arguments" },
+        { "read_file", "{\"arguments\":{\"file_path\":\"x\",\"extra\":1}}",
+          "Invalid read_file arguments" },
+        { "grep", "{\"arguments\":{\"pattern\":\"n\",\"pattern\":\"m\"}}",
+          "Invalid grep arguments" },
+
+        /* run_command shape and numeric hostility behind an envelope */
+        { "run_command", "{\"arguments\":{\"argv\":\"true\"}}",
+          "Invalid run_command arguments" },
+        { "run_command", "{\"arguments\":{\"argv\":[1,2]}}",
+          "Invalid argv element" },
+        { "run_command", "{\"arguments\":{\"argv\":[]}}",
+          "Invalid run_command arguments" },
+        { "run_command", "{\"arguments\":{\"argv\":[\"true\"]}}", NULL },
+        { "run_command", "{\"arguments\":{\"argv\":[\"true\"],\"timeout_ms\":0}}",
+          "Invalid timeout_ms" },
+        { "run_command", "{\"arguments\":{\"argv\":[\"true\"],\"timeout_ms\":-5}}",
+          "Invalid timeout_ms" },
+        { "run_command", "{\"arguments\":{\"argv\":[\"true\"],\"timeout_ms\":300001}}",
+          "Invalid timeout_ms" },
+        { "run_command", "{\"arguments\":{\"argv\":[\"true\"],\"timeout_ms\":\"1000\"}}",
+          "Invalid run_command arguments" },
+        { "run_command", "{\"arguments\":{\"argv\":[\"true\"],\"timeout_ms\":1.5}}",
+          "Invalid timeout_ms" },
+        { "run_command",
+          "{\"arguments\":{\"argv\":[\"true\"],\"timeout_ms\":1000,\"timeout_ms\":2000}}",
+          "Invalid run_command arguments" },
+
+        /* grep context hostility */
+        { "grep", "{\"arguments\":{\"pattern\":\"n\",\"context\":101}}",
+          "Invalid grep arguments" },
+        { "grep", "{\"arguments\":{\"pattern\":\"n\",\"context\":-1}}",
+          "Invalid grep arguments" },
+        { "grep", "{\"arguments\":{\"pattern\":\"n\",\"context\":\"2\"}}",
+          "Invalid grep arguments" },
+
+        /* a full function-call object is not a bare envelope: clear error */
+        { "read_file", "{\"name\":\"read_file\",\"arguments\":{\"file_path\":\"x\"}}",
+          "Invalid read_file arguments" },
+        { "read_file",
+          "{\"type\":\"function\",\"function\":{\"name\":\"read_file\","
+          "\"arguments\":\"{\\\"file_path\\\":\\\"x\\\"}\"}}",
+          "Invalid read_file arguments" },
+    };
+    char obj_a[16384];
+    char obj_b[16384];
+    char big[52000 + 64];
+    const char *cur;
+    size_t i;
+    int d;
+    int failed = 0;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        if (!check_arg_shape(&cases[i])) failed++;
+    }
+
+    /* mixed object/string envelopes, increasing depth */
+    cur = "{\"file_path\":\"x\"}";
+    for (d = 1; d <= 4; d++) {
+        if ((d % 2) == 1) {
+            wrap_object_envelope(obj_a, sizeof(obj_a), cur);
+            cur = obj_a;
+        } else {
+            wrap_string_envelope(obj_b, sizeof(obj_b), cur);
+            cur = obj_b;
+        }
+        if (test_prepare_tool_error("read_file", cur) != NULL) {
+            fprintf(stderr, "    mixed envelope depth %d: expected OK\n", d);
+            failed++;
+        }
+    }
+
+    /* object-only envelopes: up to the wrap cap passes; one past it must be
+     * a clear "nested too deep" error, not a per-tool message */
+    cur = "{\"file_path\":\"x\"}";
+    for (d = 1; d <= CCODE_MAX_TOOL_ARG_WRAP; d++) {
+        char *dst = (cur == obj_a) ? obj_b : obj_a;
+        wrap_object_envelope(dst, sizeof(obj_a), cur);
+        cur = dst;
+        if (test_prepare_tool_error("read_file", cur) != NULL) {
+            fprintf(stderr, "    object envelope depth %d: expected OK\n", d);
+            failed++;
+        }
+    }
+    {
+        char *dst = (cur == obj_a) ? obj_b : obj_a;
+        const char *e;
+        wrap_object_envelope(dst, sizeof(obj_a), cur);
+        e = test_prepare_tool_error("read_file", dst);
+        if (e == NULL || strstr(e, "nested too deep") == NULL) {
+            fprintf(stderr,
+                    "    depth past cap: expected 'nested too deep', got '%s'\n",
+                    e ? e : "OK");
+            failed++;
+        }
+    }
+
+    /* string-only envelopes: deep escaping grows fast, but must still unwrap
+     * to the cap and then stop with a clear error instead of running away */
+    cur = "{\"file_path\":\"x\"}";
+    for (d = 1; d <= CCODE_MAX_TOOL_ARG_WRAP; d++) {
+        char *dst = (cur == obj_a) ? obj_b : obj_a;
+        wrap_string_envelope(dst, sizeof(obj_a), cur);
+        cur = dst;
+    }
+    if (test_prepare_tool_error("read_file", cur) != NULL) {
+        fprintf(stderr, "    string envelope depth 8: expected OK\n");
+        failed++;
+    }
+    {
+        char *dst = (cur == obj_a) ? obj_b : obj_a;
+        const char *e;
+        wrap_string_envelope(dst, sizeof(obj_a), cur);
+        e = test_prepare_tool_error("read_file", dst);
+        if (e == NULL || strstr(e, "nested too deep") == NULL) {
+            fprintf(stderr,
+                    "    string depth past cap: expected 'nested too deep', got '%s'\n",
+                    e ? e : "OK");
+            failed++;
+        }
+    }
+
+    /* absurd nesting depth: the cap must trip, not crash or run away */
+    cur = "{\"file_path\":\"x\"}";
+    for (d = 1; d <= 50; d++) {
+        char *dst = (cur == obj_a) ? obj_b : obj_a;
+        wrap_object_envelope(dst, sizeof(obj_a), cur);
+        cur = dst;
+    }
+    {
+        const char *e = test_prepare_tool_error("read_file", cur);
+        if (e == NULL || strstr(e, "nested too deep") == NULL) {
+            fprintf(stderr,
+                    "    deep object nesting: expected 'nested too deep', got '%s'\n",
+                    e ? e : "OK");
+            failed++;
+        }
+    }
+
+    /* envelope whose inner payload has far too many keys: must error, not crash */
+    {
+        char many[8192];
+        const char *e;
+        size_t n = (size_t)snprintf(many, sizeof(many),
+                                    "{\"arguments\":{\"pattern\":\"n\"");
+        int k;
+        for (k = 0; k < 200 && n + 32 < sizeof(many); k++)
+            n += (size_t)snprintf(many + n, sizeof(many) - n,
+                                  ",\"k%d\":%d", k, k);
+        snprintf(many + n, sizeof(many) - n, "}}");
+        e = test_prepare_tool_error("grep", many);
+        if (e == NULL || strstr(e, "\"error\"") == NULL) {
+            fprintf(stderr, "    many-key envelope: expected an error, got '%s'\n",
+                    e ? e : "OK");
+            failed++;
+        }
+    }
+
+    /* deliberately incorrect calls: every one must come back as a structured
+     * {"error": ...} rather than crash, hang, or be silently accepted */
+    {
+        static const struct arg_shape bad_cases[] = {
+            { "read_file", "{", "\"error\"" },
+            { "read_file", "}", "\"error\"" },
+            { "read_file", "{\"file_path\"}", "\"error\"" },
+            { "read_file", "{\"file_path\" \"x\"}", "\"error\"" },
+            { "read_file", "{\"file_path\":}", "\"error\"" },
+            { "read_file", "{\"file_path\":\"x\",}", "\"error\"" },
+            { "read_file", "{\"file_path\":'x'}", "\"error\"" },
+            { "read_file", "{\"file_path\":\"x\"", "\"error\"" },
+            { "read_file", "{\"file_path\":\"x\"}}", "\"error\"" },
+            { "read_file", "{file_path:\"x\"}", "\"error\"" },
+            { "read_file", "// c\n{\"file_path\":\"x\"}", "\"error\"" },
+            { "read_file", "\"just a string\"", "\"error\"" },
+            { "read_file", "123", "\"error\"" },
+            { "read_file", "true", "\"error\"" },
+            { "read_file", "null", "\"error\"" },
+            { "read_file", "[{\"file_path\":\"x\"}]", "\"error\"" },
+            { "read_file", "{\"unknown\":\"x\"}", "\"error\"" },
+            { "read_file", "{\"file_path\":\"\\uD800\"}", "\"error\"" },
+            { "read_file", "{\"file_path\":\"\\u0000\"}", "\"error\"" },
+            { "read_file", "{\"arguments\":", "\"error\"" },
+            { "read_file", "{\"arguments\":{\"file_path\":\"x\"}", "\"error\"" },
+            { "read_file", "{\"arguments\":{\"file_path\":\"x\"}}}", "\"error\"" },
+            { "read_file", "{\"arguments\":{\"arguments\":", "\"error\"" },
+            { "run_command", "{\"timeout_ms\":1000}", "\"error\"" },
+            { "run_command", "{\"argv\":true}", "\"error\"" },
+            { "run_command", "{\"argv\":[\"echo\",null]}", "\"error\"" },
+            { "run_command", "{\"argv\":[\"echo\"] \"timeout_ms\":1}", "\"error\"" },
+            { "grep", "{\"pattern\":}", "\"error\"" },
+            { "grep", "{\"context\":1}", "\"error\"" },
+            { "glob", "{\"pattern\":[\"x\"]}", "\"error\"" },
+            { "write_file", "{\"file_path\":\"x\"}", "\"error\"" },
+            { "bash", "{\"command\":\"echo hi\",}", "\"error\"" },
+            { "invalid_tool", "{\"x\":1}", "\"error\"" },
+        };
+        for (i = 0; i < sizeof(bad_cases) / sizeof(bad_cases[0]); i++) {
+            if (!check_arg_shape(&bad_cases[i])) failed++;
+        }
+    }
+
+    /* oversized flat payload is rejected before any tool sees it */
+    {
+        size_t n = snprintf(big, sizeof(big), "%s", "{\"file_path\":\"");
+        const char *e;
+        while (n < 52000) big[n++] = 'a';
+        memcpy(big + n, "\"}", 3);
+        e = test_prepare_tool_error("read_file", big);
+        if (e == NULL || strstr(e, "too large") == NULL) {
+            fprintf(stderr,
+                    "    oversized payload: expected 'too large', got '%s'\n",
+                    e ? e : "OK");
+            failed++;
+        }
+    }
+
+    if (failed) {
+        fprintf(stderr, "    %d tool-argument shape case(s) failed\n", failed);
+        return 0;
+    }
     return 1;
 }
 
@@ -3386,6 +3742,7 @@ int main(void) {
     TEST(grep_skips_binary);
     TEST(edit_file_rejects_binary);
     TEST(tool_arguments_are_strict);
+    TEST(tool_argument_shapes);
     TEST(tool_arguments_decode_json_strings);
     TEST(tool_arguments_reject_invalid_unicode_and_nul);
     TEST(json_string_decoder_all_escapes);

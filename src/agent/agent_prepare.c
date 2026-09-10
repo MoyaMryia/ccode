@@ -42,52 +42,108 @@
  * conversation history and wrap tool arguments one level deeper, e.g.
  *   {"arguments": {"file_path": "x"}}           (object form)
  *   {"arguments": "{\"file_path\": \"x\"}"}     (JSON-string form)
- * Unwrap that shape (returns a malloc'd buffer in *out; caller frees) so
- * both the wrapped and the plain {"file_path": "x"} forms validate. */
-static int unwrap_tool_arguments(const char *arguments, char **out) {
+ * and occasionally stack several such wrappers. Peel them (object and
+ * string form, mixed) so both the wrapped and the plain {"file_path": "x"}
+ * forms validate. */
+enum tool_arg_unwrap {
+    TOOL_ARG_UNWRAP_NONE = 0,     /* not an envelope: use arguments as-is */
+    TOOL_ARG_UNWRAP_OK = 1,       /* *out is a malloc'd peeled payload */
+    TOOL_ARG_UNWRAP_TOO_DEEP = -1,/* nested past CCODE_MAX_TOOL_ARG_WRAP */
+    TOOL_ARG_UNWRAP_BAD = -2      /* envelope value is neither object nor string */
+};
+
+/* True when s is exactly {"arguments": <value>} with only whitespace after
+ * the root, i.e. the object has one key and that key is "arguments". Fills
+ * tokens[0..] and reports the value's token index in *value_idx (-1 when the
+ * value is a primitive jsmn did not attribute to the object; see the size
+ * note below). */
+static int is_arguments_envelope(const char *s, ccode_jsmntok_t *tokens,
+                                 int *value_idx) {
     ccode_jsmn_parser parser;
-    ccode_jsmntok_t tokens[8];
-    int num_tokens;
-    int start, end;
+    int n, after;
+    ccode_jsmn_init(&parser);
+    n = ccode_jsmn_parse(&parser, s, strlen(s), tokens, 256);
+    if (n < 2) return 0;
+    if (tokens[0].type != CCODE_JSMN_OBJECT) return 0;
+    if (tokens[1].type != CCODE_JSMN_STRING ||
+        !ccode_jsmn_token_streq(s, &tokens[1], "arguments")) return 0;
+    if (!only_whitespace_after_root(s, &tokens[0])) return 0;
+    if (n == 2) { *value_idx = -1; return 1; }
+
+    *value_idx = 2;
+    /* A single key means no token follows the value's subtree. This cannot
+     * rely on tokens[0].size: this jsmn fork flushes a primitive that sits
+     * right before }/] only at end-of-parse, so its parent's size is short. */
+    after = 3;
+    if (tokens[2].type == CCODE_JSMN_OBJECT ||
+        tokens[2].type == CCODE_JSMN_ARRAY) {
+        int end = tokens[2].end;
+        while (after < n && tokens[after].start < end) after++;
+    }
+    return after == n;
+}
+
+static int unwrap_tool_arguments(const char *arguments, char **out) {
+    ccode_jsmntok_t tokens[256];
+    const char *cur = arguments;
+    char *owned = NULL;
+    int depth = 0;
 
     *out = NULL;
-    if (!arguments) return 0;
-    ccode_jsmn_init(&parser);
-    num_tokens = ccode_jsmn_parse(&parser, arguments, strlen(arguments),
-                                  tokens, 8);
-    /* Envelope shape: outer object with exactly one "arguments" key.
-     * jsmn expands nested objects, so the object form yields 5 tokens
-     * (obj, key, inner obj, key, value) and the string form 3. */
-    if (tokens[0].type != CCODE_JSMN_OBJECT || tokens[0].size != 2 ||
-        tokens[1].type != CCODE_JSMN_STRING ||
-        !ccode_jsmn_token_streq(arguments, &tokens[1], "arguments"))
-        return 0; /* not the wrapped shape */
+    if (!arguments) return TOOL_ARG_UNWRAP_NONE;
 
-    if (tokens[2].type == CCODE_JSMN_STRING && num_tokens == 3) {
-        char *body;
-        /* jsmn STRING tokens span the content only (no quotes). */
-        start = tokens[2].start;
-        end = tokens[2].end;
-        if (end <= start) return 0;
-        body = malloc((size_t)(end - start) + 1);
-        if (!body) return 0;
-        memcpy(body, arguments + start, (size_t)(end - start));
-        body[end - start] = '\0';
-        *out = ccode_unescape_json_string(body);
-        free(body);
-        return *out ? 1 : 0;
+    for (;;) {
+        const ccode_jsmntok_t *value;
+        int value_idx;
+        char *next;
+        size_t len;
+
+        if (!is_arguments_envelope(cur, tokens, &value_idx)) break;
+        if (depth >= CCODE_MAX_TOOL_ARG_WRAP) {
+            free(owned);
+            return TOOL_ARG_UNWRAP_TOO_DEEP;
+        }
+        if (value_idx < 0) {
+            /* {"arguments": 42} / null / true: no usable envelope value. */
+            free(owned);
+            return TOOL_ARG_UNWRAP_BAD;
+        }
+        value = &tokens[value_idx];
+        len = (size_t)(value->end - value->start);
+        if (value->end <= value->start) {
+            free(owned);
+            return TOOL_ARG_UNWRAP_BAD;
+        }
+        if (value->type == CCODE_JSMN_STRING) {
+            char *body = malloc(len + 1);
+            if (!body) { free(owned); return TOOL_ARG_UNWRAP_BAD; }
+            memcpy(body, cur + value->start, len);
+            body[len] = '\0';
+            next = ccode_unescape_json_string(body);
+            free(body);
+            if (!next) { free(owned); return TOOL_ARG_UNWRAP_BAD; }
+        } else if (value->type == CCODE_JSMN_OBJECT) {
+            next = malloc(len + 1);
+            if (!next) { free(owned); return TOOL_ARG_UNWRAP_BAD; }
+            memcpy(next, cur + value->start, len);
+            next[len] = '\0';
+        } else {
+            /* {"arguments": 42} / null / [] / [..]: not an envelope value. */
+            free(owned);
+            return TOOL_ARG_UNWRAP_BAD;
+        }
+        free(owned);
+        owned = next;
+        cur = next;
+        depth++;
     }
-    if (tokens[2].type == CCODE_JSMN_OBJECT && num_tokens == 5) {
-        start = tokens[2].start;
-        end = tokens[2].end;
-        if (end <= start) return 0;
-        *out = malloc((size_t)(end - start) + 1);
-        if (!*out) return 0;
-        memcpy(*out, arguments + start, (size_t)(end - start));
-        (*out)[end - start] = '\0';
-        return 1;
+
+    if (depth == 0) {
+        free(owned);
+        return TOOL_ARG_UNWRAP_NONE;
     }
-    return 0;
+    *out = owned;
+    return TOOL_ARG_UNWRAP_OK;
 }
 
 static const char *prepare_tool_inner(const char *name, const char *arguments,
@@ -823,14 +879,19 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
     return "{\"error\":\"Unknown tool\"}";
 }
 
-/* Entry point: unwrap a possible {"arguments": ...} envelope before the
- * strict per-tool validation in prepare_tool_inner. */
+/* Entry point: unwrap any {"arguments": ...} envelopes before the strict
+ * per-tool validation in prepare_tool_inner. */
 const char *prepare_tool(const char *name, const char *arguments,
                                 struct prepared_tool *prepared) {
     char *unwrapped = NULL;
     const char *result;
+    int status = unwrap_tool_arguments(arguments, &unwrapped);
 
-    if (unwrap_tool_arguments(arguments, &unwrapped) == 1)
+    if (status == TOOL_ARG_UNWRAP_TOO_DEEP)
+        return "{\"error\":\"Tool arguments nested too deep\"}";
+    if (status == TOOL_ARG_UNWRAP_BAD)
+        return "{\"error\":\"Invalid tool arguments envelope\"}";
+    if (status == TOOL_ARG_UNWRAP_OK)
         arguments = unwrapped;
     result = prepare_tool_inner(name, arguments, prepared);
     free(unwrapped);

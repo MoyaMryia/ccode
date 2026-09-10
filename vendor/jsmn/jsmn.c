@@ -86,6 +86,17 @@ int ccode_jsmn_parse(ccode_jsmn_parser *parser, const char *js, size_t len,
         case '}':
         case ']': {
             int i;
+            /* A primitive may sit directly before the closing bracket
+             * (e.g. [1,2]); flush it now so it is attributed to this
+             * container and its end stops at the bracket instead of being
+             * pushed after the container closes. */
+            if (token_start >= 0 && token_type == CCODE_JSMN_PRIMITIVE) {
+                if (push_token(parser, CCODE_JSMN_PRIMITIVE, token_start,
+                               (int)parser->pos, tokens, num_tokens) != 0)
+                    return -1;
+                token_start = -1;
+                token_type = -1;
+            }
             depth--;
             if (depth < 0) return -1;
             for (i = (int)parser->toknext - 1; i >= 0; i--) {
