@@ -131,7 +131,9 @@ TEST_MD_SRC = tests/test_markdown.c src/markdown.c src/json.c vendor/jsmn/jsmn.c
 TTY_TEST := $(shell python3 -c "import pty" 2>/dev/null && echo 1)
 TEST_TARGETS = test-json test-agent test-http
 TEST_TARGETS += test-tui
-TEST_TARGETS += test-tui-commands
+# NOTE (2026-09-10, temporary): test-tui-commands drives the paused `ccode`
+# single binary; disabled until the TUI builds return.
+# TEST_TARGETS += test-tui-commands
 TEST_TARGETS += test-markdown
 ifneq ($(TTY_TEST),)
 TEST_TARGETS += test-tty
@@ -300,11 +302,7 @@ MBEDTLS_OBJ = $(addprefix $(OBJDIR)/,$(MBEDTLS_SRC:.c=.o))
 MBEDTLS_CFLAGS = -Os -std=c99 -w $(SIZE_CFLAGS) $(X86_GNU_FLAGS)
 endif
 
-ifeq ($(WIN32),1)
-all: ccode ccode-cli
-else
-all: ccode ccode-cli ccode-tui
-endif
+all: ccode-cli
 .PHONY: all
 
 ifeq ($(WIN32),1)
@@ -401,6 +399,8 @@ tests/test_tui: $(TEST_TUI_SRC) src/tui/input.c src/tui/messages.c src/tui/rende
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 
 # 单体 ccode 的进程内 TUI slash 命令（pty 驱动，需要 Python3）。
+# NOTE (2026-09-10, temporary): paused with the `ccode` binary; run manually
+# after rebuilding `ccode` explicitly.
 test-tui-commands: ccode
 	python3 ./tests/test_tui_commands.py
 
@@ -436,12 +436,11 @@ PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 MANDIR ?= $(PREFIX)/share/man/man1
 
-install: ccode ccode-cli ccode-tui
+# NOTE (2026-09-10, temporary): ccode/ccode-tui are paused, so install ships
+# ccode-cli only. uninstall still removes all three, to clean old installs.
+install: ccode-cli
 	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(MANDIR)
-	install -m 0755 ccode $(DESTDIR)$(BINDIR)/ccode
-	install -m 0755 ccode-tui $(DESTDIR)$(BINDIR)/ccode-tui
 	install -m 0755 ccode-cli $(DESTDIR)$(BINDIR)/ccode-cli
-	install -m 0644 docs/man/ccode.1 $(DESTDIR)$(MANDIR)/ccode.1
 	install -m 0644 docs/man/ccode-cli.1 $(DESTDIR)$(MANDIR)/ccode-cli.1
 
 .PHONY: install
@@ -449,7 +448,7 @@ install: ccode ccode-cli ccode-tui
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/ccode $(DESTDIR)$(BINDIR)/ccode-tui \
 	      $(DESTDIR)$(BINDIR)/ccode-cli
-	rm -f $(DESTDIR)$(MANDIR)/ccode.1 $(DESTDIR)$(MANDIR)/ccode-cli.1
+	rm -f $(DESTDIR)$(MANDIR)/ccode.1 $(DESTDIR)$(MANDIR)/ccode-cli.1 $(DESTDIR)$(MANDIR)/ccode-tui.1
 
 .PHONY: uninstall
 

@@ -64,14 +64,16 @@ else
 fi
 
 # ── Reproducible build (checksum stability) ──
+# NOTE (2026-09-10, temporary): default build ships ccode-cli only, so hash
+# ccode-cli (was: ccode) until the TUI builds return.
 echo
 echo "--- Reproducible build ---"
 make clean >/dev/null 2>&1 || true
 SOURCE_DATE_EPOCH=0 make HTTP_ONLY=1 >/dev/null 2>&1
-HASH1=$("$SHA256" ccode | cut -d' ' -f1)
+HASH1=$("$SHA256" ccode-cli | cut -d' ' -f1)
 make clean >/dev/null 2>&1 || true
 SOURCE_DATE_EPOCH=0 make HTTP_ONLY=1 >/dev/null 2>&1
-HASH2=$("$SHA256" ccode | cut -d' ' -f1)
+HASH2=$("$SHA256" ccode-cli | cut -d' ' -f1)
 if [ "$HASH1" = "$HASH2" ] && [ -n "$HASH1" ]; then
     echo "  PASS: reproducible build ($HASH1)"
 else
