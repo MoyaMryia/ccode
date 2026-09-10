@@ -1,9 +1,9 @@
-.TH CCODE-CLI 1 "August 2026" "ccode v0.1" "User Commands"
+.TH CCODE-CLI 1 "September 2026" "ccode v0.1" "User Commands"
 .SH NAME
 ccode-cli \- terminal AI coding assistant (CLI backend)
 .SH SYNOPSIS
 .B ccode-cli
-[\fIoptions\fR] [\fB\-p\fR \fIPROMPT\fR | \fB\-i\fR]
+[\fIoptions\fR] [\fB\-p\fR \fIPROMPT\fR | \fB\-i\fR | \fB\-\-json\fR]
 .SH DESCRIPTION
 .B ccode-cli
 is a lightweight local coding agent speaking the OpenAI-compatible Chat
@@ -21,8 +21,18 @@ reads prompts from stdin until EOF or
 .B JSON Lines protocol
 .BI \-\-json
 speaks a line-based JSON protocol on stdin/stdout; this is what the
+.BR ccode-tui (1)
+frontend uses to drive it (and what the single
 .BR ccode (1)
-TUI uses to drive it, and it can be reused by other frontends.
+binary used in-process), and it can be reused by other frontends.
+.PP
+NOTE (September 2026, temporary): only
+.B ccode-cli
+is built;
+.BR ccode (1)
+and
+.BR ccode-tui (1)
+are paused but documented for reference.
 .PP
 The agent can inspect and modify the workspace with tools; by default
 only read-only tools are enabled, pass
@@ -44,6 +54,26 @@ Read prompts from stdin until EOF or
 .TP
 .B \-\-json
 Use the JSON Lines protocol (machine mode). Implies interactive.
+.TP
+.B \-\-tui
+Accepted for option compatibility with
+.BR ccode (1);
+.B ccode-cli
+itself stays in CLI/REPL mode.
+.TP
+.BI \-\-backend " PATH"
+Accepted; only the
+.BR ccode-tui (1)
+frontend uses it to locate its backend (see
+.BR ccode-tui (1)
+for the lookup order).
+.TP
+.B \-\-no-tui
+Accepted; no effect on
+.BR ccode-cli .
+(It is an escape hatch for the
+.B ccode
+single binary on Windows consoles.)
 .TP
 .BI \-\-api-base " URL"
 OpenAI-compatible API base URL (defaults to
@@ -135,6 +165,10 @@ Show available commands.
 .B /exit
 Quit the REPL.
 .TP
+.B /quit
+Alias for
+.BR /exit .
+.TP
 .B /clear
 Forget in-conversation history for this session.
 .TP
@@ -192,7 +226,9 @@ Resume a session (most recent if no name).
 List resumable sessions.
 .TP
 .B /session new [NAME]
-Start a new session (optionally saved as NAME).
+Start a new session (optionally saved as NAME; a given NAME must end in
+.IR .json ,
+contain no slash, and fit the session-name length limit).
 .TP
 .B /session switch NAME
 Switch to a saved session.
@@ -224,11 +260,13 @@ Path to a key file (regular file, single hard link, mode 0600).
 Default model name (required).
 .TP
 .B CCODE_MODEL_VERIFY
-Set 1 to verify the model exists at startup; falls back to
-.BR CCODE_MODEL_FALLBACK .
+Set 1 to check the configured model against the API model list before
+the first request.
 .TP
 .B CCODE_MODEL_FALLBACK
-Fallback model when verification fails.
+Fallback model used only when verification confirms the configured
+model is absent (a verification failure caused by a network error
+leaves the model unchanged).
 .TP
 .B CCODE_WORKSPACE
 Workspace directory (default: current directory).
@@ -245,13 +283,8 @@ Set 1 to enable write tools (same as
 Set 1 to skip interactive approval.
 .TP
 .B CCODE_DISABLE_COMMAND_FILTER
-Set 1 to disable sensitive-path and destructive-command filtering.
-.TP
-.B CCODE_RUN_COMMAND_TIMEOUT
-Default command timeout in milliseconds.
-.TP
-.B CCODE_COMMAND_OUTPUT_LIMIT
-Per-stream command output cap in bytes.
+Set 1 to disable sensitive-path and destructive-command filtering
+(not recommended).
 .TP
 .B CCODE_RESPECT_GITIGNORE
 Set 1 to have glob/grep honor .gitignore.
@@ -305,6 +338,16 @@ Set 1 to enable thinking mode.
 .TP
 .B CCODE_THINKING_EFFORT
 Thinking effort: low, medium, high, xhigh, max.
+.SH LIMITS
+Built-in (not configurable) resource bounds:
+.TP
+.B Command timeout
+Each tool-spawned command is killed with its process group after 120
+seconds of wall-clock time.
+.TP
+.B Command output
+Stdout and stderr are each captured up to 64 KiB; excess is drained
+(so the child never blocks) and reported as truncated.
 .SH FILES
 .TP
 .I ~/.ccode/sessions/
@@ -324,6 +367,7 @@ pipeline is
 (see docs/BASICLINUX.md).
 .SH SEE ALSO
 .BR ccode (1),
+.BR ccode-tui (1),
 .PD 0
 .TP
 .I docs/ARCHITECTURE.md

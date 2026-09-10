@@ -1,10 +1,16 @@
-.TH CCODE 1 "August 2026" "ccode v0.1" "User Commands"
+.TH CCODE 1 "September 2026" "ccode v0.1" "User Commands"
 .SH NAME
 ccode \- terminal AI coding assistant (single binary: TUI + CLI)
 .SH SYNOPSIS
 .B ccode
 [\fIoptions\fR] [\fB\-p\fR \fIPROMPT\fR | \fB\-i\fR | \fB\-\-json\fR]
 .SH DESCRIPTION
+NOTE (September 2026, temporary):
+.B ccode
+is paused and no longer built; only
+.BR ccode-cli (1)
+is shipped. This page is kept for reference.
+.PP
 .B ccode
 is a single binary that carries both the interactive TUI and the CLI
 backend in one process. A bare
@@ -24,6 +30,22 @@ With
 The TUI is always interactive: no
 .B \-i
 or prompt flag is required to start it.
+.PP
+How the single binary dispatches: a bare
+.B ccode
+starts the in-process TUI; with
+.BR \-p ,
+.BR \-i ,
+or
+.B \-\-json
+(and whenever it is invoked under a name ending in
+.BR \-cli ,
+e.g. via a symlink) it runs as the CLI backend instead. On Windows
+consoles a redirected stdin/stdout falls back to the line REPL unless
+.B \-\-tui
+is given (and
+.B \-\-no-tui
+forces the REPL).
 .SH OPTIONS
 .TP
 .BI \-\-api-base " URL"
@@ -89,10 +111,10 @@ Plaintext traffic, known risk. Loopback http is always allowed.
 Disable markdown rendering (raw output).
 .TP
 .BI \-\-backend " PATH"
-Path to the
-.B ccode-cli
-backend executable (defaults to one next to the ccode binary, or
-.BR CCODE_BACKEND ).
+Accepted; ignored by the single binary (it runs the agent in-process).
+Only the split
+.BR ccode-tui (1)
+frontend uses it to locate its backend.
 .TP
 .BI \-\-save-session " PATH"
 Save the conversation to
@@ -110,6 +132,14 @@ Session storage directory (defaults to
 .TP
 .BR \-h ", " \-\-help
 Show usage.
+.TP
+.B \-\-tui
+Run the in-process TUI (the default for a bare invocation; mainly
+useful on Windows consoles, see DESCRIPTION).
+.TP
+.B \-\-no-tui
+Escape hatch: force the line-based REPL instead of the TUI (used on
+Windows consoles; accepted everywhere, otherwise no effect).
 .SH TUI KEYS
 .TP
 .B Enter
@@ -123,13 +153,23 @@ Quit the TUI.
 .PP
 Additional editing keys follow common readline conventions (arrows,
 home/end, backspace, etc.).
+.PP
+The in-process TUI accepts the same slash commands as
+.BR ccode-cli (1)
+with one exception:
+.B /compact
+is listed but refused here; run it from
+.BR ccode-cli
+instead.
 .SH ENVIRONMENT
 See
 .BR ccode-cli (1)
 for the full list. Relevant to the TUI:
 .TP
 .B CCODE_BACKEND
-Path to the backend executable.
+Backend executable path. Ignored by the single binary; only the split
+.BR ccode-tui (1)
+frontend reads it.
 .TP
 .B CCODE_WORKSPACE
 Workspace directory (defaults to the current directory).
@@ -139,6 +179,7 @@ Workspace directory (defaults to the current directory).
 Conversation session files (JSON).
 .SH SEE ALSO
 .BR ccode-cli (1),
+.BR ccode-tui (1),
 .PD 0
 .TP
 .I docs/ARCHITECTURE.md
