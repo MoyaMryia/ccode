@@ -381,6 +381,32 @@ tests/test_agent: $(TEST_AGENT_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(TEST_AGENT_SRC)
 endif
 
+# Randomized tool-argument fuzzer (needs Python 3). Kept out of the default
+# `test` target because it runs thousands of cases; invoke explicitly.
+fuzz-tool-args: tests/test_agent
+	python3 ./tests/fuzz_tool_args.py --probe ./tests/test_agent
+
+# Stress the command path filter (src/sandbox.c) for false positives/misses.
+fuzz-command-paths: tests/test_agent
+	python3 ./tests/fuzz_command_paths.py --probe ./tests/test_agent
+
+# Stress the file-path validators (agent_fs.c / agent_args.c).
+fuzz-paths: tests/test_agent
+	python3 ./tests/fuzz_paths.py --probe ./tests/test_agent
+
+# Mutation testing: deliberately break the tool-arg parser and the command/path
+# guards, then check the suite catches each mutant (tests/mutate.py).
+mutate: tests/test_agent
+	python3 ./tests/mutate.py
+
+# Same fuzzer under ASan/UBSan to catch OOB reads on malformed arguments.
+fuzz-tool-args-asan: tests/test_agent_asan
+	ASAN_OPTIONS=detect_leaks=0 python3 ./tests/fuzz_tool_args.py --probe ./tests/test_agent_asan
+
+tests/test_agent_asan: override CPPFLAGS += -DCCODE_UNIT_TEST=1 -DCCODE_HTTP_ONLY=1
+tests/test_agent_asan: $(TEST_AGENT_SRC)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $(TEST_AGENT_SRC)
+
 ifneq ($(TEST_PERMISSIONS_SRC),)
 test-permissions: tests/test_permissions
 	./tests/test_permissions
@@ -454,7 +480,7 @@ uninstall:
 
 clean:
 	rm -rf .build
-	rm -f ccode ccode-tui ccode-cli tests/test_json tests/test_agent tests/test_permissions tests/test_tui tests/test_markdown
+	rm -f ccode ccode-tui ccode-cli tests/test_json tests/test_agent tests/test_agent_asan tests/test_permissions tests/test_tui tests/test_markdown
 	rm -rf test-sandbox
 
 # ASan + UBSan build (for debugging/fuzzing). Override CFLAGS to remove
@@ -468,4 +494,4 @@ asan: clean
 repro: clean
 	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 SIZE_CFLAGS= SIZE_LDFLAGS= CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic $(X86_GNU_FLAGS) -ffile-prefix-map=$(PWD)=."
 
-.PHONY: ccode ccode-tui ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-markdown test-tty test-e2e test-streaming retro-test asan repro test-sandbox
+.PHONY: ccode ccode-tui ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-markdown test-tty test-e2e test-streaming retro-test asan repro test-sandbox fuzz-tool-args fuzz-tool-args-asan fuzz-command-paths fuzz-paths mutate

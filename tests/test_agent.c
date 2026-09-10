@@ -3901,8 +3901,110 @@ out:
     return ok;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     int repo_ok;
+
+    if (argc == 2 && strcmp(argv[1], "--fuzz-probe") == 0) {
+        /* Framed probe for tests/fuzz_tool_args.py: read <len><tool><len><args>
+         * records from stdin, print OK or the prepare_tool() error per case. */
+        for (;;) {
+            unsigned char hdr[4];
+            unsigned int tlen, alen;
+            char *tool, *args;
+            const char *err;
+            struct prepared_tool prepared;
+            size_t r = fread(hdr, 1, 4, stdin);
+            if (r == 0) return 0;      /* clean EOF */
+            if (r != 4) return 2;
+            tlen = (unsigned)hdr[0] | ((unsigned)hdr[1] << 8) |
+                   ((unsigned)hdr[2] << 16) | ((unsigned)hdr[3] << 24);
+            if (tlen > 4096) return 2;
+            tool = (char *)malloc(tlen + 1);
+            if (!tool || fread(tool, 1, tlen, stdin) != tlen) return 2;
+            tool[tlen] = '\0';
+            r = fread(hdr, 1, 4, stdin);
+            if (r != 4) return 2;
+            alen = (unsigned)hdr[0] | ((unsigned)hdr[1] << 8) |
+                   ((unsigned)hdr[2] << 16) | ((unsigned)hdr[3] << 24);
+            if (alen > 200000) return 2;
+            args = (char *)malloc(alen + 1);
+            if (!args || fread(args, 1, alen, stdin) != alen) return 2;
+            args[alen] = '\0';
+            err = prepare_tool(tool, args, &prepared);
+            printf("%s\n", err ? err : "OK");
+            fflush(stdout);
+            free(tool);
+            free(args);
+        }
+    }
+
+    if (argc == 2 && strcmp(argv[1], "--filter-probe") == 0) {
+        /* Framed probe for tests/fuzz_command_paths.py: read
+         * <len ws><ws><len text><text> records and print
+         * "<sensitive>\t<destructive>\t<reason>" per command. */
+        for (;;) {
+            unsigned char hdr[4];
+            unsigned int wlen, tlen;
+            char *ws, *text;
+            char why[256], dw[256];
+            size_t r = fread(hdr, 1, 4, stdin);
+            if (r == 0) return 0;      /* clean EOF */
+            if (r != 4) return 2;
+            wlen = (unsigned)hdr[0] | ((unsigned)hdr[1] << 8) |
+                   ((unsigned)hdr[2] << 16) | ((unsigned)hdr[3] << 24);
+            if (wlen > 8192) return 2;
+            ws = (char *)malloc(wlen + 1);
+            if (!ws || fread(ws, 1, wlen, stdin) != wlen) return 2;
+            ws[wlen] = '\0';
+            r = fread(hdr, 1, 4, stdin);
+            if (r != 4) return 2;
+            tlen = (unsigned)hdr[0] | ((unsigned)hdr[1] << 8) |
+                   ((unsigned)hdr[2] << 16) | ((unsigned)hdr[3] << 24);
+            if (tlen > 200000) return 2;
+            text = (char *)malloc(tlen + 1);
+            if (!text || fread(text, 1, tlen, stdin) != tlen) return 2;
+            text[tlen] = '\0';
+            why[0] = '\0';
+            dw[0] = '\0';
+            {
+                int s = ccode_command_is_sensitive_why(text,
+                                                       ws[0] ? ws : NULL,
+                                                       why, sizeof(why));
+                int d = ccode_command_mentions_destructive_why(text, dw,
+                                                               sizeof(dw));
+                printf("%d\t%d\t%s\n", s, d, s ? why : (d ? dw : ""));
+                fflush(stdout);
+            }
+            free(ws);
+            free(text);
+        }
+    }
+
+    if (argc == 2 && strcmp(argv[1], "--path-probe") == 0) {
+        /* Framed probe for tests/fuzz_paths.py: read <len path><path> and
+         * print "<ws0>\t<ws1>\t<home>\t<contains>" for each. */
+        for (;;) {
+            unsigned char hdr[4];
+            unsigned int plen;
+            char *path;
+            size_t r = fread(hdr, 1, 4, stdin);
+            if (r == 0) return 0;      /* clean EOF */
+            if (r != 4) return 2;
+            plen = (unsigned)hdr[0] | ((unsigned)hdr[1] << 8) |
+                   ((unsigned)hdr[2] << 16) | ((unsigned)hdr[3] << 24);
+            if (plen > 200000) return 2;
+            path = (char *)malloc(plen + 1);
+            if (!path || fread(path, 1, plen, stdin) != plen) return 2;
+            path[plen] = '\0';
+            printf("%d\t%d\t%d\t%d\n",
+                   is_workspace_relative_path(path, 0),
+                   is_workspace_relative_path(path, 1),
+                   is_home_relative_path(path),
+                   contains_home_path(path));
+            fflush(stdout);
+            free(path);
+        }
+    }
 
     mkdir_p("fixtures");
 
