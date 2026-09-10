@@ -464,7 +464,13 @@ MANDIR ?= $(PREFIX)/share/man/man1
 
 # NOTE (2026-09-10, temporary): ccode/ccode-tui are paused, so install ships
 # ccode-cli only. uninstall still removes all three, to clean old installs.
-install: ccode-cli
+# install never builds: it refuses to run unless ccode-cli already exists, so
+# a stale/unbuilt tree cannot silently ship an old or missing binary.
+install:
+	@if [ ! -f ccode-cli ]; then \
+		echo "error: ccode-cli not built; run 'make' (or 'make HTTP_ONLY=1') first." >&2; \
+		exit 1; \
+	fi
 	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(MANDIR)
 	install -m 0755 ccode-cli $(DESTDIR)$(BINDIR)/ccode-cli
 	install -m 0644 docs/man/ccode-cli.1 $(DESTDIR)$(MANDIR)/ccode-cli.1
