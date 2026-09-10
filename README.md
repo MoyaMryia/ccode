@@ -4,13 +4,16 @@
 
 必须承认：TUI仍然存在不少问题，但是cli工作得很好，尤其是当你安装其他Agent的时候不给npm就罢工的时候（尤其是对于一个riscv的机器来说）
 
-
 It *WORKS*, that's fine.
+
+2026/09/01更新：在Agent核心功能完成测试前我们将暂时不继续开发TUI,感谢您的理解。
+
+2026/09/10更新：临时不再构建 `ccode` 和 `ccode-tui`，只构建 `ccode-cli`。
 
 ## 它能做什么
 
 - 交互式对话（REPL）或单条提问，二选一
-- TUI 图形界面和纯 CLI 命令行，`ccode` 一个二进制全包了
+- 纯 CLI 命令行（`ccode-cli`）；TUI（单体 `ccode` / 分离 `ccode-tui`）临时暂停构建
 - 读文件、写文件、搜代码（glob/grep）、跑命令、抓网页、搜网页，还能派子代理干活
 - Markdown 渲染成带颜色的终端输出
 - 会话保存、列表、恢复
@@ -22,17 +25,20 @@ It *WORKS*, that's fine.
 只需要一个 C 编译器（gcc 或 clang 都行）。TLS 库是**内置的**（mbedTLS 静态编译进二进制，retro 构建用 PolarSSL），构建时不依赖任何系统库。
 
 ```sh
-make                # 默认，带 HTTPS，构建下面三个二进制
-make ccode          # 只构建单体 ccode（自带 TUI + CLI）
-make ccode-cli      # 只构建纯 CLI 后端
-make ccode-tui      # 只构建分离的 TUI 前端
+make                # 默认，带 HTTPS，只构建 ccode-cli
+make ccode-cli      # 只构建纯 CLI 后端（当前唯一构建目标）
+make ccode          # 临时停用：单体 ccode（含 TUI）不再构建
+make ccode-tui      # 临时停用：分离的 TUI 前端不再构建
 make HTTP_ONLY=1    # 不要 TLS，纯 HTTP（内网/开发用）
 ```
 
-三个产物，按需选择：
+当前产物只有：
+
+- **`ccode-cli`** —— 纯 CLI 后端，也能被其他前端（IDE 插件、脚本）通过 JSON 协议调用。
+
+暂停构建（代码保留，暂不构建/发布）：
 
 - **`ccode`** —— 单体二进制，TUI 和 CLI 都在里面。直接 `ccode` 进 TUI（agent 就在当前进程里跑，不 fork 子进程），`ccode -p "..."` 当 CLI 用。
-- **`ccode-cli`** —— 纯 CLI 后端，也能被其他前端（IDE 插件、脚本）通过 JSON 协议调用。
 - **`ccode-tui`** —— 分离的 TUI 前端，会自动拉起同目录下的 `ccode-cli` 当后端。
 
 二进制是自包含的：拷到任何机器上，只要有个 libc 就能跑 HTTPS，不需要那台机器上装有 OpenSSL / mbedTLS 之类的库。
@@ -52,8 +58,7 @@ export CCODE_API_BASE="https://api.deepseek.com"
 export CCODE_API_KEY="sk-..."
 export CCODE_MODEL="deepseek-v4-flash"
 
-./ccode --write                 # 打开 TUI，允许读写工具
-./ccode-cli -p "解释一下这个项目" --write   # 单条提问
+./ccode-cli --write -p "解释一下这个项目"   # 单条提问（当前用法）
 ./ccode-cli --default           # 交互 + 读写工具 + thinking
 ```
 

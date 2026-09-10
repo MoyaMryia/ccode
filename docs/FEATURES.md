@@ -2,13 +2,15 @@
 
 本文只列两件事：已经能用的功能，和还没做的。实现细节见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
+> 临时状态（2026-09-10起）：只构建 `ccode-cli`，`ccode` 和 `ccode-tui` 暂不构建/发布。
+
 ## 已实现
 
 ### 核心对话
 
-- 交互式 REPL 和单条提问两种模式
-- TUI 与 CLI 双模式：单体 `ccode`（进程内 TUI + CLI，不 fork 子进程），另有分离的 `ccode-tui` + `ccode-cli`（JSON Lines 协议，供其他前端复用）
-- 进程内 TUI（单体默认）slash 命令与 CLI REPL 对齐：`/help /clear /exit /history /model /models[/search|info] /sessions[/delete|rename|export] /resume /session[new|switch|list] /thinking /reasoning`；`/compact` 明确不支持。默认经自动会话链（auto-*.json，resume+save 同一文件）保持对话上下文，`/clear`、`/session new` 开新链，`--resume` 从指定会话接链
+- 交互式 REPL 和单条提问两种模式（`ccode-cli`）
+- CLI 模式：`ccode-cli`（JSON Lines 协议，供其他前端复用）；TUI 临时暂停构建：单体 `ccode`（进程内 TUI + CLI）与分离的 `ccode-tui` 暂不构建/发布
+- CLI REPL slash 命令：`/help /clear /exit /history /model /models[/search|info] /sessions[/delete|rename|export] /resume /session[new|switch|list] /thinking /reasoning`；`/compact` 明确不支持。默认经自动会话链（auto-*.json，resume+save 同一文件）保持对话上下文，`/clear`、`/session new` 开新链，`--resume` 从指定会话接链
 - thinking / reasoning_effort 两个字段独立控制（`--thinking` / `--reasoning[-effort]`，REPL 里 `/thinking` `/reasoning`）
 - 流式输出：每个 SSE 增量到达就立即显示
 - Markdown → ANSI 渲染（标题、加粗、斜体、代码块、列表、引用、链接），带控制字符消毒
@@ -50,9 +52,9 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 ### 构建与体积
 
 - TLS 内置（mbedTLS / PolarSSL 静态编译进二进制），部署机器上不需要任何系统 TLS 库
-- `-Os` + 函数/数据分节 + 链接期垃圾回收压体积：GNU ld 用 `--gc-sections` + `-s`，Darwin/Apple Silicon 用 `-Wl,-dead_strip` + 链接后 `strip`（不给 Apple ld 传已废弃的 `-s`）；单体 `ccode` 约 500K、`ccode-cli` 约 500K、`ccode-tui` 约 43K（HTTPS 构建）
-- 分离版 `ccode-tui` 只链 JSON Lines 前端；进程内 TUI/agent 集成仅在 `CCODE_COMBINED` 单体构建中编译，避免前端二进制引用 agent/permission 符号
-- `make install` / `make uninstall`：装/卸 `ccode` `ccode-cli` `ccode-tui` 与 man 页到 `$(DESTDIR)$(PREFIX)/bin`、`$(PREFIX)/share/man/man1`（PREFIX 默认 /usr/local）
+- `-Os` + 函数/数据分节 + 链接期垃圾回收压体积：GNU ld 用 `--gc-sections` + `-s`，Darwin/Apple Silicon 用 `-Wl,-dead_strip` + 链接后 `strip`（不给 Apple ld 传已废弃的 `-s`）；当前 `ccode-cli` 约 500K（HTTPS 构建）。单体 `ccode` 约 500K、`ccode-tui` 约 43K 为暂停前体积，仅保留说明
+- `ccode-tui`（暂停构建）只链 JSON Lines 前端；进程内 TUI/agent 集成仅在 `CCODE_COMBINED` 单体构建中编译，避免前端二进制引用 agent/permission 符号
+- `make install` 只装 `ccode-cli` 及其 man 页；`make uninstall` 仍清理 `ccode` / `ccode-cli` / `ccode-tui` 三项，用于清掉老版本残留
 - retro 构建同样做体积优化（宿主冒烟全开，guest 原生只裁符号）
 
 ## 路线图
@@ -73,5 +75,5 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（138 agent + 44 json + 28 http + 14 tui + 21 markdown + 5 tty + 7 e2e + 2 streaming）
+3. 现有测试套件全过（138 agent + 44 json + 28 http + 14 tui + 21 markdown + 5 tty + 7 e2e + 2 streaming；test-tui-commands 随 `ccode` 暂停）
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟
