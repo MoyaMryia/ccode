@@ -79,6 +79,6 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（143 agent + 44 json + 29 http + 15 tui + 21 markdown + 5 tty + 7 e2e + 2 streaming；test-tui-commands 随 `ccode` 暂停）
+3. 现有测试套件全过（147 agent + 45 json + 29 http + 15 tui + 21 markdown + 5 tty + 7 e2e + 2 streaming；test-tui-commands 随 `ccode` 暂停）
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟
 5. 工具调用/指令安全改动要过 `make fuzz-tool-args fuzz-command-paths fuzz-paths`，且 `make mutate`（故意注入错误看测试是否抓住）保持全部 KILLED

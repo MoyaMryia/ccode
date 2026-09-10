@@ -209,7 +209,7 @@ make clean && make HTTP_ONLY=1 test    # 纯 HTTP 构建
 CCODE_TEST_HTTPS=1 bash ./tests/run.sh # HTTPS 覆盖
 ```
 
-测试组成：133 agent + 38 json + 28 http + 13 tui + 21 markdown + 5 tty + 5 e2e + 2 streaming。
+测试组成：147 agent + 45 json + 29 http + 15 tui + 21 markdown + 5 tty + 7 e2e + 2 streaming。
 
 ## 安全边界
 
