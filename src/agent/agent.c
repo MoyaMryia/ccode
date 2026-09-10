@@ -159,6 +159,16 @@ static char *run_subagent(struct agent_context *ctx,
     if (read_only) {
         sub_cfg.read_only_tools = 1;
         sub_cfg.tools_enabled = 0;
+        /* Read-only delegates are launched as parallel forked processes that
+         * share the parent's terminal, and each child runs in its own
+         * (non-foreground) process group. If one stopped to ask for
+         * approval, its read() on the controlling terminal would raise
+         * SIGTTIN and freeze the child, while the parent blocks forever in
+         * poll() -- several children would also fight over one stdin. A
+         * read-only delegate can only ever run workspace-confined,
+         * non-mutating tools (write tools are not even enabled), so approve
+         * them instead of prompting. */
+        sub_cfg.auto_approve = 1;
     }
 
     fprintf(stderr, "  " CCODE_ANSI("2") "[sub-agent] depth %d, %s" CCODE_ANSI("0") "\n",

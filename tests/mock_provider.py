@@ -561,6 +561,54 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                 content = "Parallel results: " + " | ".join(parts)
                 events = chunk_content_events(content)
 
+        elif test_mode == "subagent-reads-fixture":
+            # A read-only delegate must run its own read tool without asking
+            # the user for approval: the forked child shares the parent's
+            # terminal, so a prompt would stop it with SIGTTIN (its process
+            # group is not the foreground group) and deadlock the parent.
+            msgs = req.get("messages", [])
+            prompt = ""
+            for m in msgs:
+                if m.get("role") == "user" and isinstance(m.get("content"), str):
+                    prompt = m.get("content", "")
+                    break
+            has_tool_result = any(m.get("role") == "tool" for m in msgs)
+            if " sub-read-delegate" in prompt:
+                if has_tool_result:
+                    events = [{"data": json.dumps({
+                        "choices": [{"index": 0,
+                                     "delta": {"content": "sub-read-done"},
+                                     "finish_reason": "stop"}]})}]
+                else:
+                    events = [{"data": json.dumps({
+                        "choices": [{"index": 0,
+                                     "delta": {"tool_calls": [
+                                         {"index": 0, "id": "call_subread",
+                                          "type": "function",
+                                          "function": {"name": "read_file",
+                                                       "arguments": '{"file_path":"probe.txt"}'}}]},
+                                     "finish_reason": None}]})},
+                              {"data": json.dumps({
+                                  "choices": [{"index": 0, "delta": {},
+                                               "finish_reason": "tool_calls"}]})}]
+            elif has_tool_result:
+                parts = [str(m.get("content", "")) for m in msgs
+                         if m.get("role") == "tool"]
+                events = chunk_content_events(
+                    "parent-saw: " + " | ".join(parts))
+            else:
+                events = [{"data": json.dumps({
+                    "choices": [{"index": 0,
+                                 "delta": {"tool_calls": [
+                                     {"index": 0, "id": "call_subread1",
+                                      "type": "function",
+                                      "function": {"name": "agent_tool",
+                                                   "arguments": '{"task":"__ccode_test_subagent-reads-fixture sub-read-delegate"}'}}]},
+                                 "finish_reason": None}]})},
+                          {"data": json.dumps({
+                              "choices": [{"index": 0, "delta": {},
+                                           "finish_reason": "tool_calls"}]})}]
+
         elif test_mode == "incomplete":
             events = [
                 {"data": json.dumps({

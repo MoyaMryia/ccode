@@ -484,6 +484,44 @@ def main():
     if 'sub_dir' in dir():
         subprocess.run(["rm", "-rf", sub_dir], capture_output=True)
 
+    # Test 5b: A read-only delegate's own read tool must not prompt. The
+    # forked child shares the parent's terminal from a non-foreground process
+    # group, so prompting there raised SIGTTIN and froze the child while the
+    # parent waited in poll() forever. The only approval in this workflow is
+    # the parent's agent_tool call; the delegate's read_file must auto-approve.
+    tests_run += 1
+    print("--- workflow: read-only sub-agent auto-approves its reads ---")
+    try:
+        subread_dir = os.path.join(
+            os.path.dirname(__file__), "fixtures",
+            "e2e_subagent_reads_%d" % os.getpid())
+        os.makedirs(subread_dir, exist_ok=True)
+        with open(os.path.join(subread_dir, "probe.txt"), "w") as f:
+            f.write("probe\n")
+        stdout, stderr, rc, approved = run_ccode_workflow(
+            "__ccode_test_subagent-reads-fixture", subread_dir)
+        output = stdout.decode() + stderr.decode()
+
+        if "sub-read-done" in output:
+            print("  PASS: read-only delegate read tool executed")
+        else:
+            print("  FAIL: delegate did not finish (output: %s)"
+                  % output[:400])
+            tests_failed += 1
+
+        if approved == 1:
+            print("  PASS: only the parent tool call was approved")
+        else:
+            print("  FAIL: expected exactly 1 approval, got %d "
+                  "(delegate prompted for its own read)" % approved)
+            tests_failed += 1
+
+    except Exception as e:
+        print("  FAIL: %s" % e)
+        tests_failed += 1
+    if 'subread_dir' in dir():
+        subprocess.run(["rm", "-rf", subread_dir], capture_output=True)
+
     # Test 6: Parallel sub-agents, oversized answers -- each delegate returns
     # a result larger than the 64 KiB pipe buffer and past the growth-doubling
     # boundary. The parent must still receive both answers intact (the grow
