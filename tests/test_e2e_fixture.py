@@ -388,12 +388,17 @@ def main():
             os.path.dirname(__file__), "fixtures", "e2e_repl_%d" % os.getpid())
         os.makedirs(repl_dir, exist_ok=True)
 
+        session_dir = os.path.join(repl_dir, "sessions")
+
         env = os.environ.copy()
         env["CCODE_API_BASE"] = "http://127.0.0.1:%d/v1" % PORT
         env["CCODE_API_KEY"] = "test-key"
         env["CCODE_MODEL"] = "test-model"
         env["CCODE_WORKSPACE"] = repl_dir
         env["CCODE_READ_ONLY_TOOLS"] = "1"
+        # Interactive REPL now auto-saves a session on exit; keep it out of
+        # the developer's real ~/.ccode/sessions.
+        env["CCODE_SESSION_DIR"] = session_dir
 
         proc = subprocess.Popen(
             [CCODE, "--interactive"],

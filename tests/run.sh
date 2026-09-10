@@ -120,6 +120,23 @@ else
 fi
 rm -rf "$sdir_root"
 
+# /exit must leave a resumable auto-named session for interactive runs that
+# never named one (regression: only named sessions used to be saved).
+echo "--- /exit auto-saves a resumable session ---"
+adir="/tmp/ccode_auto_session_$$"
+rm -rf "$adir"
+printf 'Hello auto session\n/exit\n' | timeout "$TIMEOUT" \
+    "$CCODE" --interactive --session-dir "$adir" >/dev/null 2>&1 || true
+auto_session=$(ls -t "$adir"/auto-*.json 2>/dev/null | head -1 || true)
+if [ -n "$auto_session" ] && [ -s "$auto_session" ]; then
+    echo "  PASS: /exit saved auto session"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: /exit did not save an auto session"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$adir"
+
 # 1. Normal SSE response
 echo "--- Basic connectivity ---"
 run_test_exit "normal response" 0 -p "hi"

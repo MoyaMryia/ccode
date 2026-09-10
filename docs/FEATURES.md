@@ -10,9 +10,9 @@
 
 - 交互式 REPL 和单条提问两种模式（`ccode-cli`）
 - CLI 模式：`ccode-cli`（JSON Lines 协议，供其他前端复用）；TUI 临时暂停构建：单体 `ccode`（进程内 TUI + CLI）与分离的 `ccode-tui` 暂不构建/发布
-- CLI REPL slash 命令：`/help /clear /exit /history /model /models[/search|info] /sessions[/delete|rename|export] /resume /session[new|switch|list] /thinking /reasoning`；`/compact` 明确不支持。默认经自动会话链（auto-*.json，resume+save 同一文件）保持对话上下文，`/clear`、`/session new` 开新链，`--resume` 从指定会话接链
+- CLI REPL slash 命令：`/help /clear /exit /history /model /models[/search|info] /sessions[/delete|rename|export] /resume /session[new|switch|list] /thinking /reasoning`；`/compact` 明确不支持。默认经自动会话链（auto-*.json，resume+save 同一文件）保持对话上下文：首次真实提问自动开链，每轮 auto-save，`/exit` 保证落盘可 `/resume`；`/clear`、`/session new` 开新链，`--resume` 从指定会话接链
 - REPL 行输入 UTF-8/双宽感知：退格按整码点删除并按显示宽度回擦，中文不再留残影（非 tty 或 Windows 自动回退 `fgets`）
-- thinking / reasoning_effort 两个字段独立控制（`--thinking` / `--reasoning[-effort]`，REPL 里 `/thinking` `/reasoning`）
+- thinking / reasoning_effort 两个字段独立控制（`--thinking` / `--reasoning[-effort]`，REPL 里 `/thinking` `/reasoning`）；默认开启：thinking 发 `{"type":"enabled"}`、reasoning_effort 为 `high`；`CCODE_THINKING=0`（或 `/thinking off`）关 thinking，`CCODE_THINKING_EFFORT=off`（或 `/reasoning off`）关 reasoning
 - 流式输出：每个 SSE 增量到达就立即显示
 - Markdown → ANSI 渲染（标题、加粗、斜体、代码块、列表、引用、链接），带控制字符消毒
 - 上下文缓存友好：请求前缀字节稳定（避免 resume 后重复 system 提示）
@@ -26,6 +26,8 @@
 - `web_search`（Bing 端点可配）
 - `agent_tool`（子代理，独立循环、默认只读、深度上限 3）
 - 工具调用参数解析：容忍模型把参数包进一层或多层 `{"arguments": ...}`（对象与 JSON 字符串形式混合），最多 8 层；超限报 `nested too deep`，信封值非对象/字符串、或信封带尾随数据时明确拒绝；多键信封不再被误判
+- 工具调用参数转义：流式收到的原始转义参数在存入对话前只解码一次，回灌请求时只转义一次，历史里的 assistant tool_call 不再双重转义（旧行为会把 `{"command":"ls"}` 回灌成 `{\"command\":\"ls\"}`，把模型带偏、越纠越乱）
+- 调试输出：每次收到服务商返回的工具调用，按原样（OpenAI 响应 JSON）打印 `[tool-call] {...}` 到 stderr；当前无条件开启，后续再改成 flag/env 可选
 
 ### 会话与模型
 
@@ -79,6 +81,6 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（147 agent + 45 json + 29 http + 15 tui + 21 markdown + 5 tty + 7 e2e + 2 streaming；test-tui-commands 随 `ccode` 暂停）
+3. 现有测试套件全过（148 agent + 45 json + 30 http + 15 tui + 21 markdown + 5 tty + 7 e2e + 2 streaming；test-tui-commands 随 `ccode` 暂停）
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟
 5. 工具调用/指令安全改动要过 `make fuzz-tool-args fuzz-command-paths fuzz-paths`，且 `make mutate`（故意注入错误看测试是否抓住）保持全部 KILLED

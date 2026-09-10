@@ -97,7 +97,9 @@ Enable read and write tools.
 Read-only tools (read_file, glob, grep, git_*). The default.
 .TP
 .B \-\-default
-Fast start: interactive REPL plus read/write tools plus thinking.
+Fast start: interactive REPL plus read/write tools plus thinking
+at
+.BR high " effort."
 Never enables
 .BR \-\-auto-approve .
 .TP
@@ -111,12 +113,16 @@ Send the
 field
 .RB ( type:
 .BR enabled ).
-Independent of
+On by default; disable with
+.BR CCODE_THINKING=0
+or the
+.B /thinking off
+REPL command. Independent of
 .BR \-\-reasoning .
 .TP
 .BI \-\-reasoning
 Send the reasoning_effort field (default effort:
-.BR medium ).
+.BR high ).
 Independent of
 .BR \-\-thinking .
 .TP
@@ -334,10 +340,11 @@ Number of sessions to keep (default 10).
 Set 0 to disable markdown rendering.
 .TP
 .B CCODE_THINKING
-Set 1 to enable thinking mode.
+Set 0 to disable thinking mode (enabled by default).
 .TP
 .B CCODE_THINKING_EFFORT
-Thinking effort: low, medium, high, xhigh, max.
+Thinking effort: low, medium, high, xhigh, max (default high).
+Set to off, none or empty to omit the reasoning_effort field.
 .SH LIMITS
 Built-in (not configurable) resource bounds:
 .TP

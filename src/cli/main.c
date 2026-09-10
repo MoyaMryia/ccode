@@ -331,7 +331,7 @@ static void backend_command(struct json_session_state *state, const char *comman
     } else if (strcmp(command, "/reasoning on") == 0) {
         if (!state->options.thinking_effort) {
             snprintf(state->options.thinking_effort_buf,
-                     sizeof(state->options.thinking_effort_buf), "%s", "medium");
+                     sizeof(state->options.thinking_effort_buf), "%s", "high");
             state->options.thinking_effort = state->options.thinking_effort_buf;
         }
         json_print("message", "Reasoning enabled.");

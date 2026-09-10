@@ -54,6 +54,9 @@ int test_prepare_tool_display(const char *name, const char *arguments,
 const char *test_prepare_tool_error(const char *name, const char *arguments);
 int test_conversation_has_tool_result(const struct ccode_conversation *conv,
                                       const char *tool_call_id);
+int test_conversation_add_streamed_tool_call(struct ccode_conversation *conv,
+                                             const char *id, const char *name,
+                                             const char *raw_arguments);
 
 #define CCODE_FI_OPENAT      1
 #define CCODE_FI_WRITE       2
@@ -3951,6 +3954,36 @@ static int test_request_prefix_stable_across_turns(void) {
     return 1;
 }
 
+/* A streamed tool call arrives with raw escaped argument bytes; the
+ * conversation must store the decoded object so build_request escapes it
+ * exactly once. Storing the raw form double-escapes the arguments the
+ * provider (and therefore the model) sees on the next turn. */
+static int test_streamed_tool_call_arguments_single_escape(void) {
+    struct ccode_conversation conv;
+    char *req;
+    /* Raw SSE argument body for the JSON object {"file_path":"a.txt"}. */
+    const char *raw_args = "{\\\"file_path\\\":\\\"a.txt\\\"}";
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "") == 0);
+    ASSERT(test_conversation_add_streamed_tool_call(&conv, "call_1",
+                                                    "read_file",
+                                                    raw_args) == 0);
+    ASSERT(ccode_conversation_add_tool_result(&conv, "call_1",
+                                              "{\"ok\":true}") == 0);
+
+    req = ccode_conversation_build_request(&conv, "m", NULL, 0, NULL);
+    ASSERT(req != NULL);
+    /* Exactly one level of escaping on the wire. */
+    ASSERT(strstr(req, "\"arguments\":\"{\\\"file_path\\\":\\\"a.txt\\\"}\"")
+           != NULL);
+    /* Never the double-escaped form that confused models in the wild. */
+    ASSERT(strstr(req, "{\\\\\"file_path") == NULL);
+    free(req);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
 /* CCODE_SESSION_KEEP_COUNT: only the N most recent sessions survive a save. */
 static int test_session_prune_keep_count(void) {
     char dir[512];
@@ -4296,6 +4329,7 @@ int main(int argc, char **argv) {
     TEST(build_request_thinking_default_effort);
     TEST(build_request_thinking_switch);
     TEST(request_prefix_stable_across_turns);
+    TEST(streamed_tool_call_arguments_single_escape);
     TEST(session_prune_keep_count);
 
     fprintf(stderr, "\n=== Results: %d tests, %d failed ===\n",

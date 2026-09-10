@@ -35,8 +35,8 @@ void ccode_print_usage(const char *program) {
         "      --write            Enable read and write_file tools with confirmation\n"
         "      --default          Fast start: interactive + read/write tools + thinking (never auto-approve)\n"
         "      --auto-approve     Auto-approve all tool requests\n"
-        "      --thinking         Send the thinking field (type: enabled)\n"
-        "      --reasoning        Send the reasoning_effort field (default effort: medium)\n"
+        "      --thinking         Send the thinking field (type: enabled; on by default)\n"
+        "      --reasoning        Send the reasoning_effort field (default effort: high)\n"
         "      --reasoning-effort L  Reasoning effort: low, medium, high, xhigh, max\n"
         "      --thinking-effort L  Alias for --reasoning-effort\n"
         "      --allow-http       Allow http:// API endpoints beyond loopback\n"
@@ -52,8 +52,9 @@ void ccode_print_usage(const char *program) {
         "  CCODE_SESSION_KEEP_COUNT   Max sessions to keep (default: 10)\n"
         "  CCODE_ALLOW_HTTP           Allow remote http:// endpoints (set 1; plaintext, known risk)\n"
         "  CCODE_MARKDOWN             Enable markdown rendering (default: 1, set 0 to disable)\n"
-        "  CCODE_THINKING             Send the thinking field (set 1 to enable)\n"
-        "  CCODE_THINKING_EFFORT      Reasoning effort: low, medium, high, xhigh, or max (default: medium)\n"
+        "  CCODE_THINKING             Send the thinking field (default: 1, set 0 to disable)\n"
+        "  CCODE_THINKING_EFFORT      Reasoning effort: low, medium, high, xhigh, or max (default: high);\n"
+        "                             off/none/empty disables the reasoning_effort field\n"
         "\n"
         "REPL slash commands (interactive mode):\n"
         "  /help        Show available slash commands\n"
@@ -69,6 +70,11 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
     int i;
 
     memset(config, 0, sizeof(*config));
+    /* Thinking and reasoning are on by default: send
+     * "thinking":{"type":"enabled"} plus "reasoning_effort":"high". Both can
+     * be overridden by flags or by CCODE_THINKING / CCODE_THINKING_EFFORT. */
+    config->thinking_enabled = 1;
+    config->thinking_effort = "high";
     config->api_base = getenv("CCODE_API_BASE");
     {
         const char *key = getenv("CCODE_API_KEY");
@@ -155,11 +161,19 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
     }
     {
         const char *tk = getenv("CCODE_THINKING");
-        config->thinking_enabled = (tk && tk[0] == '1') ? 1 : 0;
+        /* Default on; CCODE_THINKING=0 is the explicit opt-out. */
+        if (tk) config->thinking_enabled = (tk[0] != '0') ? 1 : 0;
     }
     {
         const char *te = getenv("CCODE_THINKING_EFFORT");
-        config->thinking_effort = te;
+        /* Empty / off / none turn the reasoning_effort field off entirely. */
+        if (te) {
+            if (te[0] == '\0' || strcmp(te, "off") == 0 ||
+                strcmp(te, "none") == 0)
+                config->thinking_effort = NULL;
+            else
+                config->thinking_effort = te;
+        }
     }
     config->session_dir = getenv("CCODE_SESSION_DIR");
 
@@ -199,6 +213,7 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
             config->interactive = 1;
             config->tools_enabled = 1;
             config->thinking_enabled = 1;
+            config->thinking_effort = "high";
             continue;
         }
         if (strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--interactive") == 0) {
@@ -233,10 +248,10 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
             continue;
         }
         if (strcmp(argv[i], "--reasoning") == 0) {
-            /* Send the reasoning_effort field; default to medium when no
+            /* Send the reasoning_effort field; default to high when no
              * explicit level was given. Independent of --thinking. */
             if (!config->thinking_effort)
-                config->thinking_effort = "medium";
+                config->thinking_effort = "high";
             continue;
         }
         if ((strcmp(argv[i], "--reasoning-effort") == 0 ||

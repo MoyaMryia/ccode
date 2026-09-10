@@ -974,7 +974,7 @@ static int inproc_handle_command(struct tui_inproc_ctx *ctx, const char *cmd) {
     }
     if (strcmp(cmd, "/reasoning on") == 0) {
         if (!ctx->thinking_effort[0])
-            snprintf(ctx->thinking_effort, sizeof(ctx->thinking_effort), "medium");
+            snprintf(ctx->thinking_effort, sizeof(ctx->thinking_effort), "high");
         tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, "Reasoning enabled.");
         return 0;
     }

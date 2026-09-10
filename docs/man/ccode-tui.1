@@ -53,7 +53,9 @@ Enable read and write tools (approved interactively in the TUI).
 Read-only tools (read_file, glob, grep, git_*). This is the default mode.
 .TP
 .B \-\-default
-Fast start preset: read/write tools plus thinking. Never enables
+Fast start preset: read/write tools plus thinking at
+.BR high " effort."
+Never enables
 .BR \-\-auto-approve .
 .TP
 .B \-\-thinking
@@ -62,10 +64,12 @@ Send the
 field
 .RB ( type:
 .BR enabled ).
+On by default; disable with
+.BR CCODE_THINKING=0 .
 .TP
 .B \-\-reasoning
 Send the reasoning_effort field (default effort:
-.BR medium ).
+.BR high ).
 .TP
 .BI \-\-reasoning-effort " LEVEL"
 Reasoning effort:

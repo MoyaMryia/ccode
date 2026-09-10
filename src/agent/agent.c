@@ -627,6 +627,52 @@ static int conversation_has_tool_result(const struct ccode_conversation *conv,
     return 0;
 }
 
+/* Store a streamed tool call in the conversation. The SSE layer keeps the
+ * raw escaped argument bytes (so fragments that split an escape assemble
+ * correctly). The conversation contract -- shared by the session loader and
+ * build_request, which escapes exactly once -- is decoded JSON, so decode
+ * exactly once here. Storing the raw form double-escapes every replayed
+ * assistant tool call and corrupts the provider's argument view. */
+static int conversation_add_streamed_tool_call(struct ccode_conversation *conv,
+                                               const char *id,
+                                               const char *name,
+                                               const char *raw_arguments) {
+    char *decoded = raw_arguments ? ccode_unescape_json_string(raw_arguments)
+                                  : NULL;
+    int status = ccode_conversation_add_tool_call(
+        conv, id, name, decoded ? decoded : raw_arguments);
+    free(decoded);
+    return status;
+}
+
+/* Debug aid: dump every tool call the provider returns, rendered as the raw
+ * OpenAI response JSON, to stderr. Unconditional for now; flip the guard to
+ * make it opt-in (CLI flag / env var) without touching the call sites. */
+static int g_debug_tool_calls = 1;
+
+static void debug_print_tool_calls(const struct ccode_sse_accumulator *acc) {
+    size_t i;
+    if (!g_debug_tool_calls || acc->tool_call_count == 0) return;
+    for (i = 0; i < acc->tool_call_count; i++) {
+        const struct ccode_sse_tool_call *tc = &acc->tool_calls[i];
+        char *e_id = ccode_json_escape(tc->id ? tc->id : "");
+        char *e_name = ccode_json_escape(tc->name ? tc->name : "");
+        /* id/name are already decoded; arguments is the raw escaped JSON
+         * string body exactly as the provider sent it. Print the latter
+         * verbatim: re-escaping would double-escape and hide the very
+         * escaping bug this diagnostic exists to expose. */
+        fprintf(stderr, "  " CCODE_ANSI("2") "[tool-call]" CCODE_ANSI("0")
+                " {\"index\":%d,\"id\":\"%s\",\"type\":\"function\","
+                "\"function\":{\"name\":\"%s\",\"arguments\":\"%s\"}}\n",
+                tc->index,
+                e_id ? e_id : "",
+                e_name ? e_name : "",
+                tc->arguments ? tc->arguments : "");
+        free(e_id);
+        free(e_name);
+    }
+}
+
 /* Run the turn-processing loop on an initialized conversation.
  * Returns 0 on success, 130 on cancellation, 1 on other error.
  * The conversation is preserved and may be reused by the caller. */
@@ -760,9 +806,10 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
             }
 
             if (acc.tool_call_count > 0) {
+                debug_print_tool_calls(&acc);
                 for (i = 0; i < acc.tool_call_count; i++) {
                     if (acc.tool_calls[i].id && acc.tool_calls[i].name) {
-                        if (ccode_conversation_add_tool_call(conv,
+                        if (conversation_add_streamed_tool_call(conv,
                                 acc.tool_calls[i].id,
                                 acc.tool_calls[i].name,
                                 acc.tool_calls[i].arguments) != 0) {
@@ -1404,13 +1451,13 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
     }
     verify_model(cfg, current_model, sizeof(current_model));
     {
-        const char *eff = cfg->thinking_effort ? cfg->thinking_effort : "medium";
+        const char *eff = cfg->thinking_effort ? cfg->thinking_effort : "high";
         size_t el = strlen(eff);
         if (el >= sizeof(current_effort)) el = sizeof(current_effort) - 1;
         memcpy(current_effort, eff, el);
         current_effort[el] = '\0';
         /* Keep cfg->thinking_effort untouched: NULL means reasoning is
-         * off (send no reasoning_effort field), the default "medium" is
+         * off (send no reasoning_effort field), the default "high" is
          * only the display/fallback value. */
     }
     exit_code = 0;
@@ -2104,6 +2151,25 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
             history_count++;
         }
 
+        /* Default session persistence: without an explicit --save-session /
+         * --resume / /session path, mint an auto-named session chain on the
+         * first real prompt so the conversation is auto-saved and /resume
+         * can pick it up (same behavior as the in-process TUI). */
+        if (!have_session_path && !cfg->save_session) {
+            const char *dir = ccode_session_dir();
+            if (dir && ccode_session_ensure_dir() == 0) {
+                char name[80];
+                snprintf(name, sizeof(name), "auto-%ld-%d.json",
+                         (long)time(NULL), (int)getpid());
+                if (snprintf(current_session_path,
+                             sizeof(current_session_path), "%s/%s",
+                             dir, name) < (int)sizeof(current_session_path))
+                    have_session_path = 1;
+                else
+                    current_session_path[0] = '\0';
+            }
+        }
+
         if (ccode_conversation_add(&conv, CCODE_ROLE_USER, line) != 0) {
             fprintf(stderr, "Out of memory.\n");
             goto cleanup;
@@ -2174,26 +2240,34 @@ cleanup:
             }
         }
     }
-    if (cfg->save_session && conv_initialized) {
-        const char *ch = ctx->change_count > 0 ? change_log_serialize(&agent_ctx) : NULL;
-        const char *tk = ctx->task_count > 0 ? task_list_serialize(ctx) : NULL;
-        struct ccode_session_metadata meta;
-        memset(&meta, 0, sizeof(meta));
-        if (cfg->model) {
-            size_t ml = strlen(cfg->model);
-            if (ml >= sizeof(meta.model)) ml = sizeof(meta.model) - 1;
-            memcpy(meta.model, cfg->model, ml);
-            meta.model[ml] = '\0';
+    {
+        /* On /exit, make sure a session exists: honour an explicit
+         * --save-session, otherwise fall back to the auto-named chain. Skip
+         * sessions that never got past the initial system prompt. */
+        const char *save_path = cfg->save_session;
+        if (!save_path && have_session_path && conv.count > 1)
+            save_path = current_session_path;
+        if (save_path && conv_initialized) {
+            const char *ch = ctx->change_count > 0 ? change_log_serialize(&agent_ctx) : NULL;
+            const char *tk = ctx->task_count > 0 ? task_list_serialize(ctx) : NULL;
+            struct ccode_session_metadata meta;
+            memset(&meta, 0, sizeof(meta));
+            if (cfg->model) {
+                size_t ml = strlen(cfg->model);
+                if (ml >= sizeof(meta.model)) ml = sizeof(meta.model) - 1;
+                memcpy(meta.model, cfg->model, ml);
+                meta.model[ml] = '\0';
+            }
+            if (ctx->workspace_root[0]) {
+                size_t wl = strlen(ctx->workspace_root);
+                if (wl >= sizeof(meta.workspace)) wl = sizeof(meta.workspace) - 1;
+                memcpy(meta.workspace, ctx->workspace_root, wl);
+                meta.workspace[wl] = '\0';
+            }
+            meta.created_at = time(NULL);
+            if (ccode_conversation_save(&conv, save_path, tk, ch, &meta) != 0)
+                fputs("Warning: could not save session.\n", stderr);
         }
-        if (ctx->workspace_root[0]) {
-            size_t wl = strlen(ctx->workspace_root);
-            if (wl >= sizeof(meta.workspace)) wl = sizeof(meta.workspace) - 1;
-            memcpy(meta.workspace, ctx->workspace_root, wl);
-            meta.workspace[wl] = '\0';
-        }
-        meta.created_at = time(NULL);
-        if (ccode_conversation_save(&conv, cfg->save_session, tk, ch, &meta) != 0)
-            fputs("Warning: could not save session.\n", stderr);
     }
     if (conv_initialized) ccode_conversation_destroy(&conv);
     free(history);
@@ -2307,6 +2381,11 @@ int test_run_pending_subagents(struct ccode_agent_config *cfg,
 int test_conversation_has_tool_result(const struct ccode_conversation *conv,
                                       const char *tool_call_id) {
     return conversation_has_tool_result(conv, tool_call_id);
+}
+int test_conversation_add_streamed_tool_call(struct ccode_conversation *conv,
+                                             const char *id, const char *name,
+                                             const char *raw_arguments) {
+    return conversation_add_streamed_tool_call(conv, id, name, raw_arguments);
 }
 void ccode_test_cleanup_residual_temp_files(void) {
     cleanup_residual_temp_files(&agent_ctx);
