@@ -18,6 +18,10 @@
 #include <limits.h>
 #include <dirent.h>
 
+/* Defined with the session helpers below; used by save() to create the
+ * session directory on first write. */
+static int mkdir_p(const char *path);
+
 int ccode_conversation_init(struct ccode_conversation *conv, size_t capacity) {
     if (capacity == 0 || capacity > CCODE_MAX_MESSAGES) capacity = CCODE_MAX_MESSAGES;
     conv->messages = calloc(capacity, sizeof(struct ccode_message));
@@ -563,6 +567,18 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
     parent_path = NULL;
 
     if (!conv || !path) return -1;
+    /* Create the session directory on first save (e.g. ~/.ccode/sessions). */
+    {
+        const char *slash = strrchr(path, '/');
+        if (slash != NULL && slash != path) {
+            char parent[4096];
+            size_t plen = (size_t)(slash - path);
+            if (plen >= sizeof(parent)) return -1;
+            memcpy(parent, path, plen);
+            parent[plen] = '\0';
+            if (mkdir_p(parent) != 0) return -1;
+        }
+    }
     fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (fd >= 0) {
         if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1) {
@@ -1222,29 +1238,66 @@ const char *ccode_session_dir(void) {
     const char *home;
     size_t len;
 
-    if (env && env[0] != '\0') {
-        if (strlen(env) >= sizeof(dir) - 1) return NULL;
-        memcpy(dir, env, strlen(env) + 1);
-        return dir;
-    }
-
     home = getenv("HOME");
 #ifdef _WIN32
     /* HOME is not set by default on Windows; fall back to the profile dir. */
     if (!home || !home[0]) home = getenv("USERPROFILE");
 #endif
+
+    if (env && env[0] != '\0') {
+        /* Allow an explicit ~ or ~/ prefix in CCODE_SESSION_DIR / --session-dir. */
+        if (env[0] == '~' && (env[1] == '/' || env[1] == '\0') &&
+            home && home[0]) {
+            len = snprintf(dir, sizeof(dir), "%s%s", home, env + 1);
+            if (len <= 0 || len >= sizeof(dir)) return NULL;
+            return dir;
+        }
+        if (strlen(env) >= sizeof(dir) - 1) return NULL;
+        memcpy(dir, env, strlen(env) + 1);
+        return dir;
+    }
+
     if (!home || strlen(home) >= sizeof(dir) - 20) return NULL;
     len = snprintf(dir, sizeof(dir), "%s/.ccode/sessions", home);
     if (len <= 0 || len >= sizeof(dir)) return NULL;
     return dir;
 }
 
-/* Ensure the session directory exists. Returns 0 on success. */
+/* Create `path` and any missing parent directories (mkdir -p). Returns 0 on
+ * success; a component that exists as a non-directory fails. */
+static int mkdir_p(const char *path) {
+    char buf[4096];
+    size_t len, i;
+    struct stat st;
+
+    if (!path || path[0] == '\0' || strlen(path) >= sizeof(buf)) return -1;
+    memcpy(buf, path, strlen(path) + 1);
+    len = strlen(buf);
+    while (len > 1 && buf[len - 1] == '/') buf[--len] = '\0';
+
+    for (i = 1; i < len; i++) {
+        if (buf[i] != '/') continue;
+        buf[i] = '\0';
+        if (mkdir(buf, 0700) != 0 && errno != EEXIST) {
+            buf[i] = '/';
+            return -1;
+        }
+        if (stat(buf, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            buf[i] = '/';
+            return -1;
+        }
+        buf[i] = '/';
+    }
+    if (mkdir(buf, 0700) != 0 && errno != EEXIST) return -1;
+    if (stat(buf, &st) != 0 || !S_ISDIR(st.st_mode)) return -1;
+    return 0;
+}
+
+/* Ensure the session directory (including ~/.ccode) exists. */
 static int ensure_session_dir(void) {
     const char *dir = ccode_session_dir();
     if (!dir) return -1;
-    if (mkdir(dir, 0755) != 0 && errno != EEXIST) return -1;
-    return 0;
+    return mkdir_p(dir);
 }
 
 int ccode_session_ensure_dir(void) {

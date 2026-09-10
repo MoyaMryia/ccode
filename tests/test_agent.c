@@ -188,6 +188,96 @@ static int test_load_rejects_strict_schema_and_is_transactional(void) {
     return 1;
 }
 
+/* A fresh machine has no ~/.ccode at all; creating the session directory and
+ * saving must mkdir -p the whole path. */
+static int test_session_dir_creates_parents(void) {
+    char root[256];
+    char nested[512];
+    char path[1024];
+    char leaf[512];
+    struct stat st;
+    struct ccode_conversation conv;
+    struct ccode_session_metadata meta;
+
+    snprintf(root, sizeof(root), "/tmp/ccode_session_mkdir_%ld", (long)getpid());
+    snprintf(nested, sizeof(nested), "%s/a/b/sessions", root);
+    ASSERT(setenv("CCODE_SESSION_DIR", nested, 1) == 0);
+
+    ASSERT(ccode_session_ensure_dir() == 0);
+    ASSERT(stat(nested, &st) == 0 && S_ISDIR(st.st_mode));
+    ASSERT((st.st_mode & 0077) == 0);   /* created private (0700) */
+
+    ASSERT(ccode_conversation_init(&conv, 4) == 0);
+    memset(&meta, 0, sizeof(meta));
+    snprintf(path, sizeof(path), "%s/deep.json", nested);
+    ASSERT(ccode_conversation_save(&conv, path, NULL, NULL, &meta) == 0);
+    ASSERT(stat(path, &st) == 0 && S_ISREG(st.st_mode));
+    ccode_conversation_destroy(&conv);
+
+    unlink(path);
+    snprintf(leaf, sizeof(leaf), "%s/a/b/sessions", root); rmdir(leaf);
+    snprintf(leaf, sizeof(leaf), "%s/a/b", root); rmdir(leaf);
+    snprintf(leaf, sizeof(leaf), "%s/a", root); rmdir(leaf);
+    rmdir(root);
+    unsetenv("CCODE_SESSION_DIR");
+    return 1;
+}
+
+/* save() must create its parent even without a prior ensure_session_dir(),
+ * so the auto-save path cannot fail silently. */
+static int test_session_save_creates_parent(void) {
+    char root[256];
+    char nested[512];
+    char path[1024];
+    char leaf[512];
+    struct stat st;
+    struct ccode_conversation conv;
+    struct ccode_session_metadata meta;
+
+    snprintf(root, sizeof(root), "/tmp/ccode_save_mkdir_%ld", (long)getpid());
+    snprintf(nested, sizeof(nested), "%s/x/y", root);
+    ASSERT(setenv("CCODE_SESSION_DIR", nested, 1) == 0);
+
+    ASSERT(ccode_conversation_init(&conv, 4) == 0);
+    memset(&meta, 0, sizeof(meta));
+    snprintf(path, sizeof(path), "%s/auto.json", nested);
+    ASSERT(ccode_conversation_save(&conv, path, NULL, NULL, &meta) == 0);
+    ASSERT(stat(path, &st) == 0 && S_ISREG(st.st_mode));
+    ccode_conversation_destroy(&conv);
+
+    unlink(path);
+    snprintf(leaf, sizeof(leaf), "%s/x/y", root); rmdir(leaf);
+    snprintf(leaf, sizeof(leaf), "%s/x", root); rmdir(leaf);
+    rmdir(root);
+    unsetenv("CCODE_SESSION_DIR");
+    return 1;
+}
+
+/* A ~ or ~/ prefix in CCODE_SESSION_DIR (or --session-dir) expands to $HOME. */
+static int test_session_dir_expands_tilde(void) {
+    char home[512];
+    char want[1024];
+    char old_home[512];
+    const char *expanded;
+    int had_home = 0;
+
+    if (getenv("HOME") && strlen(getenv("HOME")) < sizeof(old_home)) {
+        memcpy(old_home, getenv("HOME"), strlen(getenv("HOME")) + 1);
+        had_home = 1;
+    }
+    snprintf(home, sizeof(home), "/tmp/ccode_home_%ld", (long)getpid());
+    ASSERT(setenv("HOME", home, 1) == 0);
+    ASSERT(setenv("CCODE_SESSION_DIR", "~/sessions", 1) == 0);
+    expanded = ccode_session_dir();
+    ASSERT(expanded != NULL);
+    snprintf(want, sizeof(want), "%s/sessions", home);
+    ASSERT(strcmp(expanded, want) == 0);
+
+    unsetenv("CCODE_SESSION_DIR");
+    if (had_home) setenv("HOME", old_home, 1); else unsetenv("HOME");
+    return 1;
+}
+
 static int test_content_limit_is_exact(void) {
     const char *path = "fixtures/session_limit.json";
     struct ccode_conversation conv;
@@ -3951,6 +4041,9 @@ int main(void) {
     /* Phase 5: Session management tests */
     TEST(session_list_empty);
     TEST(session_save_and_list);
+    TEST(session_dir_creates_parents);
+    TEST(session_save_creates_parent);
+    TEST(session_dir_expands_tilde);
     TEST(session_delete);
     TEST(session_rename);
     TEST(session_export_json);

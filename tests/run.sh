@@ -104,6 +104,22 @@ export CCODE_API_BASE="http://127.0.0.1:$PORT/v1"
 export CCODE_API_KEY="test-key"
 export CCODE_MODEL="test-model"
 
+# Session directory: --session-dir must be honoured and created recursively.
+echo "--- Session directory ---"
+sdir_root="/tmp/ccode_sdir_test_$$"
+sdir="$sdir_root/nested/sessions"
+rm -rf "$sdir_root"
+printf '/session new smoke.json\n/exit\n' | timeout "$TIMEOUT" \
+    "$CCODE" --interactive --session-dir "$sdir" >/dev/null 2>&1 || true
+if [ -f "$sdir/smoke.json" ]; then
+    echo "  PASS: --session-dir created recursively and used"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: --session-dir not honoured/created"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$sdir_root"
+
 # 1. Normal SSE response
 echo "--- Basic connectivity ---"
 run_test_exit "normal response" 0 -p "hi"

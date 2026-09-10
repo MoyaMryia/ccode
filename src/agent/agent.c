@@ -2135,7 +2135,9 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                 meta.workspace[wl] = '\0';
             }
             meta.created_at = time(NULL);
-            ccode_conversation_save(&conv, current_session_path, tk, ch, &meta);
+            if (ccode_conversation_save(&conv, current_session_path, tk, ch,
+                                        &meta) != 0)
+                fputs("Warning: could not save session.\n", stderr);
         }
     }
 

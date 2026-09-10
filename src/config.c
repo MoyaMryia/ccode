@@ -292,5 +292,9 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
     }
     /* The "either -p or --interactive" requirement is enforced by the
      * callers: ccode-cli needs it, the TUI frontend (ccode) does not. */
+    /* Publish --session-dir to the session layer, which reads the process
+     * environment (CCODE_SESSION_DIR). The flag wins over the env var. */
+    if (config->session_dir && config->session_dir[0] != '\0')
+        setenv("CCODE_SESSION_DIR", config->session_dir, 1);
     return 0;
 }
