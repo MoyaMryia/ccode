@@ -6,9 +6,7 @@
 
 It *WORKS*, that's fine.
 
-2026/09/01更新：在Agent核心功能完成测试前我们将暂时不继续开发TUI,感谢您的理解。
-
-2026/09/10更新：临时不再构建 `ccode` 和 `ccode-tui`，只构建 `ccode-cli`。
+2026/09/01更新：在Agent核心功能完成测试前我们将暂时不继续开发TUI，临时不再构建 `ccode` 和 `ccode-tui`，只构建 `ccode-cli`。
 
 ## 它能做什么
 
