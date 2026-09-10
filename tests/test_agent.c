@@ -490,6 +490,28 @@ static int test_text_file_round_trip(void) {
     return 1;
 }
 
+static int test_read_file_truncates_large_file(void) {
+    char *r;
+    static char big[MAX_TOOL_OUTPUT + 4096];
+    FILE *f;
+
+    memset(big, 'Q', sizeof(big));
+    f = fopen("fixtures/large_read.txt", "wb");
+    ASSERT(f != NULL);
+    ASSERT(fwrite(big, 1, sizeof(big), f) == sizeof(big));
+    fclose(f);
+
+    test_reset_workspace();
+    r = test_exec_read_file("fixtures", "large_read.txt");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "\"content\":\"") != NULL);
+    ASSERT(strstr(r, "\"truncated\":true") != NULL);
+    ASSERT(strlen(r) <= MAX_TOOL_OUTPUT * 6 + 512);
+    free(r);
+    unlink("fixtures/large_read.txt");
+    return 1;
+}
+
 static int test_path_outside_workspace_rejected(void) {
     char *r;
     test_reset_workspace();
@@ -4084,6 +4106,7 @@ int main(int argc, char **argv) {
     TEST(control_byte_is_escaped);
     TEST(read_file_nul_is_escaped_consistently);
     TEST(text_file_round_trip);
+    TEST(read_file_truncates_large_file);
     TEST(path_outside_workspace_rejected);
     TEST(invalid_workspace_fails_closed);
     TEST(read_rejects_symlink_ancestor);

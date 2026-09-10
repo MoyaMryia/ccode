@@ -1127,6 +1127,28 @@ int is_binary_content(const unsigned char *buf, size_t len) {
     return 0;
 }
 
+/* If a read was cut at a byte cap, back off an incomplete trailing UTF-8
+ * sequence so the JSON string handed to the model stays valid UTF-8. */
+static size_t trim_incomplete_utf8(const unsigned char *s, size_t n) {
+    size_t k = n;
+    size_t cont = 0;
+    unsigned char lead;
+    size_t need;
+
+    while (k > 0 && cont < 3 && (s[k - 1] & 0xC0) == 0x80) {
+        k--;
+        cont++;
+    }
+    if (k == 0) return n;
+    lead = s[k - 1];
+    if ((lead & 0x80) == 0) return n;
+    if ((lead & 0xE0) == 0xC0) need = 2;
+    else if ((lead & 0xF0) == 0xE0) need = 3;
+    else if ((lead & 0xF8) == 0xF0) need = 4;
+    else return n;
+    return (cont + 1 < need) ? k - 1 : n;
+}
+
 char *exec_read_file(struct agent_context *ctx, const char *workspace, const char *file_path) {
     char * output;
     int fd;
@@ -1135,6 +1157,8 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
     unsigned char *source;
     size_t read_size;
     size_t output_cap, output_pos;
+    size_t file_size;
+    size_t read_limit;
 
     if (!file_path)
         return ccode_strdup("{\"error\":\"Missing file_path argument\"}");
@@ -1156,16 +1180,18 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
     fsize = ftell(f);
     if (fsize < 0) { fclose(f); return ccode_strdup("{\"error\":\"Could not determine file size\"}"); }
     if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return ccode_strdup("{\"error\":\"Could not seek file\"}"); }
-    if ((size_t)fsize > MAX_TOOL_OUTPUT) {
-        fclose(f);
-        return ccode_strdup("{\"error\":\"File too large\"}");
-    }
 
-    source = malloc((size_t)fsize + 1);
+    /* Cap the bytes handed to the model. A larger file is truncated (not
+     * rejected) and the result carries an explicit truncation marker so a
+     * partial read never looks complete. */
+    file_size = (size_t)fsize;
+    read_limit = file_size > MAX_TOOL_OUTPUT ? (size_t)MAX_TOOL_OUTPUT : file_size;
+    source = malloc(read_limit + 1);
     if (!source) { fclose(f); return NULL; }
-    read_size = fread(source, 1, (size_t)fsize, f);
+    read_size = fread(source, 1, read_limit, f);
     if (ferror(f)) { fclose(f); free(source); return ccode_strdup("{\"error\":\"Error reading file\"}"); }
     fclose(f);
+    read_size = trim_incomplete_utf8(source, read_size);
     source[read_size] = '\0';
 
     if (is_binary_content(source, read_size)) {
@@ -1174,7 +1200,7 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
     }
 
     /* Worst case: every byte becomes a 6-char \u00XX escape, plus prefix. */
-    output_cap = (size_t)fsize * 6 + 256;
+    output_cap = read_size * 6 + 256;
     output = malloc(output_cap);
     if (!output) { free(source); return NULL; }
 
@@ -1212,6 +1238,15 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
 
     free(source);
 
+    if (read_size < file_size) {
+        static const char marker[] = ",\"truncated\":true";
+        if (output_pos + sizeof(marker) + 3 > output_cap) {
+            free(output);
+            return ccode_strdup("{\"error\":\"Output too large\"}");
+        }
+        memcpy(output + output_pos, marker, sizeof(marker) - 1);
+        output_pos += sizeof(marker) - 1;
+    }
     if (output_pos + 4 > output_cap) {
         free(output);
         return ccode_strdup("{\"error\":\"Output too large\"}");
