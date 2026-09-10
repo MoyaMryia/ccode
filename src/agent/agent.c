@@ -1378,15 +1378,12 @@ static void print_repl_help(void) {
         "    /reasoning on|off  Enable or disable reasoning_effort\n"
         "    /reasoning effort L Set reasoning effort: low, medium, high, xhigh, max\n"
         "    /history           Show prompts entered this session\n"
-        "    /sessions          List all saved sessions\n"
-        "    /sessions delete N Delete a session file\n"
-        "    /sessions rename O N Rename a session file\n"
-        "    /sessions export N F Export a session (json/md/txt)\n"
+        "    /sessions [delete N|rename O N|export N F]\n"
+        "                       List saved sessions (aliases: /session list,\n"
+        "                       /resume --list) or delete/rename/export one\n"
         "    /resume [NAME]     Resume a session (most recent if no name)\n"
-        "    /resume --list     List resumable sessions\n"
         "    /session new [N]   Start a new session (optionally saved as N)\n"
-        "    /session switch N  Switch to a saved session\n"
-        "    /session list      List all sessions\n");
+        "    /session switch N  Switch to a saved session\n");
 }
 
 /* Shared pretty printer for the JSON session list from ccode_session_list().
@@ -1436,6 +1433,47 @@ static void print_session_list(void) {
         }
     }
     free(sessions);
+}
+
+/* Print a loaded conversation so a resumed session shows its prior context
+ * before the next prompt is read. System messages (the coding-agent prompt or
+ * a compaction summary) are skipped; tool calls/results are summarized
+ * compactly. Every model/user-derived string is sanitized and length-bounded
+ * by ccode_fprint_safe. */
+static void print_resumed_conversation(const struct ccode_conversation *conv) {
+    size_t i, j;
+    if (conv->count == 0) return;
+    fputs("  " CCODE_ANSI("2") "--- session transcript ---"
+          CCODE_ANSI("0") "\n", stderr);
+    for (i = 0; i < conv->count; i++) {
+        const struct ccode_message *m = &conv->messages[i];
+        if (m->role == CCODE_ROLE_SYSTEM) continue;
+        if (m->role == CCODE_ROLE_USER) {
+            fputs("  " CCODE_ANSI("36") "user: " CCODE_ANSI("0"), stderr);
+            ccode_fprint_safe(stderr, m->content, "");
+            fputc('\n', stderr);
+        } else if (m->role == CCODE_ROLE_ASSISTANT) {
+            if (m->content && m->content[0]) {
+                fputs("  " CCODE_ANSI("32") "assistant: " CCODE_ANSI("0"),
+                      stderr);
+                ccode_fprint_safe(stderr, m->content, "");
+                fputc('\n', stderr);
+            }
+            for (j = 0; j < m->tool_call_count; j++) {
+                fputs("    " CCODE_ANSI("2") "tool-call: " CCODE_ANSI("0"),
+                      stderr);
+                ccode_fprint_safe(stderr, m->tool_calls[j].name, "(?)");
+                fputc('\n', stderr);
+            }
+        } else if (m->role == CCODE_ROLE_TOOL) {
+            fputs("    " CCODE_ANSI("2") "tool-result: " CCODE_ANSI("0"),
+                  stderr);
+            ccode_fprint_safe(stderr, m->content, "(empty)");
+            fputc('\n', stderr);
+        }
+    }
+    fputs("  " CCODE_ANSI("2") "--- end transcript ---"
+          CCODE_ANSI("0") "\n", stderr);
 }
 
 int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
@@ -1508,6 +1546,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
             goto cleanup;
         }
         fprintf(stderr, "Resumed session (%zu messages loaded).\n", conv.count);
+        print_resumed_conversation(&conv);
         if (strlen(cfg->resume_session) < sizeof(current_session_path)) {
             memcpy(current_session_path, cfg->resume_session,
                    strlen(cfg->resume_session) + 1);
@@ -1993,6 +2032,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                     ccode_agent_summary_cache_reset();
                     fprintf(stderr, "  Resumed session: %s (%zu messages loaded)\n",
                             name, conv.count);
+                    print_resumed_conversation(&conv);
                     task_list_reset(ctx);
                     change_log_reset(&agent_ctx);
                     if (strlen(session_path) < sizeof(current_session_path)) {
@@ -2144,8 +2184,8 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                     continue;
                 }
 
-                fputs("  Usage: /session new [name] | /session switch <name> | "
-                      "/session list\n", stderr);
+                fputs("  Usage: /session new [name] | /session switch <name>\n",
+                      stderr);
                 continue;
             } else {
                 fputs("  Unknown command: ", stderr);

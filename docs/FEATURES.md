@@ -10,7 +10,7 @@
 
 - 交互式 REPL 和单条提问两种模式（`ccode-cli`）
 - CLI 模式：`ccode-cli`（JSON Lines 协议，供其他前端复用）；TUI 临时暂停构建：单体 `ccode`（进程内 TUI + CLI）与分离的 `ccode-tui` 暂不构建/发布
-- CLI REPL slash 命令：`/help /clear /exit /history /model /models[/search|info] /sessions[/delete|rename|export] /resume /session[new|switch|list] /thinking /reasoning`；`/compact` 明确不支持。默认经自动会话链（auto-*.json，resume+save 同一文件）保持对话上下文：首次真实提问自动开链，每轮 auto-save，`/exit` 保证落盘可 `/resume`；`/clear`、`/session new` 开新链，`--resume` 从指定会话接链
+- CLI REPL slash 命令：`/help /clear /exit /history /model /models[/search|info] /sessions[/delete|rename|export] /resume /session[new|switch] /thinking /reasoning`；`/session list`（列会话）与 `/resume --list` 是 `/sessions` 的别名，帮助里不再单列；`/compact` 明确不支持。默认经自动会话链（auto-*.json，resume+save 同一文件）保持对话上下文：首次真实提问自动开链，每轮 auto-save，`/exit` 保证落盘可 `/resume`；`/clear`、`/session new` 开新链，`--resume` 从指定会话接链
 - REPL 行输入 UTF-8/双宽感知：退格按整码点删除并按显示宽度回擦，中文不再留残影（非 tty 或 Windows 自动回退 `fgets`）
 - thinking / reasoning_effort 两个字段独立控制（`--thinking` / `--reasoning[-effort]`，REPL 里 `/thinking` `/reasoning`）；默认开启：thinking 发 `{"type":"enabled"}`、reasoning_effort 为 `high`；`CCODE_THINKING=0`（或 `/thinking off`）关 thinking，`CCODE_THINKING_EFFORT=off`（或 `/reasoning off`）关 reasoning
 - 流式输出：每个 SSE 增量到达就立即显示
@@ -32,6 +32,7 @@
 ### 会话与模型
 
 - 会话保存 / 列表 / 删除 / 重命名 / 导出 / 恢复 / 多会话
+- 恢复会话（`--resume` 或 `/resume`）后先把已加载的对话（user/assistant 文本 + 工具调用与结果摘要，系统提示跳过）打印出来再进入下一轮；恢复后 `/exit` 写回原会话文件
 - 会话元数据持久化，自动清理旧会话
 - 会话目录首次使用自动 `mkdir -p`（默认 `~/.ccode/sessions`）；`--session-dir DIR` / `CCODE_SESSION_DIR` 可覆盖，支持 `~/` 展开
 - 模型列表 / 搜索 / 详情 / 切换 / 默认模型

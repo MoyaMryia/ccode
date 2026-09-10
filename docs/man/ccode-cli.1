@@ -214,7 +214,10 @@ Legacy alias for
 .B /reasoning effort.
 .TP
 .B /sessions
-List saved sessions.
+List saved sessions. Aliases:
+.B /session list
+and
+.BR "/resume \-\-list" .
 .TP
 .B /sessions delete NAME
 Delete a session file.
@@ -228,9 +231,6 @@ Export a session (json, md, txt).
 .B /resume [NAME]
 Resume a session (most recent if no name).
 .TP
-.B /resume \-\-list
-List resumable sessions.
-.TP
 .B /session new [NAME]
 Start a new session (optionally saved as NAME; a given NAME must end in
 .IR .json ,
@@ -238,9 +238,6 @@ contain no slash, and fit the session-name length limit).
 .TP
 .B /session switch NAME
 Switch to a saved session.
-.TP
-.B /session list
-List all sessions.
 .SH TOOLS
 .PP
 Read-only (always available):

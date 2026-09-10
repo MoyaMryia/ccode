@@ -290,7 +290,7 @@ static int run_agent_prompt(const struct backend_options *options,
 
 static void backend_command(struct json_session_state *state, const char *command) {
     if (strcmp(command, "/help") == 0) {
-        json_print("message", "Slash commands:\n  /help\n  /exit\n  /clear\n  /compact\n  /model [NAME]\n  /model default NAME\n  /models\n  /models search KEYWORD\n  /models info NAME\n  /thinking\n  /thinking on|off\n  /thinking effort low|medium|high|xhigh|max\n  /history\n  /sessions\n  /sessions delete NAME\n  /sessions rename OLD NEW\n  /sessions export NAME FORMAT\n  /resume [NAME]\n  /resume --list\n  /session new [NAME]\n  /session switch NAME\n  /session list");
+        json_print("message", "Slash commands:\n  /help\n  /exit\n  /clear\n  /compact\n  /model [NAME]\n  /model default NAME\n  /models\n  /models search KEYWORD\n  /models info NAME\n  /thinking\n  /thinking on|off\n  /thinking effort low|medium|high|xhigh|max\n  /history\n  /sessions (aliases: /session list, /resume --list)\n  /sessions delete NAME\n  /sessions rename OLD NEW\n  /sessions export NAME FORMAT\n  /resume [NAME]\n  /session new [NAME]\n  /session switch NAME");
     } else if (strcmp(command, "/clear") == 0) {
         state->history_count = 0;
         if (state->options.save_session) unlink(state->options.save_session);
@@ -471,8 +471,7 @@ static void backend_command(struct json_session_state *state, const char *comman
             }
         } else {
             json_print("error",
-                       "Usage: /session new [name] | /session switch NAME | "
-                       "/session list");
+                       "Usage: /session new [name] | /session switch NAME");
         }
     } else if (strcmp(command, "/exit") == 0 || strcmp(command, "/quit") == 0) {
         json_print("status", "exit requested");

@@ -137,6 +137,40 @@ else
 fi
 rm -rf "$adir"
 
+# Resuming must print the loaded transcript and /exit must write back to the
+# same session file (no stray new auto-* chain).
+echo "--- resume prints transcript and saves back in place ---"
+rdir="/tmp/ccode_resume_test_$$"
+rm -rf "$rdir"
+printf 'Hello resume probe\n/exit\n' | timeout "$TIMEOUT" \
+    "$CCODE" --interactive --session-dir "$rdir" >/dev/null 2>&1 || true
+rfile=$(ls -1 "$rdir"/auto-*.json 2>/dev/null | head -1 || true)
+if [ -n "$rfile" ]; then
+    rout=$(printf '/exit\n' | timeout "$TIMEOUT" \
+        "$CCODE" --interactive --session-dir "$rdir" --resume "$rfile" \
+        2>&1) || true
+    if echo "$rout" | grep -q "session transcript" &&
+       echo "$rout" | grep -q "Hello resume probe"; then
+        echo "  PASS: resumed session printed its transcript"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: resumed session did not print transcript"
+        FAIL=$((FAIL + 1))
+    fi
+    rcount=$(ls -1 "$rdir"/auto-*.json 2>/dev/null | wc -l)
+    if [ "$rcount" -eq 1 ]; then
+        echo "  PASS: /exit saved back to the resumed session"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: /exit created a stray session (count=$rcount)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "  FAIL: could not create a session to resume"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$rdir"
+
 # 1. Normal SSE response
 echo "--- Basic connectivity ---"
 run_test_exit "normal response" 0 -p "hi"

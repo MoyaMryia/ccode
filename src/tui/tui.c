@@ -797,8 +797,9 @@ static int inproc_handle_command(struct tui_inproc_ctx *ctx, const char *cmd) {
                    "  /model [NAME] | /model default [NAME]\n"
                    "  /models [search KEYWORD | info NAME]\n"
                    "  /sessions [delete NAME | rename OLD NEW | export NAME [FORMAT]]\n"
-                   "  /resume [NAME] | /resume --list\n"
-                   "  /session new [NAME] | /session switch NAME | /session list\n"
+                   "    (aliases: /session list, /resume --list)\n"
+                   "  /resume [NAME]\n"
+                   "  /session new [NAME] | /session switch NAME\n"
                    "  /thinking on|off | /reasoning on|off|effort low|medium|high|xhigh|max");
         return 0;
     }
