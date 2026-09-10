@@ -677,7 +677,10 @@ malformed:
 int ccode_parse_sse_delta(const char *data, size_t length,
                           struct ccode_sse_delta *delta) {
     ccode_jsmn_parser parser;
-    ccode_jsmntok_t tokens[256];
+    /* Sized so a delta carrying the full CCODE_MAX_SSE_TOOL_CALLS (64) tool
+     * calls fits: each tool-call object costs ~13 jsmn tokens. A smaller
+     * fixed buffer caused the parser to reject a legal 19-tool-call delta. */
+    ccode_jsmntok_t tokens[2048];
     int num_tokens;
     ccode_jsmntok_t *tok;
 
@@ -687,7 +690,7 @@ int ccode_parse_sse_delta(const char *data, size_t length,
         return 1;
 
     ccode_jsmn_init(&parser);
-    num_tokens = ccode_jsmn_parse(&parser, data, length, tokens, 256);
+    num_tokens = ccode_jsmn_parse(&parser, data, length, tokens, 2048);
     if (num_tokens <= 0) return -1;
     if (tokens[0].type != CCODE_JSMN_OBJECT ||
         !has_only_one_json_root(data, length, &tokens[0])) return -1;

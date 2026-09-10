@@ -244,6 +244,56 @@ static int test_parse_multiple_tool_calls(void) {
     return 1;
 }
 
+static int test_parse_max_tool_calls(void) {
+    char *json;
+    size_t cap = 64 * 160 + 512;
+    size_t pos;
+    int i;
+    struct ccode_sse_delta delta;
+    int r;
+
+    /* A delta carrying the full documented cap (64) must parse; the old
+     * fixed 256-token buffer rejected anything past ~18 tool calls. */
+    json = malloc(cap);
+    ASSERT(json != NULL);
+    pos = 0;
+    pos += (size_t)snprintf(json + pos, cap - pos,
+        "{\"choices\":[{\"delta\":{\"tool_calls\":[");
+    for (i = 0; i < 64; i++) {
+        pos += (size_t)snprintf(json + pos, cap - pos,
+            "%s{\"index\":%d,\"id\":\"c%d\",\"type\":\"function\","
+            "\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}",
+            i ? "," : "", i, i);
+    }
+    pos += (size_t)snprintf(json + pos, cap - pos,
+        "]},\"finish_reason\":\"tool_calls\"}]}");
+    r = ccode_parse_sse_delta(json, pos, &delta);
+    ASSERT(r == 0);
+    ASSERT(delta.tool_call_count == 64);
+    ASSERT(strcmp(delta.tool_calls[0].id, "c0") == 0);
+    ASSERT(strcmp(delta.tool_calls[63].id, "c63") == 0);
+    ccode_free_sse_delta(&delta);
+    free(json);
+
+    /* Past the cap must fail closed, not overflow. */
+    json = malloc(cap + 160);
+    ASSERT(json != NULL);
+    pos = 0;
+    pos += (size_t)snprintf(json + pos, cap + 160 - pos,
+        "{\"choices\":[{\"delta\":{\"tool_calls\":[");
+    for (i = 0; i < 65; i++) {
+        pos += (size_t)snprintf(json + pos, cap + 160 - pos,
+            "%s{\"index\":%d,\"id\":\"c%d\",\"type\":\"function\","
+            "\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}",
+            i ? "," : "", i, i);
+    }
+    pos += (size_t)snprintf(json + pos, cap + 160 - pos,
+        "]},\"finish_reason\":\"tool_calls\"}]}");
+    ASSERT(ccode_parse_sse_delta(json, pos, &delta) == -1);
+    free(json);
+    return 1;
+}
+
 static int test_parse_error_message(void) {
     const char *json = "{\"error\":{\"message\":\"Rate limit exceeded\",\"type\":\"rate_limit\"}}";
     struct ccode_sse_delta delta;
@@ -886,6 +936,7 @@ int main(void) {
     TEST(accepts_trailing_json_whitespace);
     TEST(parse_tool_calls);
     TEST(parse_multiple_tool_calls);
+    TEST(parse_max_tool_calls);
     TEST(parse_error_message);
     TEST(navigate_ignores_siblings);
     TEST(accumulator_process);
