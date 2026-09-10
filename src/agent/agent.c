@@ -6,6 +6,7 @@
 
 #include "agent.h"
 #include "message.h"
+#include "lineedit.h"
 #include "../http.h"
 #include "../json.h"
 #include "../webfetch.h"
@@ -1476,14 +1477,12 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
         fprintf(stderr, "\n" CCODE_ANSI("1") "> " CCODE_ANSI("0") "");
         fflush(stderr);
 
-        if (!fgets(line, sizeof(line), stdin)) {
+        if (ccode_read_line(line, sizeof(line)) <= 0) {
             fprintf(stderr, "\n");
             break;
         }
 
         len = strlen(line);
-        if (len > 0 && line[len - 1] == '\n') line[--len] = '\0';
-        if (len > 0 && line[len - 1] == '\r') line[--len] = '\0';
 
         /* Reject/bound overlong input at the line level. */
         if (len >= CCODE_INPUT_LINE_MAX - 1) {

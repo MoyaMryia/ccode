@@ -43,6 +43,31 @@ static int test_input_editing_controls(void) {
     return 1;
 }
 
+static int test_input_utf8_backspace(void) {
+    struct tui_input input;
+    const char *p;
+
+    tui_input_init(&input);
+    /* "中a文": two double-width CJK glyphs around an ASCII byte. */
+    for (p = "中a文"; *p != '\0'; p++)
+        ASSERT(tui_input_key(&input, (unsigned char)*p) == 1);
+    ASSERT(strcmp(input.text, "中a文") == 0);
+    ASSERT(tui_input_cursor_column(&input) == 5);   /* 2 + 1 + 2 */
+
+    /* Backspace deletes a whole code point and the cursor column drops by
+     * that glyph's display width (the REPL erases that many columns). */
+    ASSERT(tui_input_key(&input, 127) == 1);
+    ASSERT(strcmp(input.text, "中a") == 0);
+    ASSERT(tui_input_cursor_column(&input) == 3);
+    ASSERT(tui_input_key(&input, 127) == 1);
+    ASSERT(strcmp(input.text, "中") == 0);
+    ASSERT(tui_input_cursor_column(&input) == 2);
+    ASSERT(tui_input_key(&input, 127) == 1);
+    ASSERT(strcmp(input.text, "") == 0);
+    ASSERT(tui_input_cursor_column(&input) == 0);
+    return 1;
+}
+
 static int test_input_horizontal_view(void) {
     struct tui_input input;
     size_t start;
@@ -358,6 +383,7 @@ static int test_protocol_event_escape_round_trip(void) {
 
 int main(void) {
     TEST(input_editing_controls);
+    TEST(input_utf8_backspace);
     TEST(input_horizontal_view);
     TEST(multiline_message_count);
     TEST(streaming_message_append);
