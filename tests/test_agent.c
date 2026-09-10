@@ -30,6 +30,7 @@
 #include "../src/websearch.h"
 #include "../src/models.h"
 #include "../src/sandbox.h"
+#include "../src/platform/platform.h"
 
 /* Test-only exports declared in agent.c. */
 char *test_exec_read_file(const char *workspace, const char *file_path);
@@ -3224,6 +3225,53 @@ static int test_web_fetch_invalid_url(void) {
     return 1;
 }
 
+#ifdef __linux__
+/* The command write sandbox (Landlock) must actually confine writes; a
+ * no_new_privs-less restrict_self used to fail EPERM and silently no-op.
+ * Runs in a forked child because restricting self is irreversible. */
+static int test_platform_sandbox_write_confinement(void) {
+    char ws[4096];
+    char probe[256];
+    pid_t pid;
+    int status;
+    int fd;
+
+    if (!getcwd(ws, sizeof(ws))) return 1;
+    if (strlen(ws) + strlen("/fixtures") >= sizeof(ws)) return 1;
+    strcat(ws, "/fixtures");
+
+    snprintf(probe, sizeof(probe), "/var/tmp/ccode_sb_probe_%ld",
+             (long)getpid());
+    fd = open(probe, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+    if (fd < 0) return 1; /* no writable outside dir here: skip */
+    close(fd);
+    unlink(probe);
+
+    pid = fork();
+    ASSERT(pid >= 0);
+    if (pid == 0) {
+        fd = open(probe, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        if (fd < 0) _exit(2); /* already unwritable: skip */
+        close(fd);
+        unlink(probe);
+        if (ccode_platform_sandbox_apply(ws) != 0)
+            _exit(2); /* Landlock unavailable: skip */
+        fd = open(probe, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        if (fd >= 0) {
+            close(fd);
+            unlink(probe);
+            _exit(1); /* sandbox did not confine the write */
+        }
+        _exit(0);
+    }
+    ASSERT(waitpid(pid, &status, 0) == pid);
+    if (!WIFEXITED(status)) return 0;
+    if (WEXITSTATUS(status) == 2) return 1; /* skipped */
+    ASSERT(WEXITSTATUS(status) == 0);
+    return 1;
+}
+#endif
+
 static int test_web_fetch_blacklist_and_rate_limit(void) {
     struct ccode_web_fetch_opts opts;
     char *result;
@@ -4170,6 +4218,9 @@ int main(int argc, char **argv) {
     TEST(command_sensitive_paths);
     TEST(command_destructive_words);
     TEST(command_sandbox_enforced);
+#ifdef __linux__
+    TEST(platform_sandbox_write_confinement);
+#endif
     TEST(coding_agent_prompt_contract);
 
     /* Phase 8: Thinking/reasoning request building tests */

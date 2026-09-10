@@ -21,10 +21,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+
+/* Older libc headers may not carry the constant; the kernel ABI value has
+ * been stable since 3.5. */
+#ifndef PR_SET_NO_NEW_PRIVS
+#define PR_SET_NO_NEW_PRIVS 38
+#endif
 
 /* ── Exe path resolution ── */
 
@@ -206,7 +213,18 @@ int ccode_platform_sandbox_apply(const char *workspace_path) {
      * friends remain denied. Non-fatal so sandboxing still degrades to the
      * directory rules if /dev is unavailable. */
     (void)ll_add_path(ruleset_fd, LL_DEV_WRITE_FILE, "/dev");
+    /* Landlock's restrict_self requires no_new_privs to be set; without it
+     * the syscall fails with EPERM and the write sandbox would be a silent
+     * no-op (the command-level string filter is not a sandbox). Setting it
+     * also stops the command from gaining privileges via a setuid binary. */
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+        close(ruleset_fd);
+        return -1;
+    }
     if (syscall(__NR_landlock_restrict_self, ruleset_fd, 0) != 0) {
+        /* The kernel supports Landlock (the ruleset was accepted) but we
+         * could not enter the domain. Do not widen access silently. */
+        fprintf(stderr, "warning: write sandbox could not be enforced\n");
         close(ruleset_fd);
         return -1;
     }
