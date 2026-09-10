@@ -584,6 +584,10 @@ static int open_directory_at_workspace(struct agent_context *ctx, const char *re
             close(dir_fd);
             return -1;
         }
+        if (strchr(component, '\\') != NULL || strchr(component, ':') != NULL) {
+            close(dir_fd);
+            return -1;
+        }
         fd = openat(dir_fd, component,
                     O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
         close(dir_fd);
@@ -618,6 +622,10 @@ int open_regular_at_workspace(struct agent_context *ctx, const char *file_path) 
         if (next) *next = '\0';
         if (component[0] == '\0' || strcmp(component, ".") == 0 ||
             strcmp(component, "..") == 0) {
+            close(dir_fd);
+            return -1;
+        }
+        if (strchr(component, '\\') != NULL || strchr(component, ':') != NULL) {
             close(dir_fd);
             return -1;
         }
@@ -665,6 +673,10 @@ static int open_parent_at_workspace(struct agent_context *ctx, const char *file_
             close(dir_fd);
             return -1;
         }
+        if (strchr(component, '\\') != NULL || strchr(component, ':') != NULL) {
+            close(dir_fd);
+            return -1;
+        }
         if (!next) {
             if (strlen(component) >= leaf_size) {
                 close(dir_fd);
@@ -693,6 +705,10 @@ int is_workspace_relative_path(const char *path, int allow_dot) {
         path[0] == '~' ||
         strlen(path) >= sizeof(copy))
         return 0;
+    /* Backslash and drive/ADS colons are separators on Windows; refuse them
+     * uniformly so a POSIX-only component walk cannot be escaped there. */
+    if (strchr(path, '\\') != NULL || strchr(path, ':') != NULL)
+        return 0;
     if (allow_dot && strcmp(path, ".") == 0) return 1;
     memcpy(copy, path, strlen(path) + 1);
     component = copy;
@@ -708,7 +724,8 @@ int is_workspace_relative_path(const char *path, int allow_dot) {
 }
 
 int is_home_relative_path(const char *path) {
-    return path && path[0] == '~' && (path[1] == '/' || path[1] == '\0');
+    return path && path[0] == '~' &&
+           (path[1] == '/' || path[1] == '\\' || path[1] == '\0');
 }
 
 /* Returns NULL on failure (not committed), "ok" on full success, or

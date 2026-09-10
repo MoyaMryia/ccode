@@ -487,6 +487,54 @@ static int test_home_relative_paths_are_rejected(void) {
     ASSERT(test_prepare_tool_display("bash",
         "{\"command\":\"cat ~/secret.txt\"}",
         display, sizeof(display)) != 0);
+    ASSERT(test_prepare_tool_display("bash",
+        "{\"command\":\"cat $HOME/secret.txt\"}",
+        display, sizeof(display)) != 0);
+    ASSERT(test_prepare_tool_display("bash",
+        "{\"command\":\"cat ${HOME}/secret.txt\"}",
+        display, sizeof(display)) != 0);
+    /* A bare $HOME with no path separator is not a path reference. */
+    ASSERT(test_prepare_tool_display("bash",
+        "{\"command\":\"echo $HOME\"}",
+        display, sizeof(display)) == 0);
+    return 1;
+}
+
+/* Windows-style separators and drive/ADS colons must not slip past the
+ * POSIX-only workspace validator or the fd-relative component walk. */
+static int test_path_separator_hardening(void) {
+    ASSERT(is_workspace_relative_path("a/b", 0) == 1);
+    ASSERT(is_workspace_relative_path("..\\..\\secret", 0) == 0);
+    ASSERT(is_workspace_relative_path("a\\..\\..\\etc\\passwd", 0) == 0);
+    ASSERT(is_workspace_relative_path("C:\\Windows\\System32", 0) == 0);
+    ASSERT(is_workspace_relative_path("C:/Windows/System32", 0) == 0);
+    ASSERT(is_workspace_relative_path("\\\\server\\share\\x", 0) == 0);
+    ASSERT(is_workspace_relative_path("stream:name", 0) == 0);
+    ASSERT(is_home_relative_path("~\\x") == 1);
+    ASSERT(contains_home_path("cat $HOME/.ssh/id_rsa") == 1);
+    ASSERT(contains_home_path("echo $HOME") == 0);
+    {
+        char *r = test_exec_read_file("fixtures", "..\\..\\etc\\passwd");
+        ASSERT(r != NULL);
+        ASSERT(strstr(r, "Path outside workspace") != NULL);
+        free(r);
+    }
+    {
+        char *r = test_exec_read_file("fixtures", "C:\\Windows\\win.ini");
+        ASSERT(r != NULL);
+        ASSERT(strstr(r, "Path outside workspace") != NULL);
+        free(r);
+    }
+    /* A real file whose name contains backslashes: the fd-relative walk must
+     * still refuse it, or backslash separators would escape on Windows. */
+    write_file("fixtures/..\\..\\etc\\passwd", "x", 1);
+    {
+        char *r = test_exec_read_file("fixtures", "..\\..\\etc\\passwd");
+        ASSERT(r != NULL);
+        ASSERT(strstr(r, "Path outside workspace") != NULL);
+        free(r);
+    }
+    unlink("fixtures/..\\..\\etc\\passwd");
     return 1;
 }
 
@@ -3252,12 +3300,22 @@ static int test_command_sensitive_paths(void) {
         "ls -la /home/user/.ssh/id_rsa",
         "cat ~/.aws/credentials",
         "cat /proc/self/environ",
+        "cat /proc/self/mem",
         "rm -rf /",
         "rm -fr /*",
         "ssh-keygen -f /root/.ssh/id_ed25519",
         "git config --global user.name x && cat ~/.git-credentials",
         "cat /etc/shadow && ls /root/x",  /* hard pattern wins over ws */
         "ls /root/project 2>/dev/null || echo nope",  /* outside ws */
+        "cat /etc/sudoers.d/foo",
+        "cat /etc/ssh/ssh_host_rsa_key",
+        "cat /proc/kcore",
+        "cat /proc/kmem",
+        "cat /var/spool/cron/root",
+        "cat ~/.kube/config",
+        "cat ~/.gnupg/secring.gpg",
+        "cat /home/dev/.netrc",
+        "cat ~/.pypirc",
     };
     static const char *allowed[] = {
         "echo hi",
@@ -3270,6 +3328,31 @@ static int test_command_sensitive_paths(void) {
         "grep -r foo /proc",        /* system info, no longer blocked */
         "cat /sys/kernel/debug",    /* ditto */
         "ls /home 2>/dev/null || echo nope",  /* /home/ with slash only */
+        /* false positives fixed: component-bounded / refined patterns */
+        "cat /proc/meminfo",
+        "cat /proc/self/status",
+        "cat /proc/self/mountinfo",
+        "cat /proc/self/cgroup",
+        "cat /etc/ssh/ssh_config",
+        "cat /etc/os-release",
+        "cat /etc/resolv.conf",
+        "ssh -F ~/.ssh/config host",
+        "cat ~/.ssh/config",
+        "cat ~/.ssh/known_hosts",
+        "cat ~/.aws/config",
+        "cat tests/fixtures/known_hosts_sample.txt",
+        "grep -rn known_hosts docs/",
+        "python3 tests/test_authorized_keys.py",
+        "cat docs/id_rsa_format.md",
+        "cat config/.npmrc.example",
+        "cat docs/.pypirc.sample",
+        "cat .gitconfig.example",
+        "cat .netrc.example",
+        "cat vendor/aws-sdk/NOTES.txt",
+        "cat ~/.gitconfig",
+        "cat ~/.npmrc",
+        "cat ~/.docker/config.json",
+        "ls /var/mail",
     };
     size_t i;
     for (i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++) {
@@ -3290,6 +3373,28 @@ static int test_command_sensitive_paths(void) {
     ASSERT(ccode_command_is_sensitive("cat /root/secret.txt", "/root") == 0);
     ASSERT(ccode_command_is_sensitive("cat /root/secret.txt",
                                       "/home/user/proj") == 1);
+    /* A workspace mention must not whitelist a *different* outside path. */
+    ASSERT(ccode_command_is_sensitive(
+        "cat /home/dev/proj/x /home/bob/.config/secret",
+        "/home/dev/proj") == 1);
+    ASSERT(ccode_command_is_sensitive(
+        "cat /home/dev/proj/x:/home/bob/.config/secret",
+        "/home/dev/proj") == 1);
+    /* ...and ".." cannot climb back out. */
+    ASSERT(ccode_command_is_sensitive(
+        "cat /home/dev/proj/../../bob/.config/secret",
+        "/home/dev/proj") == 1);
+    ASSERT(ccode_command_is_sensitive(
+        "F=/home/dev/proj/x cat $F", "/home/dev/proj") == 0);
+    /* The workspace owner's own home is tolerated as well. */
+    ASSERT(ccode_command_is_sensitive("cat /home/dev/.config/x",
+                                      "/home/dev/proj") == 0);
+    ASSERT(ccode_command_is_sensitive("git -C /home/dev/other status",
+                                      "/home/dev/proj") == 0);
+    ASSERT(ccode_command_is_sensitive("cat /root/.config/x",
+                                      "/root/proj") == 0);
+    ASSERT(ccode_command_is_sensitive("cat /home/bob/.config/x",
+                                      "/home/dev/proj") == 1);
     return 1;
 }
 
@@ -3334,7 +3439,7 @@ static int test_command_sandbox_enforced(void) {
     ASSERT(r != NULL);
     ASSERT(strstr(r, "sensitive paths") != NULL);
     ASSERT(strstr(r, "\"reason\":\"") != NULL);
-    ASSERT(strstr(r, "/etc/shadow") != NULL);
+    ASSERT(strstr(r, "etc/shadow") != NULL);
     free(r);
 
     r = test_exec_tool("fixtures", "bash", "{\"command\":\"rm -rf /\"}");
@@ -3354,7 +3459,7 @@ static int test_command_sandbox_enforced(void) {
                        "{\"argv\":[\"cat\",\"/etc/shadow\"]}");
     ASSERT(r != NULL);
     ASSERT(strstr(r, "sensitive paths") != NULL);
-    ASSERT(strstr(r, "/etc/shadow") != NULL);
+    ASSERT(strstr(r, "etc/shadow") != NULL);
     free(r);
 
     r = test_exec_tool("fixtures", "bash", "{\"command\":\"echo hi\"}");
@@ -3724,6 +3829,7 @@ int main(void) {
     TEST(workspace_root_replacement_uses_fixed_fd);
     TEST(glob_normalize);
     TEST(home_relative_paths_are_rejected);
+    TEST(path_separator_hardening);
     TEST(small_text_passes);
     TEST(glob_emits_relative_paths);
     TEST(glob_starstar_recurses);

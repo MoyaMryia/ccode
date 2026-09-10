@@ -314,13 +314,20 @@ int is_shell_string_invocation(char * const *argv, size_t argc) {
 }
 
 int contains_home_path(const char *text) {
-    const char *p = text;
+    static const char *const prefixes[] = {
+        "~/", "~\\", "$HOME/", "${HOME}/"
+    };
+    size_t i;
     if (!text) return 0;
-    while ((p = strstr(p, "~/")) != NULL) {
-        if (p == text || p == text + 1 || p[-1] == ' ' || p[-1] == '=' ||
-            p[-1] == ':' || p[-1] == '(' || p[-1] == ',')
-            return 1;
-        p += 2;
+    for (i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+        const char *p = text;
+        while ((p = strstr(p, prefixes[i])) != NULL) {
+            if (p == text || p == text + 1 || p[-1] == ' ' || p[-1] == '=' ||
+                p[-1] == ':' || p[-1] == '(' || p[-1] == ',' ||
+                p[-1] == '"' || p[-1] == '\'' )
+                return 1;
+            p += strlen(prefixes[i]);
+        }
     }
     return 0;
 }
