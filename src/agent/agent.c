@@ -6,7 +6,7 @@
 
 #include "agent.h"
 #include "message.h"
-#include "lineedit.h"
+#include "../lineedit.h"
 #include "../http.h"
 #include "../json.h"
 #include "../webfetch.h"

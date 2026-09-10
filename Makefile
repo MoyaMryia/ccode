@@ -121,10 +121,10 @@ endif
 ifneq ($(findstring mingw,$(HOST_MACH)),)
 PLATFORM_SRC = src/platform/platform_win32.c
 endif
-AGENT_SRC = src/agent/agent.c src/agent/agent_cancel.c src/agent/agent_fs.c src/agent/agent_args.c src/agent/agent_prepare.c src/agent/agent_exec.c src/agent/agent_output.c src/agent/message.c src/agent/lineedit.c
+AGENT_SRC = src/agent/agent.c src/agent/agent_cancel.c src/agent/agent_fs.c src/agent/agent_args.c src/agent/agent_prepare.c src/agent/agent_exec.c src/agent/agent_output.c src/agent/message.c
 SRC = src/main.c src/config.c src/tui/tui.c src/tui/term.c src/tui/render.c src/tui/input.c src/tui/messages.c src/tui/status.c src/tui/theme.c src/tui/protocol.c src/markdown.c src/json.c vendor/jsmn/jsmn.c $(PLATFORM_SRC)
 TEST_JSON_SRC = tests/test_json.c src/json.c vendor/jsmn/jsmn.c $(RETRO_SRC)
-TEST_AGENT_SRC = tests/test_agent.c $(AGENT_SRC) src/json.c src/http.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c src/tui/input.c $(PLATFORM_SRC) $(RETRO_SRC)
+TEST_AGENT_SRC = tests/test_agent.c $(AGENT_SRC) src/json.c src/http.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c src/tui/input.c src/lineedit.c $(PLATFORM_SRC) $(RETRO_SRC)
 TEST_PERMISSIONS_SRC = $(wildcard tests/test_permissions.c)
 TEST_TUI_SRC = tests/test_tui.c
 TEST_MD_SRC = tests/test_markdown.c src/markdown.c src/json.c vendor/jsmn/jsmn.c $(RETRO_SRC)
@@ -231,7 +231,7 @@ TUI_BIN = $(OBJDIR)/ccode-tui.exe
 CLI_BIN = $(OBJDIR)/ccode-cli.exe
 COMBINED_BIN = $(OBJDIR)/ccode.exe
 endif
-CLI_SRC = src/cli/main.c src/config.c src/http.c src/json.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c $(AGENT_SRC) src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c src/tui/input.c $(PLATFORM_SRC)
+CLI_SRC = src/cli/main.c src/config.c src/http.c src/json.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c $(AGENT_SRC) src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c src/tui/input.c src/lineedit.c $(PLATFORM_SRC)
 ifeq ($(WIN32),1)
 CLI_SRC += $(WIN32_PORT_SRC)
 endif
@@ -411,7 +411,7 @@ ifneq ($(TEST_PERMISSIONS_SRC),)
 test-permissions: tests/test_permissions
 	./tests/test_permissions
 
-tests/test_permissions: tests/test_permissions.c src/permissions/permissions.c src/json.c vendor/jsmn/jsmn.c $(RETRO_SRC)
+tests/test_permissions: tests/test_permissions.c src/permissions/permissions.c src/json.c vendor/jsmn/jsmn.c src/lineedit.c src/tui/input.c $(RETRO_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 endif
 

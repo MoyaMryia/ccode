@@ -1,6 +1,7 @@
 #include "permissions.h"
 
 #include "../json.h"
+#include "../lineedit.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -166,7 +167,7 @@ int ccode_permission_ask(struct ccode_permission_request *req) {
 
         fflush(stderr);
 
-        if (!fgets(line, sizeof(line), stdin)) {
+        if (ccode_read_line(line, sizeof(line)) <= 0) {
             fprintf(stderr, "\n");
             return 0;
         }
