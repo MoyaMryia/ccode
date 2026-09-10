@@ -3364,6 +3364,25 @@ static int test_web_fetch_blacklist_and_rate_limit(void) {
     return ok;
 }
 
+static int test_web_fetch_ipv6_host(void) {
+    struct ccode_web_fetch_opts opts;
+    char *result;
+
+    /* A bracketed IPv6 literal must be parsed to the bare address so the
+     * blacklist sees "::1", not "[". */
+    memset(&opts, 0, sizeof(opts));
+    setenv("CCODE_WEB_FETCH_BLACKLIST", "::1", 1);
+    opts.url = "http://[::1]:8080/x";
+    result = ccode_web_fetch(&opts);
+    unsetenv("CCODE_WEB_FETCH_BLACKLIST");
+    ASSERT(result != NULL);
+    ASSERT(strstr(result, "blacklisted") != NULL);
+    ASSERT(strstr(result, "::1") != NULL);
+    ASSERT(strstr(result, "blacklisted: [") == NULL);
+    free(result);
+    return 1;
+}
+
 static int test_web_fetch_tool_prepare(void) {
     char display[2048];
 
@@ -4251,6 +4270,7 @@ int main(int argc, char **argv) {
 
     /* Phase 6: WebFetch tests */
     TEST(web_fetch_invalid_url);
+    TEST(web_fetch_ipv6_host);
     TEST(web_fetch_blacklist_and_rate_limit);
     TEST(web_fetch_tool_prepare);
     TEST(agent_tool_prepare);

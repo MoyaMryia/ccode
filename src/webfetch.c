@@ -135,6 +135,8 @@ static int wf_parse_url(const char *url, struct wf_url *out) {
     const char *path_start;
     size_t host_len;
     const char *colon;
+    const char *close;
+    size_t inner_len;
 
     memset(out, 0, sizeof(*out));
     if (!url) return -1;
@@ -162,6 +164,29 @@ static int wf_parse_url(const char *url, struct wf_url *out) {
     }
 
     if (host_len == 0 || host_len >= sizeof(out->host)) return -1;
+
+    /* Bracketed IPv6 literal: [addr] or [addr]:port. The connect layer
+     * wants the bare address, so strip the brackets. */
+    if (host_start[0] == '[') {
+        close = memchr(host_start, ']', host_len);
+        if (!close) return -1;
+        inner_len = (size_t)(close - host_start - 1);
+        if (inner_len == 0 || inner_len >= sizeof(out->host)) return -1;
+        memcpy(out->host, host_start + 1, inner_len);
+        out->host[inner_len] = '\0';
+        if ((size_t)(close - host_start) + 1 < host_len) {
+            const char *port_str = close + 1;
+            size_t port_len;
+            if (*port_str != ':') return -1;
+            port_str++;
+            port_len = host_len - (size_t)(port_str - host_start);
+            if (port_len == 0 || port_len >= sizeof(out->port)) return -1;
+            memcpy(out->port, port_str, port_len);
+            out->port[port_len] = '\0';
+        }
+        return 0;
+    }
+
     memcpy(out->host, host_start, host_len);
     out->host[host_len] = '\0';
 
