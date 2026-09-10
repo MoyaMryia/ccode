@@ -11,6 +11,7 @@
 - 交互式 REPL 和单条提问两种模式（`ccode-cli`）
 - CLI 模式：`ccode-cli`（JSON Lines 协议，供其他前端复用）；TUI 临时暂停构建：单体 `ccode`（进程内 TUI + CLI）与分离的 `ccode-tui` 暂不构建/发布
 - CLI REPL slash 命令：`/help /clear /exit /history /model /models[/search|info] /sessions[/delete|rename|export] /resume /session[new|switch|list] /thinking /reasoning`；`/compact` 明确不支持。默认经自动会话链（auto-*.json，resume+save 同一文件）保持对话上下文，`/clear`、`/session new` 开新链，`--resume` 从指定会话接链
+- REPL 行输入 UTF-8/双宽感知：退格按整码点删除并按显示宽度回擦，中文不再留残影（非 tty 或 Windows 自动回退 `fgets`）
 - thinking / reasoning_effort 两个字段独立控制（`--thinking` / `--reasoning[-effort]`，REPL 里 `/thinking` `/reasoning`）
 - 流式输出：每个 SSE 增量到达就立即显示
 - Markdown → ANSI 渲染（标题、加粗、斜体、代码块、列表、引用、链接），带控制字符消毒
@@ -24,17 +25,20 @@
 - `web_fetch`（带域名黑名单、请求限流、大小上限）
 - `web_search`（Bing 端点可配）
 - `agent_tool`（子代理，独立循环、默认只读、深度上限 3）
+- 工具调用参数解析：容忍模型把参数包进一层或多层 `{"arguments": ...}`（对象与 JSON 字符串形式混合），最多 8 层；超限报 `nested too deep`，信封值非对象/字符串、或信封带尾随数据时明确拒绝；多键信封不再被误判
 
 ### 会话与模型
 
 - 会话保存 / 列表 / 删除 / 重命名 / 导出 / 恢复 / 多会话
 - 会话元数据持久化，自动清理旧会话
+- 会话目录首次使用自动 `mkdir -p`（默认 `~/.ccode/sessions`）；`--session-dir DIR` / `CCODE_SESSION_DIR` 可覆盖，支持 `~/` 展开
 - 模型列表 / 搜索 / 详情 / 切换 / 默认模型
 - 启动时模型验证 + 自动回退
 
 ### 安全
 
-- 命令级过滤：敏感路径（密钥、云凭据）拒绝，破坏性命令（`mkfs`、`dd`、`chown` 等）拒绝；工具结果带具体原因回给模型
+- 命令级过滤：敏感路径（密钥、云凭据、`/proc/self/environ` 等）按文件名边界匹配（`known_hosts_sample.txt` 不再误伤），破坏性命令（`mkfs`、`dd`、`chown` 等）拒绝；软路径（`/home/`、`/root/`、`/.config/`）仅在工作区或属主自己的 home 内放行，且逐命中路径判定，防止"提一句工作区"绕过；工具结果带具体原因回给模型
+- 文件路径校验与 fd 相对遍历拒绝 Windows 分隔符（`\`、`X:`、UNC），避免 POSIX-only 组件遍历在 Win32 被绕过；`~`/`~\`/`$HOME/`/`${HOME}/` 一律识别为 home 路径
 - 工具审批：`y` 批准、`n` 拒绝；其它输入视为拒绝并把原文作为原因回给模型
 - 子进程最小环境（不继承任何父环境变量）
 - Landlock 写沙箱（Linux 可用时自动启用，否则退回命令过滤）；沙箱只放行 `/dev` 下已有设备的 `WRITE_FILE`（如 `/dev/null`），不放开设备节点创建/删除，避免 `git` 等常规命令被误伤
@@ -75,5 +79,6 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（138 agent + 44 json + 28 http + 14 tui + 21 markdown + 5 tty + 7 e2e + 2 streaming；test-tui-commands 随 `ccode` 暂停）
+3. 现有测试套件全过（143 agent + 44 json + 29 http + 15 tui + 21 markdown + 5 tty + 7 e2e + 2 streaming；test-tui-commands 随 `ccode` 暂停）
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟
+5. 工具调用/指令安全改动要过 `make fuzz-tool-args fuzz-command-paths fuzz-paths`，且 `make mutate`（故意注入错误看测试是否抓住）保持全部 KILLED
