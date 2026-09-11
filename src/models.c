@@ -22,6 +22,7 @@ char *ccode_models_fetch(const char *api_base, const char *api_key) {
     url_len = strlen(api_base);
     if (url_len >= sizeof(url) - 10) return NULL;
     memcpy(url, api_base, url_len);
+    url[url_len] = '\0';
 
     /* Strip trailing slash if present for consistent URL building. */
     if (url_len > 0 && url[url_len - 1] == '/')
