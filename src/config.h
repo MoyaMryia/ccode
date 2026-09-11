@@ -23,6 +23,9 @@ struct ccode_config {
     int session_keep_count;
     int markdown;
     int allow_http;
+    /* Print raw tool-call JSON (OpenAI wire format) for debugging.
+     * Implied by --debug, which also applies the --default preset. */
+    int print_raw_json;
 };
 
 int ccode_parse_args(int argc, char **argv, struct ccode_config *config);

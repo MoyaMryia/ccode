@@ -656,13 +656,10 @@ static int conversation_add_streamed_tool_call(struct ccode_conversation *conv,
 }
 
 /* Debug aid: dump every tool call the provider returns, rendered as the raw
- * OpenAI response JSON, to stderr. Unconditional for now; flip the guard to
- * make it opt-in (CLI flag / env var) without touching the call sites. */
-static int g_debug_tool_calls = 1;
-
+ * OpenAI response JSON, to stderr. Opt-in via --debug / cfg->print_raw_json. */
 static void debug_print_tool_calls(const struct ccode_sse_accumulator *acc) {
     size_t i;
-    if (!g_debug_tool_calls || acc->tool_call_count == 0) return;
+    if (acc->tool_call_count == 0) return;
     for (i = 0; i < acc->tool_call_count; i++) {
         const struct ccode_sse_tool_call *tc = &acc->tool_calls[i];
         char *e_id = ccode_json_escape(tc->id ? tc->id : "");
@@ -816,7 +813,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
             }
 
             if (acc.tool_call_count > 0) {
-                debug_print_tool_calls(&acc);
+                if (cfg->print_raw_json) debug_print_tool_calls(&acc);
                 for (i = 0; i < acc.tool_call_count; i++) {
                     if (acc.tool_calls[i].id && acc.tool_calls[i].name) {
                         if (conversation_add_streamed_tool_call(conv,

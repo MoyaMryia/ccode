@@ -34,6 +34,7 @@ void ccode_print_usage(const char *program) {
         "      --read-only        Read-only tools (read, glob, grep; the default)\n"
         "      --write            Enable read and write_file tools with confirmation\n"
         "      --default          Fast start: interactive + read/write tools + thinking (never auto-approve)\n"
+        "      --debug            --default plus raw tool-call JSON diagnostics\n"
         "      --auto-approve     Auto-approve all tool requests\n"
         "      --thinking         Send the thinking field (type: enabled; on by default)\n"
         "      --reasoning        Send the reasoning_effort field (default effort: high)\n"
@@ -214,6 +215,15 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
             config->tools_enabled = 1;
             config->thinking_enabled = 1;
             config->thinking_effort = "high";
+            continue;
+        }
+        if (strcmp(argv[i], "--debug") == 0) {
+            /* --default plus raw tool-call JSON diagnostics. */
+            config->interactive = 1;
+            config->tools_enabled = 1;
+            config->thinking_enabled = 1;
+            config->thinking_effort = "high";
+            config->print_raw_json = 1;
             continue;
         }
         if (strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--interactive") == 0) {

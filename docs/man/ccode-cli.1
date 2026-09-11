@@ -103,6 +103,13 @@ at
 Never enables
 .BR \-\-auto-approve .
 .TP
+.B \-\-debug
+Same as
+.B \-\-default
+but also print each provider tool call as raw OpenAI response JSON
+.RB ( "[tool-call] " )
+on stderr. Off by default.
+.TP
 .B \-\-auto-approve
 Approve all tool requests without prompting (also
 .BR CCODE_AUTO_APPROVE=1 ).

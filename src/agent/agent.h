@@ -36,6 +36,9 @@ struct ccode_agent_config {
     const char *resume_session;
     const char *workspace;
     int allow_http;
+    /* Emit raw tool-call JSON (OpenAI wire format) to stderr for debugging.
+     * Only meaningful in interactive runs; sub-agent configs inherit it. */
+    int print_raw_json;
     ccode_content_callback on_content;
     void *on_content_context;
     ccode_content_callback on_reasoning;

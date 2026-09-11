@@ -604,6 +604,7 @@ int ccode_cli_main(int argc, char **argv) {
     agent.thinking_effort = config.thinking_effort;
     agent.save_session = config.save_session;
     agent.resume_session = config.resume_session;
+    agent.print_raw_json = config.print_raw_json;
     agent.workspace = getenv("CCODE_WORKSPACE");
     if (!agent.workspace) agent.workspace = ".";
     agent.on_content = plain_stream_content;
