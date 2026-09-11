@@ -105,12 +105,15 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
 
         test_mode = self.headers.get("X-Test-Mode", "normal")
         if test_mode == "normal" or test_mode == "chunked":
+            # Fixture routing keys off the magic __ccode_test_ prefix. Use
+            # the LAST prefixed user message: in multi-turn sessions the
+            # first user message is turn 1's, which would pin the whole
+            # conversation to that turn's fixture.
             for msg in req.get("messages", []):
-                if msg.get("role") == "user" and isinstance(msg.get("content"), str):
-                    prefix = "__ccode_test_"
-                    if msg["content"].startswith(prefix):
-                        test_mode = msg["content"][len(prefix):].split(" ")[0]
-                    break
+                if (msg.get("role") == "user" and
+                        isinstance(msg.get("content"), str) and
+                        msg["content"].startswith("__ccode_test_")):
+                    test_mode = msg["content"][len("__ccode_test_"):].split(" ")[0]
         test_chunked = self.headers.get("X-Test-Chunked", "").lower() == "true"
         test_chunk_size = int(self.headers.get("X-Test-Chunk-Size", "1"))
         test_chunk_ext = self.headers.get("X-Test-Chunk-Ext", "")
@@ -678,6 +681,55 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                 {"data": json.dumps({
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
                 })},
+            ]
+
+        elif test_mode == "tui-stream-delta":
+            # Several content deltas so a TUI frontend must append each
+            # fragment to the streaming message instead of replacing it.
+            # The first delta is written immediately, the rest after a pause,
+            # so the TUI redraws at least twice mid-stream.
+            first = json.dumps({
+                "choices": [{"index": 0, "delta": {"content": "You "},
+                             "finish_reason": None}]})
+            rest = [
+                {"data": json.dumps({
+                    "choices": [{"index": 0, "delta": {"content": "said: "},
+                                 "finish_reason": None}]})},
+                {"data": json.dumps({
+                    "choices": [{"index": 0, "delta": {"content": "hello world"},
+                                 "finish_reason": None}]})},
+                {"data": json.dumps({
+                    "choices": [{"index": 0, "delta": {},
+                                 "finish_reason": "stop"}]})},
+            ]
+            body_first = "data: {}\n\n".format(first)
+            body_rest = build_sse_response(rest)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length",
+                             str(len(body_first.encode()) +
+                                 len(body_rest.encode())))
+            self.end_headers()
+            self.wfile.write(body_first.encode())
+            self.wfile.flush()
+            time.sleep(0.4)
+            self.wfile.write(body_rest.encode())
+            self.wfile.flush()
+            return
+
+        elif test_mode == "tui-markdown":
+            # Multi-line assistant answer with a fenced code block and bold
+            # run: the TUI must keep the code fence open across rendered
+            # lines and strip the markdown markers from the display.
+            content = ("Plan:\n\n```c\nint add(int a, int b) {\n"
+                       "    return a + b;\n}\n```\n\nDone: **added safely**")
+            events = [
+                {"data": json.dumps({
+                    "choices": [{"index": 0, "delta": {"content": content},
+                                 "finish_reason": None}]})},
+                {"data": json.dumps({
+                    "choices": [{"index": 0, "delta": {},
+                                 "finish_reason": "stop"}]})},
             ]
 
         elif test_mode == "result-spill-fixture":

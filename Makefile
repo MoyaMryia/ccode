@@ -430,6 +430,14 @@ tests/test_tui: $(TEST_TUI_SRC) src/tui/input.c src/tui/messages.c src/tui/rende
 test-tui-commands: ccode
 	python3 ./tests/test_tui_commands.py
 
+# TUI 真实场景集成测试（pty 驱动两个前端：fork 版 ccode-tui 与单体 ccode；
+# 流式/CJK/思考链/markdown/权限允许与拒绝/错误恢复/resize/Ctrl-C 取消）。
+# 依赖已构建的 ccode-tui/ccode/ccode-cli；与 test-tui-commands 同理不进默认
+# `test` 目标——那些目标不允许顺带构建暂停的 ccode 二进制。手动运行：
+#   make ccode ccode-tui ccode-cli && make test-tui-real
+test-tui-real: ccode ccode-tui ccode-cli
+	python3 ./tests/test_tui_real.py
+
 test-markdown: tests/test_markdown
 	./tests/test_markdown
 
@@ -500,4 +508,4 @@ asan: clean
 repro: clean
 	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 SIZE_CFLAGS= SIZE_LDFLAGS= CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic $(X86_GNU_FLAGS) -ffile-prefix-map=$(PWD)=."
 
-.PHONY: ccode ccode-tui ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-markdown test-tty test-e2e test-streaming retro-test asan repro test-sandbox fuzz-tool-args fuzz-tool-args-asan fuzz-command-paths fuzz-paths mutate
+.PHONY: ccode ccode-tui ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-markdown test-tui-commands test-tui-real test-tty test-e2e test-streaming retro-test asan repro test-sandbox fuzz-tool-args fuzz-tool-args-asan fuzz-command-paths fuzz-paths mutate
