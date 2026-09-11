@@ -755,6 +755,89 @@ static void wf_strip_html(const char *html, char *out, size_t out_size) {
 
 /* ── Main fetch function ── */
 
+/* Decode HTTP/1.1 chunked transfer-encoding in place. Returns the decoded
+ * length and sets *complete when the terminating zero chunk was seen.
+ * Malformed framing stops the scan and keeps the partial output. */
+size_t ccode_web_fetch_dechunk(char *buf, size_t len, int *complete) {
+    size_t r = 0;
+    size_t w = 0;
+    *complete = 0;
+    while (r < len) {
+        size_t size = 0;
+        int digits = 0;
+        while (r < len && isxdigit((unsigned char)buf[r])) {
+            int d = buf[r] <= '9' ? buf[r] - '0'
+                                  : (buf[r] | 0x20) - 'a' + 10;
+            if (size > ((size_t)-1 - (size_t)d) / 16) return w;
+            size = size * 16 + (size_t)d;
+            r++;
+            digits++;
+        }
+        if (!digits) return w;
+        /* Skip any chunk extensions up to the line end. */
+        while (r < len && buf[r] != '\n') r++;
+        if (r >= len) return w;
+        r++; /* consume '\n' */
+        if (size == 0) { *complete = 1; return w; }
+        if (size > len - r) size = len - r;
+        memmove(buf + w, buf + r, size);
+        w += size;
+        r += size;
+        if (r < len && buf[r] == '\r') r++;
+        if (r < len && buf[r] == '\n') r++;
+    }
+    return w;
+}
+
+/* Resolve a Location header value against a base URL. Supports absolute,
+ * scheme-relative (//host/...), root-relative (/...) and plain relative
+ * targets. Returns 0 on success. Exposed for unit tests. */
+int ccode_web_fetch_resolve_redirect(int secure, const char *host,
+                                     const char *port, const char *base_path,
+                                     const char *location,
+                                     char *out, size_t out_size) {
+    const char *scheme = secure ? "https://" : "http://";
+    int default_port = secure ? 443 : 80;
+    int base_port = port ? atoi(port) : 0;
+    int n;
+
+    if (!host || !location || !location[0]) return -1;
+    if (strncmp(location, "http://", 7) == 0 ||
+        strncmp(location, "https://", 8) == 0) {
+        n = snprintf(out, out_size, "%s", location);
+        return (n > 0 && (size_t)n < out_size) ? 0 : -1;
+    }
+    if (location[0] == '/' && location[1] == '/') {
+        n = snprintf(out, out_size, "%s%s", scheme, location + 2);
+        return (n > 0 && (size_t)n < out_size) ? 0 : -1;
+    }
+    if (location[0] == '/') {
+        if (base_port > 0 && base_port != default_port)
+            n = snprintf(out, out_size, "%s%s:%s%s", scheme, host, port,
+                         location);
+        else
+            n = snprintf(out, out_size, "%s%s%s", scheme, host, location);
+        return (n > 0 && (size_t)n < out_size) ? 0 : -1;
+    }
+    /* Plain relative: resolve against the base path's directory. */
+    {
+        char dir[2048];
+        const char *slash = base_path ? strrchr(base_path, '/') : NULL;
+        size_t dlen = slash ? (size_t)(slash - base_path) + 1 : 1;
+        if (dlen >= sizeof(dir)) return -1;
+        if (slash) memcpy(dir, base_path, dlen);
+        else dir[0] = '/';
+        dir[dlen] = '\0';
+        if (base_port > 0 && base_port != default_port)
+            n = snprintf(out, out_size, "%s%s:%s%s%s", scheme, host, port,
+                         dir, location);
+        else
+            n = snprintf(out, out_size, "%s%s%s%s", scheme, host, dir,
+                         location);
+        return (n > 0 && (size_t)n < out_size) ? 0 : -1;
+    }
+}
+
 char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
     struct wf_url url;
     struct wf_transport transport;
@@ -765,6 +848,8 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
     const char *method;
     char req_buf[8192];
     char header_buf[CCODE_WF_MAX_HEADERS];
+    char redirect_buf[4096];
+    char content_type_buf[256];
     char *body_buf = NULL;
     ssize_t body_len = 0;
     char *escaped = NULL;
@@ -773,9 +858,12 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
     const char *current_url;
     int timed_out = 0;
     int status = 0;
+    int dechunk_truncated = 0;
 
     memset(&transport, 0, sizeof(transport));
     transport.fd = -1;
+    redirect_buf[0] = '\0';
+    content_type_buf[0] = '\0';
 
     if (!opts || !opts->url) return NULL;
 
@@ -797,6 +885,8 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
         int chunked = 0;
         char *body_ptr;
         ssize_t nread;
+
+        content_type_buf[0] = '\0';
 
         if (wf_parse_url(current_url, &url) != 0) {
             result = malloc(128);
@@ -895,26 +985,42 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
                 goto done;
             }
 
-            /* Parse headers. */
+            /* Parse headers. Each line is NUL-terminated at its CRLF so
+             * values never bleed into the following headers. */
             {
                 char *line = status_line;
-                while ((line = strstr(line, "\r\n")) != NULL) {
-                    line += 2;
-                    if (line >= header_end) break;
+                char *eol = strstr(line, "\r\n");
+                char *val;
+                if (eol) line = eol + 2;
+                while (line < header_end) {
+                    eol = strstr(line, "\r\n");
+                    if (!eol || eol > header_end) eol = header_end;
+                    *eol = '\0';
                     if (strncasecmp(line, "Content-Length:", 15) == 0) {
                         has_cl = 1;
                         content_length = (size_t)atol(line + 15);
                     } else if (strncasecmp(line, "Transfer-Encoding:", 18) == 0) {
                         if (strstr(line + 18, "chunked")) chunked = 1;
+                    } else if (strncasecmp(line, "Content-Type:", 13) == 0) {
+                        val = line + 13;
+                        while (*val == ' ' || *val == '\t') val++;
+                        snprintf(content_type_buf, sizeof(content_type_buf),
+                                 "%s", val);
                     } else if (strncasecmp(line, "Location:", 9) == 0) {
-                        /* Handle redirect. */
-                        const char *loc = line + 9;
-                        while (*loc == ' ') loc++;
-                        if (status >= 300 && status < 400 && loc[0]) {
-                            current_url = loc;
-                            redirect = 1;
+                        val = line + 9;
+                        while (*val == ' ' || *val == '\t') val++;
+                        if (status >= 300 && status < 400 && *val) {
+                            if (ccode_web_fetch_resolve_redirect(
+                                    url.secure, url.host, url.port, url.path,
+                                    val, redirect_buf,
+                                    sizeof(redirect_buf)) == 0) {
+                                current_url = redirect_buf;
+                                redirect = 1;
+                            }
                         }
                     }
+                    if (eol >= header_end) break;
+                    line = eol + 2;
                 }
             }
 
@@ -978,6 +1084,14 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             }
             body_buf[body_pos] = '\0';
             body_len = (ssize_t)body_pos;
+            if (chunked && body_buf && body_len > 0) {
+                int complete = 0;
+                size_t decoded = ccode_web_fetch_dechunk(
+                    body_buf, (size_t)body_len, &complete);
+                body_buf[decoded] = '\0';
+                body_len = (ssize_t)decoded;
+                if (!complete) dechunk_truncated = 1;
+            }
         }
 
         wf_transport_close(&transport);
@@ -987,29 +1101,30 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
     wf_transport_close(&transport);
 
     if (!result) {
-        int truncated = 0;
-        const char *content_type = "";
+        int truncated = dechunk_truncated;
+        const char *content_type = content_type_buf;
+        char *esc_url;
+        char *esc_ct;
 
-        /* Determine content type from last response headers. */
-        {
-            char *ct = strstr(header_buf, "Content-Type:");
-            if (ct) {
-                ct += 13;
-                while (*ct == ' ') ct++;
-                content_type = ct;
-            }
+        esc_url = ccode_json_escape(current_url ? current_url : "");
+        esc_ct = ccode_json_escape(content_type[0] ? content_type : "");
+        if (!esc_url || !esc_ct) {
+            free(esc_url);
+            free(esc_ct);
+            result = ccode_strdup("{\"error\":\"Out of memory\"}");
+            goto done;
         }
 
         if (strstr(method, "HEAD") != NULL) {
             /* HEAD request: return status info. */
-            size_t url_len = current_url ? strlen(current_url) : 0;
-            size_t ct_len = content_type ? strlen(content_type) : 0;
-            result = malloc(256 + url_len + ct_len);
-            if (result) {
-                snprintf(result, 256 + url_len + ct_len,
+            size_t rcap = strlen(esc_url) + strlen(esc_ct) + 64;
+            result = malloc(rcap);
+            if (result)
+                snprintf(result, rcap,
                     "{\"status\":%d,\"content_type\":\"%s\",\"url\":\"%s\"}",
-                    status, content_type, current_url);
-            }
+                    status, esc_ct, esc_url);
+            free(esc_url);
+            free(esc_ct);
             goto done;
         }
 
@@ -1036,33 +1151,35 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
                     free(plain);
                 }
             }
-        } else if (strstr(content_type, "application/json") != NULL) {
-            /* Return JSON as-is (already valid JSON fragment). */
-            escaped = ccode_json_escape(body_buf ? body_buf : "");
         } else {
-            /* text/plain or anything else: return raw text. */
+            /* application/json, text/plain or anything else: raw text. */
             escaped = ccode_json_escape(body_buf ? body_buf : "");
         }
 
-        if (!escaped) { free(body_buf); return ccode_strdup("{\"error\":\"Out of memory\"}"); }
+        if (!escaped) {
+            free(esc_url);
+            free(esc_ct);
+            result = ccode_strdup("{\"error\":\"Out of memory\"}");
+            goto done;
+        }
 
         /* Build result JSON. */
         {
-            size_t url_len = current_url ? strlen(current_url) : 0;
-            size_t ct_len = content_type ? strlen(content_type) : 0;
-            size_t rcap = strlen(escaped) + 256 + url_len + ct_len;
+            size_t rcap = strlen(escaped) + strlen(esc_url) + strlen(esc_ct) + 64;
             result = malloc(rcap);
             if (result) {
                 size_t pos = 0;
                 pos += (size_t)snprintf(result, rcap,
                     "{\"content\":\"%s\",\"content_type\":\"%s\",\"status\":%d,\"url\":\"%s\"",
-                    escaped, content_type, status, current_url);
+                    escaped, esc_ct, status, esc_url);
                 if (truncated)
                     pos += (size_t)snprintf(result + pos, rcap - pos, ",\"truncated\":true");
                 snprintf(result + pos, rcap - pos, "}");
             }
         }
         free(escaped);
+        free(esc_url);
+        free(esc_ct);
     }
 
 done:

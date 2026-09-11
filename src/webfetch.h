@@ -21,4 +21,17 @@ struct ccode_web_fetch_opts {
  */
 char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts);
 
+/* Decode HTTP/1.1 chunked transfer-encoding in place. Returns the decoded
+ * length and sets *complete when the terminating zero chunk was seen.
+ * Exposed for unit tests. */
+size_t ccode_web_fetch_dechunk(char *buf, size_t len, int *complete);
+
+/* Resolve a Location header value against a base URL (secure flag, host,
+ * port, base path). Supports absolute, scheme-relative, root-relative and
+ * plain relative targets. Returns 0 on success. Exposed for unit tests. */
+int ccode_web_fetch_resolve_redirect(int secure, const char *host,
+                                     const char *port, const char *base_path,
+                                     const char *location,
+                                     char *out, size_t out_size);
+
 #endif

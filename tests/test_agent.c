@@ -3319,6 +3319,63 @@ static int test_platform_sandbox_write_confinement(void) {
 }
 #endif
 
+static int test_web_fetch_dechunk(void) {
+    char buf[128];
+    int complete = 0;
+    size_t n;
+
+    strcpy(buf, "5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n");
+    n = ccode_web_fetch_dechunk(buf, strlen(buf), &complete);
+    buf[n] = '\0';
+    ASSERT(complete == 1);
+    ASSERT(strcmp(buf, "hello world") == 0);
+
+    /* Uppercase hex size and a chunk extension. */
+    strcpy(buf, "A;x=1\r\n0123456789\r\n0\r\n\r\n");
+    n = ccode_web_fetch_dechunk(buf, strlen(buf), &complete);
+    buf[n] = '\0';
+    ASSERT(complete == 1);
+    ASSERT(strcmp(buf, "0123456789") == 0);
+
+    /* Truncated stream: keep the partial data, not complete. */
+    strcpy(buf, "5\r\nhel");
+    n = ccode_web_fetch_dechunk(buf, strlen(buf), &complete);
+    buf[n] = '\0';
+    ASSERT(complete == 0);
+    ASSERT(strcmp(buf, "hel") == 0);
+
+    return 1;
+}
+
+static int test_web_fetch_resolve_redirect(void) {
+    char out[512];
+
+    /* Absolute target is copied as-is (Bing: www -> cn redirect). */
+    ASSERT(ccode_web_fetch_resolve_redirect(1, "www.bing.com", "443", "/search",
+                                            "https://cn.bing.com/search?q=x",
+                                            out, sizeof(out)) == 0);
+    ASSERT(strcmp(out, "https://cn.bing.com/search?q=x") == 0);
+
+    /* Root-relative keeps scheme + host. */
+    ASSERT(ccode_web_fetch_resolve_redirect(1, "a.example", "443", "/dir/page",
+                                            "/root", out, sizeof(out)) == 0);
+    ASSERT(strcmp(out, "https://a.example/root") == 0);
+
+    /* Scheme-relative. */
+    ASSERT(ccode_web_fetch_resolve_redirect(1, "a.example", "443", "/dir/page",
+                                            "//b.example/x",
+                                            out, sizeof(out)) == 0);
+    ASSERT(strcmp(out, "https://b.example/x") == 0);
+
+    /* Plain relative resolves against the base directory; a non-default port
+     * is kept. */
+    ASSERT(ccode_web_fetch_resolve_redirect(0, "a.example", "8080", "/dir/page",
+                                            "next", out, sizeof(out)) == 0);
+    ASSERT(strcmp(out, "http://a.example:8080/dir/next") == 0);
+
+    return 1;
+}
+
 static int test_web_fetch_blacklist_and_rate_limit(void) {
     struct ccode_web_fetch_opts opts;
     char *result;
@@ -4363,6 +4420,8 @@ int main(int argc, char **argv) {
 
     /* Phase 6: WebFetch tests */
     TEST(web_fetch_invalid_url);
+    TEST(web_fetch_dechunk);
+    TEST(web_fetch_resolve_redirect);
     TEST(web_fetch_ipv6_host);
     TEST(web_fetch_blacklist_and_rate_limit);
     TEST(web_fetch_tool_prepare);

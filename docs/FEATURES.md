@@ -22,7 +22,7 @@
 - `read_file` / `write_file` / `glob` / `grep`（支持正则）
 - `bash` / `run_command`
 - `delete_file` / `move_file`（限工作区内）
-- `web_fetch`（带域名黑名单、请求限流、大小上限）
+- `web_fetch`（带域名黑名单、请求限流、大小上限；跟随 3xx 跳转，支持绝对/协议相对/根相对/相对 `Location`；解析 1.1 chunked 响应并在末尾去分块；响应头逐行按 CRLF 截断，`content_type`/`url` 进 JSON 前转义）
 - `web_search`（Bing 端点可配）
 - `agent_tool`（子代理，独立循环、默认只读、深度上限 3）；只读子代理并行 fork 运行，其自身的只读工具（read_file/glob/grep/git_*，均限工作区内）自动放行——子进程在自己的进程组里读控制终端会触发 SIGTTIN 停住并让父进程 poll 死等，且多个子进程争抢同一 stdin，所以不再逐次弹审批
 - 工具调用参数解析：容忍模型把参数包进一层或多层 `{"arguments": ...}`（对象与 JSON 字符串形式混合），最多 8 层；超限报 `nested too deep`，信封值非对象/字符串、或信封带尾随数据时明确拒绝；多键信封不再被误判
@@ -83,6 +83,6 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（149 agent + 45 json + 32 http + 15 tui + 21 markdown + 5 tty + 8 e2e + 3 streaming；test-tui-commands 随 `ccode` 暂停）
+3. 现有测试套件全过（151 agent + 45 json + 32 http + 15 tui + 21 markdown + 5 tty + 8 e2e + 3 streaming；test-tui-commands 随 `ccode` 暂停）
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟
 5. 工具调用/指令安全改动要过 `make fuzz-tool-args fuzz-command-paths fuzz-paths`，且 `make mutate`（故意注入错误看测试是否抓住）保持全部 KILLED
