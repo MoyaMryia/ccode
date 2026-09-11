@@ -33,6 +33,11 @@ int ccode_valid_utf8(const char *s);
 size_t ccode_utf8_decode(const unsigned char *s, size_t remaining,
                          unsigned int *codepoint);
 
+/* Terminal display width of a decoded codepoint: 2 for East Asian
+ * Wide/Fullwidth ranges, 1 otherwise. The canonical width source for
+ * wrapping/rendering; do not re-derive. */
+int ccode_utf8_cp_width(unsigned int cp);
+
 /* Unescape a JSON string span (excluding surrounding quotes) into dest.
  * Rejects NUL, malformed UTF-8, invalid surrogate pairs, overlong escapes
  * and dest overflow. Returns 0 on success, -1 otherwise. */

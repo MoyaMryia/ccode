@@ -1,5 +1,7 @@
 #include "input.h"
 
+#include "../json.h"
+
 #include <string.h>
 
 static size_t previous_utf8_char(const char *text, size_t cursor) {
@@ -18,38 +20,8 @@ static size_t next_utf8_char(const char *text, size_t length, size_t cursor) {
 
 static int utf8_char_width(const unsigned char *text, size_t length) {
     unsigned int codepoint;
-    size_t bytes;
-    if (length == 0) return 0;
-    if (text[0] < 0x80U) return 1;
-    if (length >= 2 && text[0] >= 0xc2U && text[0] <= 0xdfU &&
-        (text[1] & 0xc0U) == 0x80U) {
-        codepoint = ((unsigned int)(text[0] & 0x1fU) << 6) | (text[1] & 0x3fU);
-        bytes = 2;
-    } else if (length >= 3 && text[0] >= 0xe0U && text[0] <= 0xefU &&
-               (text[1] & 0xc0U) == 0x80U && (text[2] & 0xc0U) == 0x80U) {
-        codepoint = ((unsigned int)(text[0] & 0x0fU) << 12) |
-                    ((unsigned int)(text[1] & 0x3fU) << 6) |
-                    (text[2] & 0x3fU);
-        bytes = 3;
-    } else if (length >= 4 && text[0] >= 0xf0U && text[0] <= 0xf4U &&
-               (text[1] & 0xc0U) == 0x80U && (text[2] & 0xc0U) == 0x80U &&
-               (text[3] & 0xc0U) == 0x80U) {
-        codepoint = ((unsigned int)(text[0] & 0x07U) << 18) |
-                    ((unsigned int)(text[1] & 0x3fU) << 12) |
-                    ((unsigned int)(text[2] & 0x3fU) << 6) |
-                    (text[3] & 0x3fU);
-        bytes = 4;
-    } else return 1;
-    (void)bytes;
-    if (codepoint >= 0x1100U &&
-        (codepoint <= 0x115fU || codepoint == 0x2329U || codepoint == 0x232aU ||
-         (codepoint >= 0x2e80U && codepoint <= 0xa4cfU) ||
-         (codepoint >= 0xac00U && codepoint <= 0xd7a3U) ||
-         (codepoint >= 0xf900U && codepoint <= 0xfaffU) ||
-         (codepoint >= 0xfe10U && codepoint <= 0xfe6fU) ||
-         (codepoint >= 0xff00U && codepoint <= 0xff60U) ||
-         (codepoint >= 0xffe0U && codepoint <= 0xffe6U))) return 2;
-    return 1;
+    ccode_utf8_decode(text, length, &codepoint);
+    return ccode_utf8_cp_width(codepoint);
 }
 
 static int input_column_between(const struct tui_input *input, size_t start,

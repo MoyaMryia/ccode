@@ -159,6 +159,21 @@ size_t ccode_utf8_decode(const unsigned char *s, size_t remaining,
     return 1;
 }
 
+/* Terminal display width of a decoded codepoint: 2 for East Asian
+ * Wide/Fullwidth ranges (CJK, Hangul, fullwidth forms), 1 otherwise.
+ * The canonical width source for wrapping/rendering; do not re-derive. */
+int ccode_utf8_cp_width(unsigned int cp) {
+    if (cp >= 0x1100U &&
+        (cp <= 0x115fU || cp == 0x2329U || cp == 0x232aU ||
+         (cp >= 0x2e80U && cp <= 0xa4cfU) ||
+         (cp >= 0xac00U && cp <= 0xd7a3U) ||
+         (cp >= 0xf900U && cp <= 0xfaffU) ||
+         (cp >= 0xfe10U && cp <= 0xfe6fU) ||
+         (cp >= 0xff00U && cp <= 0xff60U) ||
+         (cp >= 0xffe0U && cp <= 0xffe6U))) return 2;
+    return 1;
+}
+
 
 static int json_hex_digit(unsigned char c, unsigned int *value) {
     if (c >= '0' && c <= '9') *value = c - '0';

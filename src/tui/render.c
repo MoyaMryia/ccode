@@ -1,5 +1,7 @@
 #include "render.h"
 
+#include "../json.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -32,29 +34,30 @@ int tui_render_text_n(const char *text, size_t length, int max_cols) {
     size_t offset = 0;
     if (max_cols <= 0) return 1;
     while (offset < length && p[offset]) {
-        unsigned char c = p[offset++];
-        if (c == '\n') {
+        unsigned int cp;
+        size_t clen = ccode_utf8_decode(p + offset, length - offset, &cp);
+        int width;
+        if (cp == '\n') {
             fputc('\n', stdout);
             written = 0;
             vlines++;
-        } else if (c == '\033' || c == '\r' || c == '\t' ||
-                   c < 0x20U || c == 0x7fU) {
-            if (written >= max_cols) {
-                fputc('\n', stdout);
-                written = 0;
-                vlines++;
-            }
-            fputc('?', stdout);
-            written++;
-        } else {
-            if (written >= max_cols) {
-                fputc('\n', stdout);
-                written = 0;
-                vlines++;
-            }
-            fputc(c, stdout);
-            written++;
+            offset += clen;
+            continue;
         }
+        /* Control bytes render as one fallback glyph. */
+        width = (clen == 1 && (cp < 0x20U || cp == 0x7fU))
+                    ? 1 : ccode_utf8_cp_width(cp);
+        if (written + width > max_cols) {
+            fputc('\n', stdout);
+            written = 0;
+            vlines++;
+        }
+        if (clen == 1 && (cp < 0x20U || cp == 0x7fU))
+            fputc('?', stdout);
+        else
+            fwrite(p + offset, 1, clen, stdout);
+        written += width;
+        offset += clen;
     }
     return vlines;
 }
@@ -67,25 +70,30 @@ void tui_render_text_part(const char *text, size_t length, int max_cols,
     size_t offset = 0;
     if (max_cols <= 0 || visual_line < 0) return;
     while (offset < length && p[offset]) {
-        unsigned char c = p[offset++];
-        if (c == '\n') {
+        unsigned int cp;
+        size_t clen = ccode_utf8_decode(p + offset, length - offset, &cp);
+        int width;
+        if (cp == '\n') {
             vline++;
             written = 0;
+            offset += clen;
             continue;
         }
-        if (written >= max_cols) {
+        width = (clen == 1 && (cp < 0x20U || cp == 0x7fU))
+                    ? 1 : ccode_utf8_cp_width(cp);
+        if (written + width > max_cols) {
             vline++;
             written = 0;
         }
         if (vline > visual_line) break;
         if (vline == visual_line) {
-            if (c == '\033' || c == '\r' || c == '\t' ||
-                c < 0x20U || c == 0x7fU)
+            if (clen == 1 && (cp < 0x20U || cp == 0x7fU))
                 fputc('?', stdout);
             else
-                fputc(c, stdout);
+                fwrite(p + offset, 1, clen, stdout);
         }
-        written++;
+        written += width;
+        offset += clen;
     }
 }
 

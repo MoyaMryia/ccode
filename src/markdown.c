@@ -40,10 +40,21 @@ static void emit_text(struct ccode_md_renderer *r, const char *data, size_t len)
     while (offset < len) {
         unsigned int cp;
         size_t length = ccode_utf8_decode(s + offset, len - offset, &cp);
+        int emit_width;
 
         if (offset + length > len) break;
 
-        if (r->max_cols > 0 && r->cols_written >= r->max_cols) {
+        /* Columns the emitted form occupies: control/bidi bytes are escaped
+         * to \xNN / \uXXXX (4-6 columns), real characters take their
+         * terminal display width (2 for CJK). */
+        if (length == 1 && cp < 0x20U) emit_width = cp == '\t' ? 1 : 4;
+        else if (md_is_bidi_control(cp)) emit_width = 6;
+        else if (length == 1 && cp >= 0x7fU) emit_width = 4;
+        else if (cp >= 0x80U && cp <= 0x9fU) emit_width = 6;
+        else emit_width = ccode_utf8_cp_width(cp);
+
+        if (r->max_cols > 0 &&
+            r->cols_written + emit_width > r->max_cols) {
             if (r->output_line < 0) fputc('\n', out);
             r->cols_written = 0;
             r->visual_line++;
@@ -77,7 +88,7 @@ static void emit_text(struct ccode_md_renderer *r, const char *data, size_t len)
         } else {
             if (r->output_line < 0 || r->visual_line == r->output_line)
                 fwrite(s + offset, 1, length, out);
-            r->cols_written += (int)length;
+            r->cols_written += emit_width;
         }
         offset += length;
     }

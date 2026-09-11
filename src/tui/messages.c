@@ -1,6 +1,7 @@
 #include "messages.h"
 #include "render.h"
 #include "theme.h"
+#include "../json.h"
 #include "../markdown.h"
 
 #include <stdio.h>
@@ -56,23 +57,33 @@ int tui_messages_append_last(struct tui_messages *messages, enum tui_message_typ
     return 0;
 }
 
+/* Visual line count of a text span under `cols` display columns, using the
+ * same character-width and wrap rules as tui_render_text_part so scroll
+ * offsets stay aligned with what is drawn. */
 static int text_visual_lines(const char *text, size_t len, int cols) {
-    const char *p = text;
+    const unsigned char *p = (const unsigned char *)text;
     int col = 0;
     int lines = 1;
-    size_t i;
+    size_t offset = 0;
     if (!p || len == 0) return 1;
-    for (i = 0; i < len; i++) {
-        if (p[i] == '\n') {
+    while (offset < len && p[offset]) {
+        unsigned int cp;
+        size_t clen = ccode_utf8_decode(p + offset, len - offset, &cp);
+        int width;
+        if (cp == '\n') {
             lines++;
             col = 0;
-        } else {
-            if (cols > 0 && col >= cols) {
-                lines++;
-                col = 0;
-            }
-            col++;
+            offset += clen;
+            continue;
         }
+        width = (clen == 1 && (cp < 0x20U || cp == 0x7fU))
+                    ? 1 : ccode_utf8_cp_width(cp);
+        if (cols > 0 && col + width > cols) {
+            lines++;
+            col = 0;
+        }
+        col += width;
+        offset += clen;
     }
     return lines > 0 ? lines : 1;
 }

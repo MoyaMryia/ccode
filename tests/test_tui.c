@@ -1,6 +1,7 @@
 #include "../src/tui/input.h"
 #include "../src/tui/messages.h"
 #include "../src/tui/protocol.h"
+#include "../src/tui/render.h"
 #include "../src/json.h"
 
 #include <stdio.h>
@@ -381,6 +382,49 @@ static int test_protocol_event_escape_round_trip(void) {
     return 1;
 }
 
+static int test_cjk_lines_count_display_width(void) {
+    struct tui_messages messages;
+    /* 40 CJK chars = 80 display columns; at cols=7 (5 usable) two chars per
+     * line -> 20 lines. Byte counting would claim 24. */
+    char text[121];
+    int i;
+    for (i = 0; i < 40; i++) memcpy(text + i * 3, "\xe5\xa5\xbd", 3);
+    text[120] = '\0';
+    tui_messages_init(&messages);
+    ASSERT(tui_messages_add(&messages, TUI_MSG_USER, text) == 0);
+    ASSERT(tui_messages_total_lines(&messages, 7) == 20);
+    tui_messages_clear(&messages);
+    return 1;
+}
+
+static int test_render_part_keeps_cjk_intact(void) {
+    FILE *capture;
+    int saved_stdout;
+    char output[64];
+    size_t length;
+    const char *cjk = "\xe5\xa5\xbd\xe5\xa5\xbd\xe5\xa5\xbd"; /* 好好好 */
+
+    fflush(stdout);
+    capture = tmpfile();
+    ASSERT(capture != NULL);
+    saved_stdout = dup(STDOUT_FILENO);
+    ASSERT(saved_stdout >= 0);
+    ASSERT(dup2(fileno(capture), STDOUT_FILENO) >= 0);
+    /* 5 columns fit two fullwidth chars (4 cols); the third would exceed the
+     * line and must wrap whole, never split mid-sequence. */
+    tui_render_text_part(cjk, 9, 5, 0);
+    fflush(stdout);
+    ASSERT(dup2(saved_stdout, STDOUT_FILENO) >= 0);
+    close(saved_stdout);
+    ASSERT(fseek(capture, 0, SEEK_SET) == 0);
+    length = fread(output, 1, sizeof(output) - 1, capture);
+    output[length] = '\0';
+    ASSERT(length == 6);
+    ASSERT(memcmp(output, cjk, 6) == 0);
+    fclose(capture);
+    return 1;
+}
+
 int main(void) {
     TEST(input_editing_controls);
     TEST(input_utf8_backspace);
@@ -393,6 +437,8 @@ int main(void) {
     TEST(assistant_markdown_wraps_long_line);
     TEST(assistant_markdown_scrolls_wrapped_line);
     TEST(user_message_scrolls_wrapped_line);
+    TEST(cjk_lines_count_display_width);
+    TEST(render_part_keeps_cjk_intact);
     TEST(protocol_recovers_after_oversized_line);
     TEST(protocol_event_escape_round_trip);
     TEST(protocol_hello_includes_thinking_state);
