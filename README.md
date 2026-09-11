@@ -43,11 +43,19 @@ make HTTP_ONLY=1    # 不要 TLS，纯 HTTP（内网/开发用）
 
 ### 支持的平台
 
-构建时按编译器的目标三元组自动挑对应的实现（在 `src/platform/` 下，每个系统一个文件）：
+生产可用：Linux riscv64。
 
-Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、illumos / Solaris、MINIX 3、Windows（Cygwin / MSYS2）。
+已验证（构建+测试通过）：
 
-说明：写沙箱只有 Linux 上有（用内核的 Landlock）；其他平台退回到命令级过滤。各平台代码都已就位，但日常测试主要在 Linux 上跑。
+- Linux x86_64（v1/v2/v3/v4）：gcc / clang 14
+- Linux i386/i586（retro 真机已验）、arm64、riscv64：gcc
+- macOS arm64：clang（能用）
+
+理论支持（`src/platform/` 代码已就位，按目标三元组自动挑选，未做真机矩阵）：
+
+Linux、macOS、PureDarwin（走 Darwin 路径，未验证）、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、illumos / Solaris、MINIX 3、Windows（Cygwin / MSYS2）。
+
+说明：写沙箱只有 Linux 上有（用内核的 Landlock）；其他平台退回到命令级过滤。CPU 架构层面代码无相关性（纯 C89 + POSIX），理论覆盖 gcc 和 clang 能到的全目标（x86、ARM、MIPS、PPC、s390x、LoongArch 等）。
 
 ## 快速开始
 
