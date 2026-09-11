@@ -21,6 +21,7 @@ static void tui_fill_agent(struct ccode_agent_config *agent_cfg,
     agent_cfg->thinking_effort = config->thinking_effort;
     agent_cfg->save_session = config->save_session;
     agent_cfg->resume_session = config->resume_session;
+    agent_cfg->session_auto_save = config->session_auto_save;
     agent_cfg->print_raw_json = config->print_raw_json;
     agent_cfg->context_tokens = config->context_tokens > 0
                                 ? (size_t)config->context_tokens : 0;

@@ -2293,8 +2293,10 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
         /* Default session persistence: without an explicit --save-session /
          * --resume / /session path, mint an auto-named session chain on the
          * first real prompt so the conversation is auto-saved and /resume
-         * can pick it up (same behavior as the in-process TUI). */
-        if (!have_session_path && !cfg->save_session) {
+         * can pick it up (same behavior as the in-process TUI). Suppressed
+         * entirely by CCODE_SESSION_AUTO_SAVE=0, which leaves persistence to
+         * the explicit session flags only. */
+        if (cfg->session_auto_save && !have_session_path && !cfg->save_session) {
             const char *dir = ccode_session_dir();
             if (dir && ccode_session_ensure_dir() == 0) {
                 char name[80];

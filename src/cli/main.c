@@ -604,6 +604,7 @@ int ccode_cli_main(int argc, char **argv) {
     agent.thinking_effort = config.thinking_effort;
     agent.save_session = config.save_session;
     agent.resume_session = config.resume_session;
+    agent.session_auto_save = config.session_auto_save;
     agent.print_raw_json = config.print_raw_json;
     agent.context_tokens = config.context_tokens > 0
                            ? (size_t)config.context_tokens : 0;

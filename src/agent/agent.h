@@ -35,6 +35,10 @@ struct ccode_agent_config {
     const char *thinking_effort;
     const char *save_session;
     const char *resume_session;
+    /* Session auto-save switch (CCODE_SESSION_AUTO_SAVE, default 1). When 0,
+     * the auto-named auto-*.json chain is never minted; only explicit
+     * --save-session / --resume / /session paths persist the conversation. */
+    int session_auto_save;
     const char *workspace;
     int allow_http;
     /* Emit raw tool-call JSON (OpenAI wire format) to stderr for debugging.

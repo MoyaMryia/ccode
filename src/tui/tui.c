@@ -524,10 +524,12 @@ static int inproc_session_path(const char *name, char *path, size_t cap);
 static void inproc_run_agent(struct ccode_agent_config *cfg, const char *prompt,
                              struct tui_inproc_ctx *ctx) {
     cfg->prompt = prompt;
-    if (!ctx->session_path[0] && !ctx->base_save) {
+    if (ctx->config->session_auto_save &&
+        !ctx->session_path[0] && !ctx->base_save) {
         /* Default: lazily mint an auto-named session chain so consecutive
          * turns share conversation context (same as the line-based REPL).
-         * /clear or /session new starts a fresh chain on the next turn. */
+         * Suppressed by CCODE_SESSION_AUTO_SAVE=0. /clear or /session new
+         * starts a fresh chain on the next turn. */
         char name[80];
         snprintf(name, sizeof(name), "auto-%ld-%d.json",
                  (long)time(NULL), (int)getpid());
