@@ -486,15 +486,13 @@ static int inproc_permission_ask(struct ccode_permission_request *req,
     tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, text);
     tui_inproc_redraw(ctx, 1);
     for (;;) {
-#ifdef _WIN32
-        /* WaitForSingleObject is not interrupted by the CRT signal thread,
-         * so poll and honor the cancellation flag explicitly. */
+        /* Poll with a short timeout and honor the agent's cancel flag:
+         * Ctrl-C inside the blocking wait only raises the flag (SIGINT
+         * handler), it never injects a key, so without this check the
+         * prompt could not be dismissed with Ctrl-C. */
         int key = tui_term_read_key(100);
         if (ccode_cancel_pending()) return 0;
         if (key < 0) continue;
-#else
-        int key = tui_term_read_key(-1);
-#endif
         if (key == 'y' || key == 'Y') return 1;
         if (key == 'n' || key == 'N' || key == 27 || key == 3) return 0;
     }
@@ -515,6 +513,11 @@ static void inproc_restore_signals(void) {
     sigaction(SIGTERM, &action, NULL);
     sigaction(SIGHUP, &action, NULL);
     sigaction(SIGQUIT, &action, NULL);
+    /* Resize tracking: without this the combined TUI never refreshes its
+     * layout after the terminal is resized (the fork-based TUI installs
+     * the same handler in ccode_tui_run). */
+    action.sa_handler = tui_handle_signal;
+    sigaction(SIGWINCH, &action, NULL);
     action.sa_handler = SIG_IGN;
     sigaction(SIGPIPE, &action, NULL);
 #endif
@@ -789,7 +792,9 @@ static int inproc_handle_command(struct tui_inproc_ctx *ctx, const char *cmd) {
         ccode_agent_summary_cache_reset();
         *ctx->scroll_offset = 0;
         *ctx->follow_bottom = 1;
-        if (ctx->base_save) unlink(ctx->base_save);
+        /* Start a fresh chain on the next turn but keep the file the user
+         * pointed at with --save-session: deleting it would destroy the
+         * conversation transcript the CLI REPL preserves on /clear. */
         ctx->session_path[0] = '\0';
         inproc_msg(ctx, "Conversation cleared.");
         return 0;
