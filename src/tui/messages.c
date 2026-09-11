@@ -14,8 +14,12 @@ void tui_messages_init(struct tui_messages *messages) {
 
 void tui_messages_clear(struct tui_messages *messages) {
     size_t i;
+    if (!messages) return;
     for (i = 0; i < messages->count; i++) free(messages->items[i].text);
+    free(messages->items);
+    messages->items = NULL;
     messages->count = 0;
+    messages->cap = 0;
 }
 
 static char *tui_message_copy(const char *text) {
@@ -29,7 +33,16 @@ static char *tui_message_copy(const char *text) {
 int tui_messages_add(struct tui_messages *messages, enum tui_message_type type,
                      const char *text) {
     char *copy;
-    if (messages->count >= sizeof(messages->items) / sizeof(messages->items[0])) return -1;
+    if (!messages) return -1;
+    if (messages->count == messages->cap) {
+        size_t new_cap = messages->cap ? messages->cap * 2 : 32;
+        struct tui_message *grown =
+            (struct tui_message *)realloc(messages->items,
+                                          new_cap * sizeof(*grown));
+        if (!grown) return -1;
+        messages->items = grown;
+        messages->cap = new_cap;
+    }
     copy = tui_message_copy(text);
     if (!copy) return -1;
     messages->items[messages->count].type = type;

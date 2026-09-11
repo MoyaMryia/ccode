@@ -16,8 +16,9 @@ struct tui_message {
 };
 
 struct tui_messages {
-    struct tui_message items[128];
+    struct tui_message *items; /* growable; NULL until first add */
     size_t count;
+    size_t cap;
 };
 
 void tui_messages_init(struct tui_messages *messages);

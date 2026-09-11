@@ -70,12 +70,11 @@ static void tui_process_backend(struct tui_protocol *protocol,
         }
         if (tui_protocol_field(line, "type", type, sizeof(type)) != 0) continue;
         if (strcmp(type, "message_start") == 0) {
-            if (tui_messages_add(messages, TUI_MSG_ASSISTANT, "") != 0) {
-                *changed = 1;
+            /* A failed add (OOM) leaves streaming unset so the following
+             * deltas start their own message instead of appending to the
+             * previous assistant message. */
+            if (tui_messages_add(messages, TUI_MSG_ASSISTANT, "") == 0)
                 *streaming = 1;
-                continue;
-            }
-            *streaming = 1;
             *changed = 1;
         } else if (strcmp(type, "message_delta") == 0) {
             if (tui_protocol_field(line, "text", text, sizeof(text)) == 0) {
