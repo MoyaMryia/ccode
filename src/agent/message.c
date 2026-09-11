@@ -1616,6 +1616,62 @@ char *ccode_session_list(void) {
     return result;
 }
 
+char *ccode_session_list_text(void) {
+    char *sessions = ccode_session_list();
+    ccode_jsmntok_t tokens[512];
+    ccode_jsmntok_t *arr;
+    char *out;
+    size_t pos = 0;
+    size_t cap = 256;
+    int num_tokens;
+    int i;
+
+    if (!sessions) return NULL;
+    out = malloc(cap);
+    if (!out) { free(sessions); return NULL; }
+    out[0] = '\0';
+
+    num_tokens = ccode_json_parse(sessions, strlen(sessions), tokens, 512);
+    arr = (num_tokens > 0 && tokens[0].type == CCODE_JSMN_OBJECT)
+              ? ccode_json_find_key(tokens, num_tokens, 0, sessions,
+                                    "sessions")
+              : NULL;
+    if (arr && arr->type == CCODE_JSMN_ARRAY) {
+        for (i = 0; i < arr->size; i++) {
+            ccode_jsmntok_t *entry = ccode_json_find_index(
+                tokens, num_tokens, (int)(arr - tokens), i);
+            ccode_jsmntok_t *tok;
+            char name_buf[CCODE_SESSION_NAME_MAX];
+            char line[512];
+            long size = 0;
+            long msgs = 0;
+            if (!entry || entry->type != CCODE_JSMN_OBJECT) continue;
+            tok = ccode_json_find_key(tokens, num_tokens,
+                                      (int)(entry - tokens), sessions, "name");
+            if (!tok || tok->type != CCODE_JSMN_STRING ||
+                ccode_json_token_to_string(sessions, tok, name_buf,
+                                           sizeof(name_buf)) != 0)
+                continue;
+            tok = ccode_json_find_key(tokens, num_tokens,
+                                      (int)(entry - tokens), sessions, "size");
+            if (tok && tok->type == CCODE_JSMN_PRIMITIVE)
+                ccode_json_token_to_int(sessions, tok, &size);
+            tok = ccode_json_find_key(tokens, num_tokens,
+                                      (int)(entry - tokens), sessions,
+                                      "messages");
+            if (tok && tok->type == CCODE_JSMN_PRIMITIVE)
+                ccode_json_token_to_int(sessions, tok, &msgs);
+            snprintf(line, sizeof(line), "    %d. %s (%ld bytes, %ld msgs)\n",
+                     i + 1, name_buf, size, msgs);
+            if (ccode_append_cstr(&out, &pos, &cap, line) != 0) {
+                free(out); free(sessions); return NULL;
+            }
+        }
+    }
+    free(sessions);
+    return out;
+}
+
 int ccode_session_delete(const char *name) {
     const char *dir = ccode_session_dir();
     char path[4096];

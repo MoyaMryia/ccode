@@ -109,6 +109,12 @@ int ccode_session_ensure_dir(void);
  * "model":"..."} */
 char *ccode_session_list(void);
 
+/* Format ccode_session_list() into a human-readable, one-line-per-session
+ * string ("    N. NAME (SIZE bytes, MSGS msgs)\n"). Returns a newly allocated
+ * string (caller frees) that is empty when no sessions exist, or NULL when
+ * the directory cannot be listed. */
+char *ccode_session_list_text(void);
+
 /* Delete a session file by name from the session directory. Returns 0 on
  * success, -1 on failure. */
 int ccode_session_delete(const char *name);

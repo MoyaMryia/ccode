@@ -288,6 +288,31 @@ static int run_agent_prompt(const struct backend_options *options,
     return result;
 }
 
+/* Render the saved-session list as human-readable text. The JSON Lines
+ * backend feeds this straight into a `message` event, so it must never leak
+ * the raw {"sessions":[...]} payload to the frontend. */
+static void backend_print_sessions(void) {
+    char *text = ccode_session_list_text();
+    if (!text) {
+        json_print("error", "Could not list sessions.");
+        return;
+    }
+    if (text[0] == '\0') {
+        json_print("message", "No saved sessions.");
+    } else {
+        size_t len = strlen(text) + 16;
+        char *msg = malloc(len);
+        if (!msg) {
+            json_print("error", "Could not list sessions.");
+        } else {
+            snprintf(msg, len, "Sessions:\n%s", text);
+            json_print("message", msg);
+            free(msg);
+        }
+    }
+    free(text);
+}
+
 static void backend_command(struct json_session_state *state, const char *command) {
     if (strcmp(command, "/help") == 0) {
         json_print("message", "Slash commands:\n  /help\n  /exit\n  /clear\n  /compact\n  /model [NAME]\n  /model default NAME\n  /models\n  /models search KEYWORD\n  /models info NAME\n  /thinking\n  /thinking on|off\n  /thinking effort low|medium|high|xhigh|max\n  /history\n  /sessions (aliases: /session list, /resume --list)\n  /sessions delete NAME\n  /sessions rename OLD NEW\n  /sessions export NAME FORMAT\n  /resume [NAME]\n  /session new [NAME]\n  /session switch NAME");
@@ -372,9 +397,7 @@ static void backend_command(struct json_session_state *state, const char *comman
             free(models);
         }
     } else if (strcmp(command, "/sessions") == 0) {
-        char *sessions = ccode_session_list();
-        if (!sessions) json_print("error", "Could not list sessions.");
-        else { json_print("message", sessions); free(sessions); }
+        backend_print_sessions();
     } else if (strncmp(command, "/sessions delete ", 17) == 0) {
         json_print("message", ccode_session_delete(command + 17) == 0
                    ? "Session deleted." : "Could not delete session.");
@@ -400,9 +423,7 @@ static void backend_command(struct json_session_state *state, const char *comman
         const char *session_name = command[7] == ' ' ? command + 8 : "";
         const char *dir = ccode_session_dir();
         if (strcmp(session_name, "--list") == 0) {
-            char *sessions = ccode_session_list();
-            if (!sessions) json_print("error", "Could not list sessions.");
-            else { json_print("message", sessions); free(sessions); }
+            backend_print_sessions();
         } else if (!dir) json_print("error", "Session directory not available.");
         else {
             if (!session_name[0]) {
@@ -427,9 +448,7 @@ static void backend_command(struct json_session_state *state, const char *comman
         const char *arg = command[8] == ' ' ? command + 9 : "";
         const char *dir = ccode_session_dir();
         if (strcmp(arg, "list") == 0) {
-            char *sessions = ccode_session_list();
-            if (!sessions) json_print("error", "Could not list sessions.");
-            else { json_print("message", sessions); free(sessions); }
+            backend_print_sessions();
         } else if (strncmp(arg, "new", 3) == 0 &&
                    (arg[3] == '\0' || arg[3] == ' ')) {
             const char *name = arg[3] == ' ' ? arg + 4 : "";

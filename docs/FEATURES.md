@@ -10,7 +10,7 @@
 
 - 交互式 REPL 和单条提问两种模式（`ccode-cli`）
 - CLI 模式：`ccode-cli`（JSON Lines 协议，供其他前端复用）；TUI 临时暂停构建：单体 `ccode`（进程内 TUI + CLI）与分离的 `ccode-tui` 暂不构建/发布
-- CLI REPL slash 命令：`/help /clear /exit /history /model /models[/search|info] /sessions[/delete|rename|export] /resume /session[new|switch] /thinking /reasoning`；`/session list`（列会话）与 `/resume --list` 是 `/sessions` 的别名，帮助里不再单列；`/compact` 明确不支持。默认经自动会话链（auto-*.json，resume+save 同一文件）保持对话上下文：首次真实提问自动开链，每轮 auto-save，`/exit` 保证落盘可 `/resume`；`/clear`、`/session new` 开新链，`--resume` 从指定会话接链
+- CLI REPL slash 命令：`/help /clear /exit /history /model /models[/search|info] /sessions[/delete|rename|export] /resume /session[new|switch] /thinking /reasoning`；`/session list`（列会话）与 `/resume --list` 是 `/sessions` 的别名，帮助里不再单列；会话列表在各前端统一渲染为文本（JSON Lines 后端的 `message` 不再塞 raw `{"sessions":...}`）；`/compact` 明确不支持。默认经自动会话链（auto-*.json，resume+save 同一文件）保持对话上下文：首次真实提问自动开链，每轮 auto-save，`/exit` 保证落盘可 `/resume`；`/clear`、`/session new` 开新链，`--resume` 从指定会话接链
 - REPL 行输入 UTF-8/双宽感知：退格按整码点删除并按显示宽度回擦，中文不再留残影（非 tty 或 Windows 自动回退 `fgets`）
 - thinking / reasoning_effort 两个字段独立控制（`--thinking` / `--reasoning[-effort]`，REPL 里 `/thinking` `/reasoning`）；默认开启：thinking 发 `{"type":"enabled"}`、reasoning_effort 为 `high`；`CCODE_THINKING=0`（或 `/thinking off`）关 thinking，`CCODE_THINKING_EFFORT=off`（或 `/reasoning off`）关 reasoning
 - 流式输出：每个 SSE 增量到达就立即显示
@@ -82,6 +82,6 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（148 agent + 45 json + 30 http + 15 tui + 21 markdown + 5 tty + 7 e2e + 2 streaming；test-tui-commands 随 `ccode` 暂停）
+3. 现有测试套件全过（148 agent + 45 json + 30 http + 15 tui + 21 markdown + 5 tty + 7 e2e + 3 streaming；test-tui-commands 随 `ccode` 暂停）
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟
 5. 工具调用/指令安全改动要过 `make fuzz-tool-args fuzz-command-paths fuzz-paths`，且 `make mutate`（故意注入错误看测试是否抓住）保持全部 KILLED

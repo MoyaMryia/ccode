@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Regression tests for incremental ccode-cli output."""
+"""Regression tests for ccode-cli output (streaming and JSON protocol)."""
 
 import json
 import os
 import select
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -76,6 +78,37 @@ def test_json_protocol_streams_deltas():
             b'"text":" second"' in output and proc.returncode == 0), output + err
 
 
+def test_json_session_list_is_human_readable():
+    """`/resume --list` (and /sessions) must render as text, not the raw
+    {"sessions":[...]} payload, which the fork-based TUI would show verbatim."""
+    session_dir = tempfile.mkdtemp(prefix="ccode_json_sessions_")
+    session_file = os.path.join(session_dir, "demo.json")
+    with open(session_file, "w") as f:
+        f.write('{"version":3,"messages":[{"role":"user","content":"hi"}]}')
+    os.chmod(session_file, 0o600)
+    env = environment()
+    env["CCODE_SESSION_DIR"] = session_dir
+    proc = subprocess.Popen(
+        [CCODE, "--json"], env=env, stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    command = json.dumps({"type": "command", "text": "/resume --list"},
+                         separators=(",", ":")) + "\n"
+    out, err = proc.communicate(input=command.encode("utf-8"),
+                                timeout=TIMEOUT)
+    shutil.rmtree(session_dir, ignore_errors=True)
+    text = ""
+    for line in out.decode("utf-8", "replace").splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("type") == "message":
+            text = event.get("text", "")
+    return (text.startswith("Sessions:") and "demo.json" in text and
+            "1 msgs)" in text and '{"sessions"' not in text and
+            proc.returncode == 0), out + err
+
+
 def main():
     mock = subprocess.Popen([sys.executable, MOCK_PROVIDER, str(PORT)],
                             stdout=subprocess.DEVNULL,
@@ -84,13 +117,14 @@ def main():
     failed = 0
     try:
         for name, test in (("plain CLI", test_plain_streams_before_completion),
-                           ("JSON protocol", test_json_protocol_streams_deltas)):
+                           ("JSON protocol", test_json_protocol_streams_deltas),
+                           ("JSON session list",
+                            test_json_session_list_is_human_readable)):
             ok, output = test()
             if ok:
-                print("  PASS: %s streams incrementally" % name)
+                print("  PASS: %s" % name)
             else:
-                print("  FAIL: %s did not stream incrementally: %r" %
-                      (name, output[:400]))
+                print("  FAIL: %s: %r" % (name, output[:400]))
                 failed += 1
     finally:
         mock.terminate()
