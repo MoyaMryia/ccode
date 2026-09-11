@@ -25,7 +25,7 @@
 - `web_fetch`（带域名黑名单、请求限流、大小上限；跟随 3xx 跳转，支持绝对/协议相对/根相对/相对 `Location`；解析 1.1 chunked 响应并在末尾去分块；响应头逐行按 CRLF 截断，`content_type`/`url` 进 JSON 前转义）
 - `web_search`（Bing 端点可配）
 - `agent_tool`（子代理，独立循环、默认只读、深度上限 3）；只读子代理并行 fork 运行，其自身的只读工具（read_file/glob/grep/git_*，均限工作区内）自动放行——子进程在自己的进程组里读控制终端会触发 SIGTTIN 停住并让父进程 poll 死等，且多个子进程争抢同一 stdin，所以不再逐次弹审批
-- 工具调用参数解析：容忍模型把参数包进一层或多层 `{"arguments": ...}`（对象与 JSON 字符串形式混合），最多 8 层；超限报 `nested too deep`，信封值非对象/字符串、或信封带尾随数据时明确拒绝；多键信封不再被误判
+- 工具调用参数解析：容忍模型把参数包进一层或多层 `{"arguments": ...}`（对象与 JSON 字符串形式混合），最多 8 层；超限报 `nested too deep`，信封值非对象/字符串、或信封带尾随数据时明确拒绝；多键信封不再被误判。校验失败时错误附带该工具的参数 schema（`expected parameters: ...`），让模型知道该传什么，而不是只回一句 `Invalid ... arguments`
 - 工具调用参数转义：流式收到的原始转义参数在存入对话前只解码一次，回灌请求时只转义一次，历史里的 assistant tool_call 不再双重转义（旧行为会把 `{"command":"ls"}` 回灌成 `{\"command\":\"ls\"}`，把模型带偏、越纠越乱）
 - 调试输出：`--debug`（= `--default` + 原始 JSON 调试）开启后，每次收到服务商返回的工具调用按原样（OpenAI 响应 JSON）打印 `[tool-call] {...}` 到 stderr；默认关闭
 
@@ -41,7 +41,7 @@
 
 ### 安全
 
-- 命令级过滤：敏感路径（密钥、云凭据、`/proc/self/environ` 等）按文件名边界匹配（`known_hosts_sample.txt` 不再误伤），破坏性命令（`mkfs`、`dd`、`chown` 等）拒绝；软路径（`/home/`、`/root/`、`/.config/`）仅在工作区或属主自己的 home 内放行，且逐命中路径判定，防止"提一句工作区"绕过；工具结果带具体原因回给模型
+- 命令级过滤：敏感路径（密钥、云凭据、`/proc/self/environ` 等）按文件名边界匹配（`known_hosts_sample.txt` 不再误伤），破坏性命令（`mkfs`、`dd`、`chown` 等）拒绝；软路径（`/home/`、`/root/`、`/.config/`）仅在工作区或属主自己的 home 内放行，且逐命中路径判定，防止"提一句工作区"绕过；工具结果带具体原因回给模型（`{"error":..,"reason":..}`，写明命中的规则与越界值，路径类拒绝同此）
 - 文件路径校验与 fd 相对遍历拒绝 Windows 分隔符（`\`、`X:`、UNC），避免 POSIX-only 组件遍历在 Win32 被绕过；`~`/`~\`/`$HOME/`/`${HOME}/` 一律识别为 home 路径
 - 工具审批：`y` 批准、`n` 拒绝；其它输入视为拒绝并把原文作为原因回给模型
 - 子进程最小环境（不继承任何父环境变量）
@@ -83,6 +83,6 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（151 agent + 45 json + 32 http + 15 tui + 21 markdown + 5 tty + 8 e2e + 3 streaming；test-tui-commands 随 `ccode` 暂停）
+3. 现有测试套件全过（153 agent + 45 json + 32 http + 15 tui + 21 markdown + 5 tty + 8 e2e + 3 streaming；test-tui-commands 随 `ccode` 暂停）
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟
 5. 工具调用/指令安全改动要过 `make fuzz-tool-args fuzz-command-paths fuzz-paths`，且 `make mutate`（故意注入错误看测试是否抓住）保持全部 KILLED

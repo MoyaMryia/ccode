@@ -991,6 +991,62 @@ static int test_grep_respects_gitignore(void) {
     return 1;
 }
 
+static int test_tool_error_explains_expected_args(void) {
+    struct prepared_tool prepared;
+    const char *err;
+
+    /* Generic "Invalid arguments" failures must carry the tool's expected
+     * parameters so the model can correct itself. write_file's schema names
+     * file_path/content; the bare message does not. */
+    err = prepare_tool("write_file", "{\"path\":\"x\",\"content\":\"y\"}",
+                       &prepared);
+    ASSERT(err != NULL);
+    ASSERT(strstr(err, "Invalid write_file arguments") != NULL);
+    ASSERT(strstr(err, "file_path") != NULL);
+    ASSERT(strstr(err, "content") != NULL);
+    ASSERT(strchr(err, '\n') == NULL);
+
+    /* Parse/envelope failures get the same hint. */
+    err = prepare_tool("web_search", "{\"arguments\":42}", &prepared);
+    ASSERT(err != NULL);
+    ASSERT(strstr(err, "Invalid tool arguments envelope") != NULL);
+    ASSERT(strstr(err, "query") != NULL);
+
+    /* Already-specific errors stay intact and are still augmented. */
+    err = prepare_tool("edit_file",
+                       "{\"file_path\":\"a\",\"old_string\":\"\",\"new_string\":\"b\"}",
+                       &prepared);
+    ASSERT(err != NULL);
+    ASSERT(strstr(err, "must not be empty") != NULL);
+    ASSERT(strstr(err, "old_string") != NULL);
+
+    return 1;
+}
+
+static int test_tool_security_refusal_has_reason(void) {
+    struct prepared_tool prepared;
+    const char *err;
+
+    /* Home-relative path: the refusal must name the value and the rule. */
+    err = prepare_tool("read_file", "{\"file_path\":\"~/secret\"}",
+                       &prepared);
+    ASSERT(err != NULL);
+    ASSERT(strstr(err, "Home-relative paths are not allowed") != NULL);
+    ASSERT(strstr(err, "\"reason\"") != NULL);
+    ASSERT(strstr(err, "~/secret") != NULL);
+    ASSERT(strstr(err, "expected parameters") == NULL);
+
+    /* Workspace escape (..) is reported with the offending path. */
+    err = prepare_tool("delete_file", "{\"file_path\":\"../outside\"}",
+                       &prepared);
+    ASSERT(err != NULL);
+    ASSERT(strstr(err, "Invalid delete_file path") != NULL);
+    ASSERT(strstr(err, "\"reason\"") != NULL);
+    ASSERT(strstr(err, "../outside") != NULL);
+
+    return 1;
+}
+
 static int test_tool_arguments_are_strict(void) {
     char *r;
     char *long_json;
@@ -4301,6 +4357,8 @@ int main(int argc, char **argv) {
     TEST(grep_skips_binary);
     TEST(edit_file_rejects_binary);
     TEST(tool_arguments_are_strict);
+    TEST(tool_error_explains_expected_args);
+    TEST(tool_security_refusal_has_reason);
     TEST(tool_argument_shapes);
     TEST(tool_arguments_decode_json_strings);
     TEST(tool_arguments_reject_invalid_unicode_and_nul);

@@ -146,6 +146,27 @@ static int unwrap_tool_arguments(const char *arguments, char **out) {
     return TOOL_ARG_UNWRAP_OK;
 }
 
+/* Security refusals should tell the model which rule was hit and what value
+ * broke it, so it can pick an allowed alternative instead of retrying the
+ * same thing. Returns a pointer to a static buffer valid until the next call. */
+#define REFUSE_RULE_WS \
+    "path must be relative and stay inside the workspace (no absolute, '..', or '~')"
+#define REFUSE_RULE_HOME \
+    "use a path relative to the workspace instead of '~'"
+static const char *refuse_path(const char *error, const char *value,
+                               const char *rule) {
+    static char buf[1024];
+    char *esc_value = ccode_json_escape(value ? value : "");
+    int n;
+    if (!esc_value) return error;
+    n = snprintf(buf, sizeof(buf),
+                 "{\"error\":\"%s\",\"reason\":\"rejected '%s': %s\"}",
+                 error, esc_value, rule);
+    free(esc_value);
+    if (n <= 0 || (size_t)n >= sizeof(buf)) return error;
+    return buf;
+}
+
 static const char *prepare_tool_inner(const char *name, const char *arguments,
                                       struct prepared_tool *prepared) {
     ccode_jsmn_parser parser;
@@ -200,7 +221,8 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         if (!have_path || !have_old || !have_new)
             return "{\"error\":\"Invalid edit_file arguments\"}";
         if (is_home_relative_path(prepared->value))
-            return "{\"error\":\"Home-relative paths are not allowed\"}";
+            return refuse_path("Home-relative paths are not allowed",
+                               prepared->value, REFUSE_RULE_HOME);
         if (strlen(prepared->old_string) == 0)
             return "{\"error\":\"old_string must not be empty\"}";
         prepared->kind = PREPARED_EDIT_FILE;
@@ -243,7 +265,8 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                             return "{\"error\":\"Invalid argv element\"}";
                         if (prepared->argv[j][0] == '~' &&
                             (prepared->argv[j][1] == '/' || prepared->argv[j][1] == '\0'))
-                            return "{\"error\":\"Home-relative paths are not allowed\"}";
+                            return refuse_path("Home-relative paths are not allowed",
+                                               prepared->argv[j], REFUSE_RULE_HOME);
                         if (prepared->argv[j][0] == '\0')
                             return "{\"error\":\"Empty argv element\"}";
                         elem_idx++;
@@ -323,7 +346,8 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                                sizeof(prepared->value)) != 0)
             return "{\"error\":\"Invalid git_status arguments\"}";
         if (!is_workspace_relative_path(prepared->value, 1))
-            return "{\"error\":\"Invalid git_status path\"}";
+            return refuse_path("Invalid git_status path", prepared->value,
+                               REFUSE_RULE_WS);
         snprintf(prepared->display, sizeof(prepared->display),
                  "git_status path=%s", prepared->value);
         return NULL;
@@ -372,7 +396,8 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                       prepared->content[0] ? " --cached" : "");
             if (prepared->value[0] != '\0' &&
                 !is_workspace_relative_path(prepared->value, 1))
-                return "{\"error\":\"Invalid git_diff path\"}";
+                return refuse_path("Invalid git_diff path", prepared->value,
+                                   REFUSE_RULE_WS);
         }
         return NULL;
     }
@@ -421,7 +446,8 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                      prepared->content[0] ? " --cached" : "");
             if (prepared->value[0] != '\0' &&
                 !is_workspace_relative_path(prepared->value, 1))
-                return "{\"error\":\"Invalid git_stat path\"}";
+                return refuse_path("Invalid git_stat path", prepared->value,
+                                   REFUSE_RULE_WS);
         }
         return NULL;
     }
@@ -435,7 +461,8 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
             return "{\"error\":\"Invalid read_file arguments: expected "
                    "{\\\"file_path\\\": \\\"<path>\\\"}\"}";
         if (is_home_relative_path(prepared->value))
-            return "{\"error\":\"Home-relative paths are not allowed\"}";
+            return refuse_path("Home-relative paths are not allowed",
+                               prepared->value, REFUSE_RULE_HOME);
         prepared->kind = PREPARED_READ_FILE;
         snprintf(prepared->display, sizeof(prepared->display),
                  "file_path=%s", prepared->value);
@@ -470,7 +497,8 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         if (!have_path || !have_content)
             return "{\"error\":\"Invalid write_file arguments\"}";
         if (is_home_relative_path(prepared->value))
-            return "{\"error\":\"Home-relative paths are not allowed\"}";
+            return refuse_path("Home-relative paths are not allowed",
+                               prepared->value, REFUSE_RULE_HOME);
         prepared->kind = PREPARED_WRITE_FILE;
         snprintf(prepared->display, sizeof(prepared->display),
                  "file_path=%s bytes=%lu", prepared->value,
@@ -515,10 +543,12 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         if (prepared->value[0] == '\0')
             return "{\"error\":\"Invalid glob arguments\"}";
         if (is_home_relative_path(prepared->value))
-            return "{\"error\":\"Home-relative paths are not allowed\"}";
+            return refuse_path("Home-relative paths are not allowed",
+                               prepared->value, REFUSE_RULE_HOME);
         if (have_path) {
             if (!is_workspace_relative_path(prepared->tool_path, 0))
-                return "{\"error\":\"Invalid glob path\"}";
+                return refuse_path("Invalid glob path", prepared->tool_path,
+                                   REFUSE_RULE_WS);
             snprintf(prepared->display, sizeof(prepared->display),
                      "pattern=%s path=%s%s", prepared->value,
                      prepared->tool_path,
@@ -593,7 +623,8 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         if (!have_pattern)
             return "{\"error\":\"Invalid grep arguments\"}";
         if (have_path && !is_workspace_relative_path(prepared->tool_path, 0))
-            return "{\"error\":\"Invalid grep path\"}";
+            return refuse_path("Invalid grep path", prepared->tool_path,
+                               REFUSE_RULE_WS);
         prepared->kind = PREPARED_GREP;
         {
             size_t dpos = 0;
@@ -691,7 +722,8 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                               sizeof(prepared->value)) != 0)
             return "{\"error\":\"Invalid bash arguments\"}";
         if (contains_home_path(prepared->value))
-            return "{\"error\":\"Home-relative paths are not allowed\"}";
+            return refuse_path("Home-relative paths are not allowed",
+                               prepared->value, REFUSE_RULE_HOME);
         prepared->kind = PREPARED_BASH;
         snprintf(prepared->display, sizeof(prepared->display),
                  "bash command=%s", prepared->value);
@@ -706,7 +738,8 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                               sizeof(prepared->value)) != 0)
             return "{\"error\":\"Invalid delete_file arguments\"}";
         if (!is_workspace_relative_path(prepared->value, 0))
-            return "{\"error\":\"Invalid delete_file path\"}";
+            return refuse_path("Invalid delete_file path", prepared->value,
+                               REFUSE_RULE_WS);
         prepared->kind = PREPARED_DELETE_FILE;
         snprintf(prepared->display, sizeof(prepared->display),
                  "file_path=%s", prepared->value);
@@ -738,9 +771,11 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         if (!have_source || !have_dest)
             return "{\"error\":\"Invalid move_file arguments\"}";
         if (!is_workspace_relative_path(prepared->value, 0))
-            return "{\"error\":\"Invalid move_file source path\"}";
+            return refuse_path("Invalid move_file source path",
+                               prepared->value, REFUSE_RULE_WS);
         if (!is_workspace_relative_path(prepared->destination, 0))
-            return "{\"error\":\"Invalid move_file destination path\"}";
+            return refuse_path("Invalid move_file destination path",
+                               prepared->destination, REFUSE_RULE_WS);
         prepared->kind = PREPARED_MOVE_FILE;
         snprintf(prepared->display, sizeof(prepared->display),
                  "source=%s destination=%s", prepared->value,
@@ -879,6 +914,48 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
     return "{\"error\":\"Unknown tool\"}";
 }
 
+/* Rewrite a tool-argument error so the model is told what the tool expects,
+ * not only that the arguments were invalid. Returns a pointer to a static
+ * buffer valid until the next call, or the original error when there is no
+ * schema to add. */
+static const char *explain_tool_error(const char *name, const char *error) {
+    static char buf[2048];
+    const char *schema = NULL;
+    const char *body;
+    const char *close;
+    char *esc_schema;
+    size_t i;
+    int n;
+
+    if (!error || !name) return error;
+    if (strncmp(error, "{\"error\":\"", 10) != 0) return error;
+    /* A message that already states the expected shape (read_file) does not
+     * need the full schema repeated. */
+    if (strstr(error, "expected") != NULL) return error;
+    /* Security refusals already carry a "reason"; do not bolt the schema on. */
+    if (strstr(error, "\"reason\"") != NULL) return error;
+    body = error + 10;
+    close = strrchr(error, '"');
+    if (!close || close <= body) return error;
+
+    for (i = 0; i < ccode_tool_definitions_count; i++) {
+        if (strcmp(ccode_tool_definitions[i].name, name) == 0) {
+            schema = ccode_tool_definitions[i].param_schema;
+            break;
+        }
+    }
+    if (!schema) return error;
+
+    esc_schema = ccode_json_escape(schema);
+    if (!esc_schema) return error;
+    n = snprintf(buf, sizeof(buf),
+                 "{\"error\":\"%.*s; expected parameters: %s\"}",
+                 (int)(close - body), body, esc_schema);
+    free(esc_schema);
+    if (n <= 0 || (size_t)n >= sizeof(buf)) return error;
+    return buf;
+}
+
 /* Entry point: unwrap any {"arguments": ...} envelopes before the strict
  * per-tool validation in prepare_tool_inner. */
 const char *prepare_tool(const char *name, const char *arguments,
@@ -888,14 +965,16 @@ const char *prepare_tool(const char *name, const char *arguments,
     int status = unwrap_tool_arguments(arguments, &unwrapped);
 
     if (status == TOOL_ARG_UNWRAP_TOO_DEEP)
-        return "{\"error\":\"Tool arguments nested too deep\"}";
+        return explain_tool_error(name,
+            "{\"error\":\"Tool arguments nested too deep\"}");
     if (status == TOOL_ARG_UNWRAP_BAD)
-        return "{\"error\":\"Invalid tool arguments envelope\"}";
+        return explain_tool_error(name,
+            "{\"error\":\"Invalid tool arguments envelope\"}");
     if (status == TOOL_ARG_UNWRAP_OK)
         arguments = unwrapped;
     result = prepare_tool_inner(name, arguments, prepared);
     free(unwrapped);
-    return result;
+    return explain_tool_error(name, result);
 }
 
 /* Generate a bounded line-oriented diff for edit_file preview. Scans the file
