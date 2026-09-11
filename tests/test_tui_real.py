@@ -202,18 +202,28 @@ def test_fork_tui(workspace, session_dir, failures):
             if marker not in strip_ansi(tui.buf):
                 failures.append("fork: boot screen missing %r" % marker)
 
-        # Streaming turn: three deltas appended into one message.
-        tui.submit("__ccode_test_tui-stream-delta")
-        if not tui.read_until("You said: hello world"):
-            failures.append("fork: streamed deltas not assembled")
-
-        # CJK turn: full-width text renders without mojibake.
+        # CJK turn FIRST (no prefixed prompt precedes it, so the mock echoes
+        # it): full-width text renders without mojibake.
         tui.submit("你好世界")
         if not tui.read_until("You said: 你好世界"):
             failures.append("fork: CJK echo missing")
         if "\ufffd" in tui.buf:
             failures.append("fork: CJK produced replacement chars (split "
                             "multi-byte sequence?)")
+
+        # Streaming turn: three deltas appended into one message.
+        tui.submit("__ccode_test_tui-stream-delta")
+        if not tui.read_until("You said: hello world"):
+            failures.append("fork: streamed deltas not assembled")
+
+        # Context inheritance: the second prompt must see the first turn.
+        tui.submit("__ccode_test_tui-context my name is Alice")
+        if not tui.read_until("Nice to meet you"):
+            failures.append("fork: context turn 1 failed")
+        tui.submit("what is my name?")
+        if not tui.read_until("Your name is Alice"):
+            failures.append("fork: second prompt lost the first turn's "
+                            "context")
 
         # Reasoning: /thinking on, then a fixture that streams a
         # chain-of-thought before the answer.
@@ -267,11 +277,13 @@ def test_fork_tui(workspace, session_dir, failures):
             failures.append("fork: denied tools had side effects")
 
         # Provider error: surfaced, TUI stays alive for the next turn.
-        tui.submit("__ccode_test_non-200")
+        # The tui-error-then-ok fixture 400s the prefixed turn and echoes
+        # every later plain turn, so recovery is provable inside one chain.
+        tui.submit("__ccode_test_tui-error-then-ok")
         if not tui.read_until("Bad request"):
             failures.append("fork: provider error not surfaced")
-        tui.submit("after-error")
-        if not tui.read_until("You said: after-error"):
+        tui.submit("recover now")
+        if not tui.read_until("You said: recover now"):
             failures.append("fork: TUI unusable after provider error")
 
         # Resize: SIGWINCH must keep the TUI working on the new geometry.
@@ -280,11 +292,27 @@ def test_fork_tui(workspace, session_dir, failures):
         if not tui.read_until("You said: after-resize"):
             failures.append("fork: turn after resize failed")
 
-        # /clear: the backend answers the JSON "clear" event with a
-        # "cleared" event (lowercase text).
+        # /compact really compacts the session chain, and context survives
+        # it; /clear then resets the chain (the model no longer knows the
+        # name, and the mock falls back to the plain echo because no
+        # prefixed prompt remains in the fresh chain).
+        mark = len(tui.buf)
+        tui.submit("__ccode_test_tui-context my name is Alice")
+        if not tui.read_until("Your name is Alice", mark=mark):
+            failures.append("fork: context turn after resize failed")
+        tui.submit("/compact")
+        if not tui.read_until("Conversation compacted.", mark=mark):
+            failures.append("fork: /compact did not confirm")
+        tui.submit("what is my name?")
+        if not tui.read_until("Your name is Alice"):
+            failures.append("fork: context lost after /compact")
+        mark = len(tui.buf)
         tui.submit("/clear")
-        if not tui.read_until("conversation cleared"):
+        if not tui.read_until("conversation cleared", mark=mark):
             failures.append("fork: /clear not confirmed")
+        tui.submit("what is my name?")
+        if not tui.read_until("You said: what is my name?"):
+            failures.append("fork: /clear did not reset the context")
     finally:
         if not tui.quit():
             failures.append("fork: TUI did not exit on /exit")
@@ -308,6 +336,23 @@ def test_inproc_tui(workspace, session_dir, failures):
         if "\ufffd" in tui.buf:
             failures.append("inproc: CJK produced replacement chars")
 
+        # Context inheritance across turns via the session chain, plus a
+        # real /compact that must keep the conversation tail.
+        tui.submit("__ccode_test_tui-context my name is Alice")
+        if not tui.read_until("Nice to meet you"):
+            failures.append("inproc: context turn 1 failed")
+        tui.submit("what is my name?")
+        if not tui.read_until("Your name is Alice"):
+            failures.append("inproc: second prompt lost the first turn's "
+                            "context")
+        mark = len(tui.buf)
+        tui.submit("/compact")
+        if not tui.read_until("Conversation compacted.", mark=mark):
+            failures.append("inproc: /compact did not confirm")
+        tui.submit("what is my name?")
+        if not tui.read_until("Your name is Alice"):
+            failures.append("inproc: context lost after /compact")
+
         # Permission prompt dismissed with Ctrl-C: the in-process agent's
         # SIGINT handler raises the cancel flag; the prompt must deny,
         # abort the turn and return to a working input row. Recovery is
@@ -324,7 +369,7 @@ def test_inproc_tui(workspace, session_dir, failures):
         tui.settle()
         mark = len(tui.buf)
         tui.submit("/history")
-        if not tui.read_until("[2] __ccode_test_write-calls", mark=mark):
+        if not tui.read_until("__ccode_test_write-calls", mark=mark):
             failures.append("inproc: TUI stuck after Ctrl-C on prompt")
         if os.path.exists(os.path.join(workspace, "integration-write.txt")):
             failures.append("inproc: Ctrl-C approved the write (should deny)")

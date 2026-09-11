@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <limits.h>
@@ -2298,4 +2299,41 @@ int ccode_session_most_recent(char *name, size_t name_size) {
     }
     closedir(d);
     return found ? 0 : -1;
+}
+
+/* Compact a session file in place: load the conversation, drop the
+ * compactable middle (head and running tail are preserved) and save it
+ * back with the original task/change log. Returns 0 on success. */
+int ccode_session_compact_file(const char *path, const char *model,
+                               const char *workspace) {
+    struct ccode_conversation conv;
+    struct ccode_session_metadata meta;
+    char *tasks = NULL;
+    char *changes = NULL;
+    int rc;
+
+    if (!path || ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) != 0)
+        return -1;
+    if (ccode_conversation_load(&conv, path, &tasks, &changes) != 0) {
+        ccode_conversation_destroy(&conv);
+        return -1;
+    }
+    ccode_conversation_compact(&conv, changes, tasks);
+    memset(&meta, 0, sizeof(meta));
+    if (model) {
+        size_t ml = strlen(model);
+        if (ml >= sizeof(meta.model)) ml = sizeof(meta.model) - 1;
+        memcpy(meta.model, model, ml);
+    }
+    if (workspace) {
+        size_t wl = strlen(workspace);
+        if (wl >= sizeof(meta.workspace)) wl = sizeof(meta.workspace) - 1;
+        memcpy(meta.workspace, workspace, wl);
+    }
+    meta.created_at = time(NULL);
+    rc = ccode_conversation_save(&conv, path, tasks, changes, &meta);
+    free(tasks);
+    free(changes);
+    ccode_conversation_destroy(&conv);
+    return rc == 0 ? 0 : -1;
 }

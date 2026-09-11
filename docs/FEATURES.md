@@ -10,7 +10,7 @@
 
 - 交互式 REPL 和单条提问两种模式（`ccode-cli`）
 - CLI 模式：`ccode-cli`（JSON Lines 协议，供其他前端复用）；TUI 临时暂停构建：单体 `ccode`（进程内 TUI + CLI）与分离的 `ccode-tui` 暂不构建/发布
-- CLI REPL slash 命令：`/help /clear /exit /history /model /models[/search|info] /sessions[/delete|rename|export] /resume /session[new|switch] /thinking /reasoning`；`/session list`（列会话）与 `/resume --list` 是 `/sessions` 的别名，帮助里不再单列；会话列表在各前端统一渲染为文本（JSON Lines 后端的 `message` 不再塞 raw `{"sessions":...}`）；`/compact` 明确不支持。默认经自动会话链（auto-*.json，resume+save 同一文件）保持对话上下文：首次真实提问自动开链，每轮 auto-save，`/exit` 保证落盘可 `/resume`；`/clear`、`/session new` 开新链，`--resume` 从指定会话接链
+- CLI REPL slash 命令：`/help /clear /exit /history /model /models[/search|info] /sessions[/delete|rename|export] /resume /session[new|switch] /thinking /reasoning`；`/session list`（列会话）与 `/resume --list` 是 `/sessions` 的别名，帮助里不再单列；会话列表在各前端统一渲染为文本（JSON Lines 后端的 `message` 不再塞 raw `{"sessions":...}`）；`/compact` 在两个 TUI 前端均可用（进程内：压缩当前会话链文件；JSON 后端：同）。上下文继承：进程内 TUI 首次真实提问自动开链（auto-*.json，resume+save 同一文件），每轮 auto-save，`/exit` 保证落盘可 `/resume`；`/clear`、`/session new` 开新链，`--resume` 从指定会话接链。JSON Lines 后端（fork 版 ccode-tui）同样按 input 事件维持 auto 会话链，连续 prompt 共享上下文，`CCODE_SESSION_AUTO_SAVE=0` 关闭
 - REPL 行输入 UTF-8/双宽感知：退格按整码点删除并按显示宽度回擦，中文不再留残影（非 tty 或 Windows 自动回退 `fgets`）
 - thinking / reasoning_effort 两个字段独立控制（`--thinking` / `--reasoning[-effort]`，REPL 里 `/thinking` `/reasoning`）；默认开启：thinking 发 `{"type":"enabled"}`、reasoning_effort 为 `high`；`CCODE_THINKING=0`（或 `/thinking off`）关 thinking，`CCODE_THINKING_EFFORT=off`（或 `/reasoning off`）关 reasoning。thinking 模型流出的 `reasoning_content` 会随会话持久化，并在后续请求里逐轮原样回传（DeepSeek thinking+tools 的硬性要求，漏传上游直接 400；无 tools 时上游忽略）
 - 流式输出：每个 SSE 增量到达就立即显示；thinking 的思维链按真换行/制表符渲染（不再把 `\n` 转义成字面量），正文与思维链是两个独立字段

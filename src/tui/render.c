@@ -31,8 +31,11 @@ int tui_render_text(const char *text, int max_cols) {
  * first '\n' and never wraps. Returns the columns written. Used for fixed
  * UI strips (status bar, input row) where wrapping would corrupt layout. */
 int tui_render_text_clip(const char *text, int max_cols) {
+    return tui_render_text_clip_n(text, strlen(text ? text : ""), max_cols);
+}
+
+int tui_render_text_clip_n(const char *text, size_t length, int max_cols) {
     const unsigned char *p = (const unsigned char *)(text ? text : "");
-    size_t length = strlen(text ? text : "");
     int written = 0;
     size_t offset = 0;
     if (max_cols <= 0) return 0;

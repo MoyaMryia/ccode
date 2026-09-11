@@ -143,6 +143,26 @@ static void tui_process_backend(struct tui_protocol *protocol,
 
 #endif /* !_WIN32 (fork-path helpers) */
 
+/* Length of text excluding an incomplete trailing UTF-8 sequence. Input
+ * arrives byte-by-byte; drawing a partial character would flash U+FFFD in
+ * the input row until the sequence completes, so it is held back instead. */
+static size_t utf8_complete_len(const char *text, size_t len) {
+    size_t lead;
+    if (len == 0) return 0;
+    lead = len - 1;
+    while (lead > 0 && ((unsigned char)text[lead] & 0xc0U) == 0x80U)
+        lead--;
+    {
+        unsigned char b = (unsigned char)text[lead];
+        size_t expect = b < 0x80U ? 1
+                      : (b & 0xe0U) == 0xc0U ? 2
+                      : (b & 0xf0U) == 0xe0U ? 3
+                      : (b & 0xf8U) == 0xf0U ? 4 : 1;
+        size_t got = len - lead;
+        return got < expect ? lead : len;
+    }
+}
+
 static void tui_draw(struct tui_term *term, struct tui_messages *messages,
                      struct tui_input *input, const char *model, const char *workspace,
                      int permission_pending,
@@ -162,13 +182,18 @@ static void tui_draw(struct tui_term *term, struct tui_messages *messages,
     } else {
         int input_cols = term->cols - 3;
         size_t view_start = tui_input_view_start(input, input_cols);
+        const char *visible = input->text + view_start;
         printf(TUI_ORANGE "%s" TUI_RESET " ", tui_prompt_for_input(input->text));
         if (view_start > 0) {
             fputs(TUI_DIM "<" TUI_RESET, stdout);
             input_cols--;
         }
-        /* Single-line clip: a long input must never wrap into the hint row. */
-        (void)tui_render_text_clip(input->text + view_start, input_cols);
+        /* Single-line clip; a trailing partial UTF-8 sequence is held back
+         * so typing multi-byte characters never flashes U+FFFD. */
+        (void)tui_render_text_clip_n(visible,
+                                     utf8_complete_len(visible,
+                                                       strlen(visible)),
+                                     input_cols);
         tui_render_cursor(1);
     }
     tui_render_move(term->rows - 1, 0); tui_render_clear_line();
@@ -446,6 +471,10 @@ struct tui_inproc_ctx {
      * across turns (same semantics as the CLI JSON backend). */
     char session_path[4096];
     const char *base_save;
+    /* Disambiguates re-minted chain names after /clear: auto-<time>-<pid>
+     * would collide with the previous (still existing) file within the
+     * same second. */
+    int chain_seq;
     char **history;
     int history_count;
 };
@@ -534,8 +563,8 @@ static void inproc_run_agent(struct ccode_agent_config *cfg, const char *prompt,
          * Suppressed by CCODE_SESSION_AUTO_SAVE=0. /clear or /session new
          * starts a fresh chain on the next turn. */
         char name[80];
-        snprintf(name, sizeof(name), "auto-%ld-%d.json",
-                 (long)time(NULL), (int)getpid());
+        snprintf(name, sizeof(name), "auto-%ld-%d-%d.json",
+                 (long)time(NULL), (int)getpid(), ctx->chain_seq++);
         if (inproc_session_path(name, ctx->session_path,
                                 sizeof(ctx->session_path)) != 0)
             ctx->session_path[0] = '\0';
@@ -952,9 +981,17 @@ static int inproc_handle_command(struct tui_inproc_ctx *ctx, const char *cmd) {
         return 0;
     }
     if (strcmp(cmd, "/compact") == 0) {
-        inproc_msg(ctx,
-                   "/compact is not supported in the in-process TUI "
-                   "(use ccode -i).");
+        const char *chain = ctx->session_path[0] ? ctx->session_path
+                                                 : ctx->base_save;
+        ccode_agent_summary_cache_reset();
+        if (!chain || access(chain, F_OK) != 0) {
+            inproc_msg(ctx, "Nothing to compact yet.");
+        } else if (ccode_session_compact_file(chain, ctx->model,
+                                              ctx->workspace) == 0) {
+            inproc_msg(ctx, "Conversation compacted.");
+        } else {
+            inproc_msg(ctx, "Could not compact the conversation.");
+        }
         return 0;
     }
     if (strcmp(cmd, "/thinking") == 0) {

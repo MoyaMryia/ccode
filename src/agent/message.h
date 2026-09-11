@@ -140,6 +140,11 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
 int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
                             char **tasks_json_out, char **changes_json_out);
 
+/* Compact a session file in place: load, drop the compactable middle and
+ * save back with the original task/change log. Returns 0 on success. */
+int ccode_session_compact_file(const char *path, const char *model,
+                               const char *workspace);
+
 /* Session directory helpers. Returns a pointer to a static buffer. */
 const char *ccode_session_dir(void);
 

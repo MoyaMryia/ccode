@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "../agent/agent.h"
 #include "../config.h"
@@ -36,6 +37,19 @@ struct json_session_state {
     struct backend_options options;
     char history[64][4096];
     int history_count;
+    /* Auto-named session chain for plain prompts: consecutive "input"
+     * events resume and save the same file, so the model sees the prior
+     * turns (same behavior as the REPL and the in-process TUI). */
+    char auto_chain[4096];
+    /* Explicit --save-session from startup, restored by /clear. */
+    char base_save[4096];
+    /* Set by /clear: the next input saves without resuming the old
+     * conversation, so the file's history does not leak back in. */
+    int skip_resume_once;
+    /* Disambiguates re-minted chain names: /clear can mint a new chain
+     * within the same second as the old one, and auto-<time>-<pid> would
+     * collide with the previous (still existing) file. */
+    int chain_seq;
 };
 
 static int field(const char *line, const char *name, char *out, size_t cap) {
@@ -313,16 +327,39 @@ static void backend_print_sessions(void) {
     free(text);
 }
 
-static void backend_command(struct json_session_state *state, const char *command) {
+/* Reset conversation state: abandon the auto chain and any named chain,
+ * keep an explicit --save-session as the save target but do not resume its
+ * content (the next turn saves the cleared conversation over it, matching
+ * the REPL). Never unlink: the file is the user's transcript. */
+static void backend_clear(struct json_session_state *state) {
+    state->history_count = 0;
+    state->auto_chain[0] = '\0';
+    state->options.save_session =
+        state->base_save[0] ? state->base_save : NULL;
+    state->options.resume_session = NULL;
+    state->skip_resume_once = state->base_save[0] ? 1 : 0;
+}
+
+static void backend_command(struct json_session_state *state,
+                            const char *command, const char *workspace) {
     if (strcmp(command, "/help") == 0) {
         json_print("message", "Slash commands:\n  /help\n  /exit\n  /clear\n  /compact\n  /model [NAME]\n  /model default NAME\n  /models\n  /models search KEYWORD\n  /models info NAME\n  /thinking\n  /thinking on|off\n  /thinking effort low|medium|high|xhigh|max\n  /history\n  /sessions (aliases: /session list, /resume --list)\n  /sessions delete NAME\n  /sessions rename OLD NEW\n  /sessions export NAME FORMAT\n  /resume [NAME]\n  /session new [NAME]\n  /session switch NAME");
     } else if (strcmp(command, "/clear") == 0) {
-        state->history_count = 0;
-        if (state->options.save_session) unlink(state->options.save_session);
-        state->options.resume_session = NULL;
+        backend_clear(state);
         json_print("message", "Conversation cleared.");
     } else if (strcmp(command, "/compact") == 0) {
-        json_print("message", "Conversation compacted.");
+        const char *chain = state->options.save_session
+                                ? state->options.save_session
+                                : state->auto_chain[0] ? state->auto_chain
+                                                       : NULL;
+        if (!chain || access(chain, F_OK) != 0)
+            json_print("message", "Nothing to compact yet.");
+        else if (ccode_session_compact_file(chain,
+                                            state->options.model_name,
+                                            workspace) == 0)
+            json_print("message", "Conversation compacted.");
+        else
+            json_print("error", "Could not compact the conversation.");
     } else if (strcmp(command, "/model") == 0) {
         json_print("message", state->options.model_name);
     } else if (strncmp(command, "/model default ", 15) == 0) {
@@ -499,6 +536,25 @@ static void backend_command(struct json_session_state *state, const char *comman
     }
 }
 
+/* Lazily mint the auto-named session chain path (into a static-ish buffer
+ * owned by the state). Returns NULL when the session directory is not
+ * usable. */
+static const char *backend_mint_auto_chain(struct json_session_state *state) {
+    const char *dir;
+    char name[80];
+    if (state->auto_chain[0]) return state->auto_chain;
+    dir = ccode_session_dir();
+    if (!dir || ccode_session_ensure_dir() != 0) return NULL;
+    snprintf(name, sizeof(name), "auto-%ld-%d-%d.json",
+             (long)time(NULL), (int)getpid(), state->chain_seq++);
+    if (snprintf(state->auto_chain, sizeof(state->auto_chain), "%s/%s",
+                 dir, name) >= (int)sizeof(state->auto_chain)) {
+        state->auto_chain[0] = '\0';
+        return NULL;
+    }
+    return state->auto_chain;
+}
+
 static int run_json_mode(const struct ccode_config *config) {
     struct json_session_state state;
     char workspace[4096];
@@ -522,7 +578,11 @@ static int run_json_mode(const struct ccode_config *config) {
                  config->thinking_effort);
         state.options.thinking_effort = state.options.thinking_effort_buf;
     }
-    state.options.save_session = config->save_session;
+    if (config->save_session) {
+        snprintf(state.base_save, sizeof(state.base_save), "%s",
+                 config->save_session);
+        state.options.save_session = state.base_save;
+    }
     state.options.resume_session = config->resume_session;
     snprintf(state.options.model_name, sizeof(state.options.model_name), "%s",
              config->model ? config->model : "");
@@ -549,14 +609,35 @@ static int run_json_mode(const struct ccode_config *config) {
             json_print("ready", "backend connected");
         } else if (strstr(line, "\"type\":\"input\"") &&
                    field(line, "text", text, sizeof(text)) == 0) {
+            const char *chain, *resume = NULL;
             if (state.history_count < 64)
                 snprintf(state.history[state.history_count++], 4096, "%s", text);
+            /* Context inheritance for plain prompts: without an explicit
+             * session path, chain onto an auto-named session (same as the
+             * REPL and the in-process TUI) so consecutive inputs share
+             * conversation context. */
+            chain = state.options.save_session
+                        ? state.options.save_session
+                        : state.options.resume_session
+                        ? state.options.resume_session
+                        : (config->session_auto_save
+                               ? backend_mint_auto_chain(&state)
+                               : NULL);
+            if (chain) {
+                if (state.skip_resume_once)
+                    state.skip_resume_once = 0;
+                else if (access(chain, F_OK) == 0)
+                    resume = chain;
+            }
+            state.options.save_session = chain;
+            state.options.resume_session = resume;
             json_print("message_start", "");
             run_agent_prompt(&state.options, workspace, text);
         } else if (strstr(line, "\"type\":\"command\"") &&
                    field(line, "text", text, sizeof(text)) == 0) {
-            backend_command(&state, text);
+            backend_command(&state, text, workspace);
         } else if (strstr(line, "\"type\":\"clear\"")) {
+            backend_clear(&state);
             json_print("cleared", "conversation cleared");
         } else if (strstr(line, "\"type\":\"resize\"")) {
             continue;

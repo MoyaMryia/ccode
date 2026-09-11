@@ -97,7 +97,7 @@ def main():
             ("/models", "Could not fetch model list."),
             ("/sessions", "No saved sessions."),
             ("/session new bad", "Invalid session name."),
-            ("/compact", "not supported in the in-process TUI"),
+            ("/compact", "Nothing to compact yet."),
         ]:
             send(cmd, marker)
             if marker not in buf:

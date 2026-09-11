@@ -382,10 +382,16 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                 })}]
 
         elif test_mode == "deny-no-side-effects":
-            has_tool_result = any(msg.get("role") == "tool"
-                                   for msg in req.get("messages", []))
-            tool_count = sum(1 for m in req.get("messages", [])
+            msgs = req.get("messages", [])
+            # Count tool results produced by THIS turn only: a session
+            # chain carries earlier turns' tool results, which must not
+            # advance this fixture's script.
+            last_user = len(msgs) - 1
+            while last_user >= 0 and msgs[last_user].get("role") != "user":
+                last_user -= 1
+            tool_count = sum(1 for m in msgs[last_user + 1:]
                              if m.get("role") == "tool")
+            has_tool_result = tool_count > 0
             if has_tool_result and tool_count >= 2:
                 events = [{"data": json.dumps({
                     "choices": [{"index": 0,
@@ -682,6 +688,45 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
                 })},
             ]
+
+        elif test_mode == "tui-context":
+            # Context-inheritance probe: turn 1 introduces a name, turn 2
+            # asks for it back. The answer is correct only when the request
+            # carries the first turn's user message.
+            user_msgs = [m.get("content", "") for m in req.get("messages", [])
+                         if m.get("role") == "user" and
+                         isinstance(m.get("content"), str)]
+            prior = user_msgs[:-1] if user_msgs else []
+            answer = ("Your name is Alice." if any("Alice" in u for u in prior)
+                      else "Nice to meet you.")
+            events = [{"data": json.dumps({
+                "choices": [{"index": 0, "delta": {"content": answer},
+                             "finish_reason": "stop"}]})}]
+
+        elif test_mode == "tui-error-then-ok":
+            # Provider error followed by recovery: the prefixed prompt gets
+            # a 400; every later unprompted turn echoes normally, proving
+            # the frontend survived the error.
+            msgs = req.get("messages", [])
+            user_msgs = [m.get("content", "") for m in msgs
+                         if m.get("role") == "user" and
+                         isinstance(m.get("content"), str)]
+            last = user_msgs[-1] if user_msgs else ""
+            if last.startswith("__ccode_test_"):
+                err_body = json.dumps({"error": {"message": "Bad request"}})
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length",
+                                 str(len(err_body.encode())))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(err_body.encode())
+                self.close_connection = True
+                return
+            events = [{"data": json.dumps({
+                "choices": [{"index": 0,
+                             "delta": {"content": "You said: {}".format(last)},
+                             "finish_reason": "stop"}]})}]
 
         elif test_mode == "tui-stream-delta":
             # Several content deltas so a TUI frontend must append each
