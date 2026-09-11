@@ -22,6 +22,9 @@
 #include <sys/time.h>
 #include <dirent.h>
 #include <sys/wait.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "../src/agent/message.h"
 #include "../src/agent/agent.h"
@@ -3540,6 +3543,107 @@ static int test_platform_sandbox_write_confinement(void) {
 }
 #endif
 
+/* Fork a one-shot HTTP/1.1 server that answers the first request with a
+ * 200, the given Content-Type, and body_len bytes of 'A'. Returns the port in
+ * *port_out and the child pid in *pid_out. */
+static int wf_spawn_server(int body_len, const char *ctype,
+                           int *port_out, pid_t *pid_out) {
+    int ls;
+    struct sockaddr_in addr;
+    socklen_t alen;
+    int opt = 1;
+
+    ls = socket(AF_INET, SOCK_STREAM, 0);
+    if (ls < 0) return -1;
+    setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    if (bind(ls, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+        listen(ls, 1) != 0) {
+        close(ls);
+        return -1;
+    }
+    alen = sizeof(addr);
+    if (getsockname(ls, (struct sockaddr *)&addr, &alen) != 0) {
+        close(ls);
+        return -1;
+    }
+    *port_out = ntohs(addr.sin_port);
+    *pid_out = fork();
+    if (*pid_out == 0) {
+        int c;
+        char req[2048];
+        char hdr[256];
+        char chunk[4096];
+        int hlen, left;
+        signal(SIGPIPE, SIG_IGN);
+        c = accept(ls, NULL, NULL);
+        if (c < 0) _exit(0);
+        {
+            ssize_t got = read(c, req, sizeof(req));
+            (void)got;
+        }
+        hlen = snprintf(hdr, sizeof(hdr),
+            "HTTP/1.1 200 OK\r\nContent-Type: %s\r\n"
+            "Content-Length: %d\r\nConnection: close\r\n\r\n",
+            ctype, body_len);
+        {
+            ssize_t w = write(c, hdr, (size_t)hlen);
+            (void)w;
+        }
+        memset(chunk, 'A', sizeof(chunk));
+        left = body_len;
+        while (left > 0) {
+            int n = left < (int)sizeof(chunk) ? left : (int)sizeof(chunk);
+            if (write(c, chunk, (size_t)n) != n) break;
+            left -= n;
+        }
+        close(c);
+        close(ls);
+        _exit(0);
+    }
+    close(ls);
+    return *pid_out < 0 ? -1 : 0;
+}
+
+/* A body larger than max_size must yield complete, valid JSON with the full
+ * max_size consumed - not a truncated-at-64KiB fragment, and not an overrun
+ * of the result buffer when the truncation suffix is appended. */
+static int test_web_fetch_truncation_is_valid_json(void) {
+    struct ccode_web_fetch_opts opts;
+    int port = 0, status = 0;
+    pid_t pid = 0;
+    char url[128];
+    char *res;
+
+    ASSERT(wf_spawn_server(200000, "text/plain", &port, &pid) == 0);
+    snprintf(url, sizeof(url), "http://127.0.0.1:%d/", port);
+    memset(&opts, 0, sizeof(opts));
+    opts.url = url;
+    opts.max_size = 100000;
+    opts.timeout_sec = 10;
+
+    res = ccode_web_fetch(&opts);
+    ASSERT(res != NULL);
+    ASSERT(res[0] == '{');
+    ASSERT(res[strlen(res) - 1] == '}');
+    ASSERT(strstr(res, "\"truncated\":true") != NULL);
+    {
+        const char *c = strstr(res, "\"content\":\"");
+        const char *e;
+        ASSERT(c != NULL);
+        c += strlen("\"content\":\"");
+        e = strchr(c, '"');
+        ASSERT(e != NULL);
+        ASSERT((size_t)(e - c) == 100000);
+    }
+    free(res);
+    waitpid(pid, &status, 0);
+    return 1;
+}
+
 static int test_web_fetch_dechunk(void) {
     char buf[128];
     int complete = 0;
@@ -3593,6 +3697,34 @@ static int test_web_fetch_resolve_redirect(void) {
     ASSERT(ccode_web_fetch_resolve_redirect(0, "a.example", "8080", "/dir/page",
                                             "next", out, sizeof(out)) == 0);
     ASSERT(strcmp(out, "http://a.example:8080/dir/next") == 0);
+
+    /* Leading "../" and "./" segments are folded, so the request never
+     * carries a literal ".." component. */
+    ASSERT(ccode_web_fetch_resolve_redirect(0, "a.example", "80",
+                                            "/redirect-rel", "../ok",
+                                            out, sizeof(out)) == 0);
+    ASSERT(strcmp(out, "http://a.example/ok") == 0);
+
+    ASSERT(ccode_web_fetch_resolve_redirect(1, "a.example", "443",
+                                            "/dir/page", "../ok",
+                                            out, sizeof(out)) == 0);
+    ASSERT(strcmp(out, "https://a.example/ok") == 0);
+
+    ASSERT(ccode_web_fetch_resolve_redirect(1, "a.example", "443",
+                                            "/dir/sub/page", "./x",
+                                            out, sizeof(out)) == 0);
+    ASSERT(strcmp(out, "https://a.example/dir/sub/x") == 0);
+
+    ASSERT(ccode_web_fetch_resolve_redirect(1, "a.example", "443",
+                                            "/a/b/c", "../../x",
+                                            out, sizeof(out)) == 0);
+    ASSERT(strcmp(out, "https://a.example/x") == 0);
+
+    /* Cannot climb above the root. */
+    ASSERT(ccode_web_fetch_resolve_redirect(1, "a.example", "443",
+                                            "/a/b/c", "../../../x",
+                                            out, sizeof(out)) == 0);
+    ASSERT(strcmp(out, "https://a.example/x") == 0);
 
     return 1;
 }
@@ -4652,6 +4784,7 @@ int main(int argc, char **argv) {
     /* Phase 6: WebFetch tests */
     TEST(web_fetch_invalid_url);
     TEST(web_fetch_dechunk);
+    TEST(web_fetch_truncation_is_valid_json);
     TEST(web_fetch_resolve_redirect);
     TEST(web_fetch_ipv6_host);
     TEST(web_fetch_blacklist_and_rate_limit);

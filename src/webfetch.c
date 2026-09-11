@@ -691,14 +691,6 @@ static ssize_t wf_recv_until(struct wf_transport *transport, char *buf, size_t m
         else if (n == 0) break;
         else if (errno != EINTR && errno != EAGAIN) return -1;
     }
-    if (total >= max && wf_now_ms() < deadline) {
-        /* Drain remaining data to detect truncation vs EOF. */
-        char discard[4096];
-        while (wf_wait_fd(transport->fd, POLLIN, wf_now_ms() + 50) == 1) {
-            ssize_t n = recv(transport->fd, discard, sizeof(discard), 0);
-            if (n <= 0) break;
-        }
-    }
     return (ssize_t)total;
 }
 
@@ -819,21 +811,34 @@ int ccode_web_fetch_resolve_redirect(int secure, const char *host,
             n = snprintf(out, out_size, "%s%s%s", scheme, host, location);
         return (n > 0 && (size_t)n < out_size) ? 0 : -1;
     }
-    /* Plain relative: resolve against the base path's directory. */
+    /* Plain relative: resolve against the base path's directory, folding
+     * leading "./" and "../" segments so the request never carries a literal
+     * ".." component. */
     {
         char dir[2048];
         const char *slash = base_path ? strrchr(base_path, '/') : NULL;
         size_t dlen = slash ? (size_t)(slash - base_path) + 1 : 1;
+        const char *loc = location;
         if (dlen >= sizeof(dir)) return -1;
         if (slash) memcpy(dir, base_path, dlen);
         else dir[0] = '/';
         dir[dlen] = '\0';
+        while (loc[0] == '.' &&
+               (loc[1] == '/' ||
+                (loc[1] == '.' && (loc[2] == '/' || loc[2] == '\0')))) {
+            if (loc[1] == '/') { loc += 2; continue; }
+            if (dlen > 1) {
+                while (dlen > 1 && dir[dlen - 1] == '/') dlen--;
+                while (dlen > 1 && dir[dlen - 1] != '/') dlen--;
+            }
+            loc += (loc[2] == '/') ? 3 : 2;
+        }
+        dir[dlen] = '\0';
         if (base_port > 0 && base_port != default_port)
             n = snprintf(out, out_size, "%s%s:%s%s%s", scheme, host, port,
-                         dir, location);
+                         dir, loc);
         else
-            n = snprintf(out, out_size, "%s%s%s%s", scheme, host, dir,
-                         location);
+            n = snprintf(out, out_size, "%s%s%s%s", scheme, host, dir, loc);
         return (n > 0 && (size_t)n < out_size) ? 0 : -1;
     }
 }
@@ -859,6 +864,7 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
     int timed_out = 0;
     int status = 0;
     int dechunk_truncated = 0;
+    int body_truncated = 0;
 
     memset(&transport, 0, sizeof(transport));
     transport.fd = -1;
@@ -1026,6 +1032,11 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
 
             if (redirect) {
                 wf_transport_close(&transport);
+                if (redirect_count >= CCODE_WF_MAX_REDIRECTS) {
+                    result = ccode_strdup(
+                        "{\"error\":\"Too many redirects\"}");
+                    goto done;
+                }
                 continue;
         }
 
@@ -1062,16 +1073,18 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             goto done;
         }
 
-        /* Read body. */
+        /* Read body. One byte past max_size is read so that hitting exactly
+         * the cap with more data pending is treated as truncation, not EOF. */
         {
-            size_t body_cap = max_size + 1;
+            size_t body_cap = max_size + 2;
             size_t body_pos = 0;
 
             body_buf = malloc(body_cap);
             if (!body_buf) { result = ccode_strdup("{\"error\":\"Out of memory\"}"); goto done; }
 
             if (nread > 0) {
-                size_t to_copy = (size_t)nread < body_cap ? (size_t)nread : body_cap - 1;
+                size_t to_copy = (size_t)nread < body_cap - 1
+                                 ? (size_t)nread : body_cap - 1;
                 memcpy(body_buf, body_ptr, to_copy);
                 body_pos = to_copy;
             }
@@ -1092,6 +1105,16 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
                 body_len = (ssize_t)decoded;
                 if (!complete) dechunk_truncated = 1;
             }
+            if (body_len > (ssize_t)max_size) {
+                body_len = (ssize_t)max_size;
+                body_truncated = 1;
+            }
+            /* A deadline hit mid-body, or a body shorter than the declared
+             * Content-Length, is partial content - never a clean success. */
+            if (timed_out ||
+                (has_cl && (size_t)body_len < content_length))
+                body_truncated = 1;
+            body_buf[body_len] = '\0';
         }
 
         wf_transport_close(&transport);
@@ -1101,7 +1124,7 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
     wf_transport_close(&transport);
 
     if (!result) {
-        int truncated = dechunk_truncated;
+        int truncated = dechunk_truncated || body_truncated;
         const char *content_type = content_type_buf;
         char *esc_url;
         char *esc_ct;
@@ -1163,18 +1186,23 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             goto done;
         }
 
-        /* Build result JSON. */
+        /* Build result JSON. One snprintf plus a checked return keeps this
+         * overflow-proof: the fixed scaffolding, the status digits and the
+         * optional truncation suffix must all fit the margin. */
         {
-            size_t rcap = strlen(escaped) + strlen(esc_url) + strlen(esc_ct) + 64;
+            size_t rcap = strlen(escaped) + strlen(esc_url) +
+                          strlen(esc_ct) + 128;
             result = malloc(rcap);
             if (result) {
-                size_t pos = 0;
-                pos += (size_t)snprintf(result, rcap,
-                    "{\"content\":\"%s\",\"content_type\":\"%s\",\"status\":%d,\"url\":\"%s\"",
-                    escaped, esc_ct, status, esc_url);
-                if (truncated)
-                    pos += (size_t)snprintf(result + pos, rcap - pos, ",\"truncated\":true");
-                snprintf(result + pos, rcap - pos, "}");
+                int n = snprintf(result, rcap,
+                    "{\"content\":\"%s\",\"content_type\":\"%s\","
+                    "\"status\":%d,\"url\":\"%s\"%s}",
+                    escaped, esc_ct, status, esc_url,
+                    truncated ? ",\"truncated\":true" : "");
+                if (n < 0 || (size_t)n >= rcap) {
+                    free(result);
+                    result = ccode_strdup("{\"error\":\"Result too large\"}");
+                }
             }
         }
         free(escaped);
