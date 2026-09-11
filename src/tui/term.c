@@ -225,42 +225,67 @@ int tui_term_read_key(int timeout_ms) {
     if (read(STDIN_FILENO, &c, 1) != 1) return -1;
     if (c == 0x1b) {
         struct pollfd sequence_poll = { STDIN_FILENO, POLLIN, 0 };
-        unsigned char next, code;
+        unsigned char next;
         if (poll(&sequence_poll, 1, 10) <= 0 || read(STDIN_FILENO, &next, 1) != 1)
-            return 0x1b;
+            return 0x1b; /* lone ESC (timeout or read failure) */
         if (next == 'O') {
+            unsigned char code;
             if (poll(&sequence_poll, 1, 10) <= 0 || read(STDIN_FILENO, &code, 1) != 1)
                 return 0x1b;
-            if (code == 'A') return TUI_KEY_UP;
-            if (code == 'B') return TUI_KEY_DOWN;
-            if (code == 'C') return TUI_KEY_RIGHT;
-            if (code == 'D') return TUI_KEY_LEFT;
-            if (code == 'H') return TUI_KEY_HOME;
-            if (code == 'F') return TUI_KEY_END;
-            return 0x1b;
+            switch (code) {
+            case 'A': return TUI_KEY_UP;
+            case 'B': return TUI_KEY_DOWN;
+            case 'C': return TUI_KEY_RIGHT;
+            case 'D': return TUI_KEY_LEFT;
+            case 'H': return TUI_KEY_HOME;
+            case 'F': return TUI_KEY_END;
+            default: return -1; /* F1-F4 and friends: consumed, unmapped */
+            }
         }
-        if (next != '[') return 0x1b;
-        if (poll(&sequence_poll, 1, 10) <= 0 || read(STDIN_FILENO, &code, 1) != 1)
-            return 0x1b;
-        if (code == 'A') return TUI_KEY_UP;
-        if (code == 'B') return TUI_KEY_DOWN;
-        if (code == 'C') return TUI_KEY_RIGHT;
-        if (code == 'D') return TUI_KEY_LEFT;
-        if (code == 'H') return TUI_KEY_HOME;
-        if (code == 'F') return TUI_KEY_END;
-        if (code == '1' || code == '3' || code == '4' || code == '5' ||
-            code == '6' || code == '7' || code == '8') {
-            unsigned char tilde;
-            if (read(STDIN_FILENO, &tilde, 1) == 1 && tilde == '~')
-                switch (code) {
-                case '1': case '7': return TUI_KEY_HOME;
-                case '3': return TUI_KEY_DELETE;
-                case '4': case '8': return TUI_KEY_END;
-                case '5': return TUI_KEY_PAGE_UP;
-                case '6': return TUI_KEY_PAGE_DOWN;
+        if (next != '[') return 0x1b; /* Alt-modified key: ESC + byte */
+        /* CSI sequence: parameter bytes (0x20-0x3F) then a final byte
+         * (0x40-0x7E). The whole sequence is always consumed so unknown or
+         * modified keys (e.g. Ctrl+Arrow ESC[1;5C, bracketed paste
+         * ESC[200~) never leak their parameter bytes as typed input. */
+        {
+            unsigned char params[16];
+            size_t nparams = 0;
+            unsigned char finalb = 0;
+            for (;;) {
+                unsigned char b;
+                if (poll(&sequence_poll, 1, 10) <= 0 ||
+                    read(STDIN_FILENO, &b, 1) != 1)
+                    return 0x1b;
+                if (b >= 0x40U && b <= 0x7eU) { finalb = b; break; }
+                if (nparams < sizeof(params)) params[nparams++] = b;
+            }
+            switch (finalb) {
+            case 'A': return TUI_KEY_UP;
+            case 'B': return TUI_KEY_DOWN;
+            case 'C': return TUI_KEY_RIGHT;
+            case 'D': return TUI_KEY_LEFT;
+            case 'H': return TUI_KEY_HOME;
+            case 'F': return TUI_KEY_END;
+            case '~': {
+                /* First parameter selects the key; multi-digit codes
+                 * (e.g. 200/201 paste markers) are recognized and ignored,
+                 * as are modifier-suffixed forms (3;5~). */
+                int p1 = -1;
+                if (nparams >= 1 && params[0] >= '0' && params[0] <= '9' &&
+                    !(nparams >= 2 && params[1] >= '0' && params[1] <= '9'))
+                    p1 = params[0] - '0';
+                switch (p1) {
+                case 1: case 7: return TUI_KEY_HOME;
+                case 3: return TUI_KEY_DELETE;
+                case 4: case 8: return TUI_KEY_END;
+                case 5: return TUI_KEY_PAGE_UP;
+                case 6: return TUI_KEY_PAGE_DOWN;
+                default: return -1;
                 }
+            }
+            default: return -1; /* mouse reports, Shift-Tab, F-keys, ... */
+            }
         }
-        return 0x1b;
     }
     return (int)c;
 }
