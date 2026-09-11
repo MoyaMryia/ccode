@@ -101,6 +101,63 @@ MUTANTS = [
              "                               (int)parser->pos, tokens, num_tokens) != 0)\n"
              "                    return -1;",
          new="            if (0) {"),
+
+    # ── oversized tool-result archive (agent_results.c) ──────────────────
+    dict(label="result archive drops the tail", area="results",
+         file="src/agent/agent_results.c", gates=["agent"],
+         old="        int ok = write_all(fd, preview, preview_len) == 0 &&\n"
+             "                 write_all(fd, tail, tail_len) == 0;\n",
+         new="        int ok = write_all(fd, preview, preview_len) == 0;\n"),
+    dict(label="result read ignores offset", area="results",
+         file="src/agent/agent_results.c", gates=["agent"],
+         old="    if (lseek(fd, (off_t)offset, SEEK_SET) < 0 && offset != 0) {\n",
+         new="    if (0) {\n"),
+    dict(label="session drops result_ref on save", area="results",
+         file="src/agent/message.c", gates=["agent"],
+         old="        if (conv->messages[i].result_blob) {\n",
+         new="        if (0 && conv->messages[i].result_blob) {\n"),
+    dict(label="read_tool_output ignores offset arg", area="results",
+         file="src/agent/agent_prepare.c", gates=["agent"],
+         old="                prepared->result_offset = (size_t)v;\n",
+         new="                prepared->result_offset = 0;\n"),
+    dict(label="session delete keeps results archive", area="results",
+         file="src/agent/message.c", gates=["agent"],
+         old="    if (unlink(path) != 0) return -1;\n"
+             "    remove_results_dir(dir, name);\n",
+         new="    if (unlink(path) != 0) return -1;\n"),
+    dict(label="session rename leaves results archive", area="results",
+         file="src/agent/message.c", gates=["agent"],
+         old="    if (rename(old_path, new_path) != 0) return -1;\n"
+             "    rename_results_dir(dir, old_name, new_name);\n",
+         new="    if (rename(old_path, new_path) != 0) return -1;\n"),
+    dict(label="read_file skips oversized archive", area="results",
+         file="src/agent/agent_fs.c", gates=["agent"],
+         old="    if (file_size > read_limit && ctx->results_dir[0] != '\\0') {\n",
+         new="    if (0 && file_size > read_limit && ctx->results_dir[0] != '\\0') {\n"),
+    dict(label="result configure skips parent dirs", area="results",
+         file="src/agent/agent_results.c", gates=["agent"],
+         old="    if (mkdir_p(ctx->results_dir) != 0) {\n",
+         new="    if (mkdir(ctx->results_dir, 0700) != 0) {\n"),
+    dict(label="stderr archive dropped", area="results",
+         file="src/agent/agent_exec.c", gates=["agent"],
+         old="    if (stderr_tail.len > 0 && ctx->results_dir[0] != '\\0') {\n",
+         new="    if (0 && stderr_tail.len > 0 && ctx->results_dir[0] != '\\0') {\n"),
+
+    # ── web_fetch (src/webfetch.c) ──────────────────────────────────────
+    dict(label="webfetch result margin too small", area="webfetch",
+         file="src/webfetch.c", gates=["agent"],
+         old="            size_t rcap = strlen(escaped) + strlen(esc_url) +\n"
+             "                          strlen(esc_ct) + 128;\n",
+         new="            size_t rcap = strlen(escaped) + strlen(esc_url) +\n"
+             "                          strlen(esc_ct) + 1;\n"),
+    dict(label="webfetch relative dot folding disabled", area="webfetch",
+         file="src/webfetch.c", gates=["agent"],
+         old="        while (loc[0] == '.' &&\n"
+             "               (loc[1] == '/' ||\n"
+             "                (loc[1] == '.' && (loc[2] == '/' || loc[2] == '\\0')))) {\n",
+         new="        while (0 && loc[0] == '.' &&\n"
+             "               (loc[1] == '/' ||\n"
+             "                (loc[1] == '.' && (loc[2] == '/' || loc[2] == '\\0')))) {\n"),
 ]
 
 

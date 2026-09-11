@@ -12,17 +12,18 @@
 - CLI 模式：`ccode-cli`（JSON Lines 协议，供其他前端复用）；TUI 临时暂停构建：单体 `ccode`（进程内 TUI + CLI）与分离的 `ccode-tui` 暂不构建/发布
 - CLI REPL slash 命令：`/help /clear /exit /history /model /models[/search|info] /sessions[/delete|rename|export] /resume /session[new|switch] /thinking /reasoning`；`/session list`（列会话）与 `/resume --list` 是 `/sessions` 的别名，帮助里不再单列；会话列表在各前端统一渲染为文本（JSON Lines 后端的 `message` 不再塞 raw `{"sessions":...}`）；`/compact` 明确不支持。默认经自动会话链（auto-*.json，resume+save 同一文件）保持对话上下文：首次真实提问自动开链，每轮 auto-save，`/exit` 保证落盘可 `/resume`；`/clear`、`/session new` 开新链，`--resume` 从指定会话接链
 - REPL 行输入 UTF-8/双宽感知：退格按整码点删除并按显示宽度回擦，中文不再留残影（非 tty 或 Windows 自动回退 `fgets`）
-- thinking / reasoning_effort 两个字段独立控制（`--thinking` / `--reasoning[-effort]`，REPL 里 `/thinking` `/reasoning`）；默认开启：thinking 发 `{"type":"enabled"}`、reasoning_effort 为 `high`；`CCODE_THINKING=0`（或 `/thinking off`）关 thinking，`CCODE_THINKING_EFFORT=off`（或 `/reasoning off`）关 reasoning
-- 流式输出：每个 SSE 增量到达就立即显示
+- thinking / reasoning_effort 两个字段独立控制（`--thinking` / `--reasoning[-effort]`，REPL 里 `/thinking` `/reasoning`）；默认开启：thinking 发 `{"type":"enabled"}`、reasoning_effort 为 `high`；`CCODE_THINKING=0`（或 `/thinking off`）关 thinking，`CCODE_THINKING_EFFORT=off`（或 `/reasoning off`）关 reasoning。thinking 模型流出的 `reasoning_content` 会随会话持久化，并在后续请求里逐轮原样回传（DeepSeek thinking+tools 的硬性要求，漏传上游直接 400；无 tools 时上游忽略）
+- 流式输出：每个 SSE 增量到达就立即显示；thinking 的思维链按真换行/制表符渲染（不再把 `\n` 转义成字面量），正文与思维链是两个独立字段
 - Markdown → ANSI 渲染（标题、加粗、斜体、代码块、列表、引用、链接），带控制字符消毒
-- 上下文缓存友好：请求前缀字节稳定（避免 resume 后重复 system 提示）
+- 上下文缓存友好：请求前缀对 live 与 resume 字节一致（不重复 system 提示）；assistant 空正文与 `content:null` 严格区分、`reasoning_content` 原样回放，`result_ref` 等本地元数据不回传上游，前缀不因存档而变
 
 ### 工具
 
 - `read_file` / `write_file` / `glob` / `grep`（支持正则）
 - `bash` / `run_command`
+- `read_tool_output`（只读）：按 `tool_call_id` 分页取回被存档的超长工具输出窗口（`offset`/`limit`，单次上限 64 KiB；命令可选 `stream=stdout|stderr`，默认 stdout，无 stdout 存档时自动选 stderr），越界/未知 id/非当前会话一律结构化报错
 - `delete_file` / `move_file`（限工作区内）
-- `web_fetch`（带域名黑名单、请求限流、大小上限；跟随 3xx 跳转，支持绝对/协议相对/根相对/相对 `Location`；解析 1.1 chunked 响应并在末尾去分块；响应头逐行按 CRLF 截断，`content_type`/`url` 进 JSON 前转义）
+- `web_fetch`（带域名黑名单、请求限流、大小上限；跟随 3xx 跳转，支持绝对/协议相对/根相对/相对 `Location`，相对目标折叠 `./` 与 `../`，超限报 `Too many redirects`；解析 1.1 chunked 响应并在末尾去分块；响应头逐行按 CRLF 截断，`content_type`/`url` 进 JSON 前转义）。响应体超过 `max_size` 时读满上限并显式标 `truncated`——修掉了旧版在 64 KiB 处静默丢数据、以及在带 `truncated` 后缀时结果 JSON 缓冲溢出的两个 bug；读超时或短于 `Content-Length` 也标 `truncated`，结果 JSON 构造带长度校验
 - `web_search`（Bing 端点可配）
 - `agent_tool`（子代理，独立循环、默认只读、深度上限 3）；只读子代理并行 fork 运行，其自身的只读工具（read_file/glob/grep/git_*，均限工作区内）自动放行——子进程在自己的进程组里读控制终端会触发 SIGTTIN 停住并让父进程 poll 死等，且多个子进程争抢同一 stdin，所以不再逐次弹审批
 - 工具调用参数解析：容忍模型把参数包进一层或多层 `{"arguments": ...}`（对象与 JSON 字符串形式混合），最多 8 层；超限报 `nested too deep`，信封值非对象/字符串、或信封带尾随数据时明确拒绝；多键信封不再被误判。校验失败时错误附带该工具的参数 schema（`expected parameters: ...`），让模型知道该传什么，而不是只回一句 `Invalid ... arguments`
@@ -36,6 +37,7 @@
 - 恢复会话（`--resume` 或 `/resume`）后先把已加载的对话打印出来再进入下一轮（系统提示跳过）；恢复后 `/exit` 写回原会话文件
 - 工具调用与结果 live 与 resume 共用同一套渲染（`agent_output.c`）：调用行 `[run]  name(detail)`；结果行 `[result]` 把存储的 JSON 解析成可读字段——命令 `exit=`/`stdout`/`stderr`，文件 `content`，列表 `files`/`matches`/`results`，错误 `error`(+`reason`)——保留真实换行、其它控制符经 `ccode_fprint_safe_text` 消毒，统一输出到 stdout。不再有独立的 resume 格式或 256 字节截断
 - 上下文压缩（`/compact`，以及估算请求接近上下文窗口 90% 时自动）不切断 assistant(tool_calls) 与 tool 结果的配对；构造请求时再兜底丢弃孤儿 `tool` 消息，旧压缩 bug 留下的会话也能继续，不再触发上游 `Messages with role 'tool' must be a response to a preceding message with 'tool_calls'` 400
+- 超长工具结果外置：命令 stdout/stderr（预览上限各 64 KiB）或 `read_file` 输出（预览上限 50 KiB）超过上限时，完整输出（每流最多 4 MiB）存进 `<session>.results/<内容哈希>`（0600、O_NOFOLLOW、内容寻址去重），消息里只留预览；stdout 与 stderr 各存一个 blob，`read_tool_output` 按 tool_call_id（+ 可选 stream）解析，blob 引用永不发给上游。结果目录首次使用自动 `mkdir -p`，删除/重命名/剪枝会话时同步清理。会话格式 v5（assistant 空正文保持 `content:null`、`reasoning_content` 与 `result_ref` 一并持久化）
 - token 用量为估算（无 tokenizer）：按 DeepSeek 公布的「英文字符 ≈0.3、中文字符 ≈0.6 token」折算，加每消息框架开销；上下文窗口 `CCODE_CONTEXT_TOKENS` / `--context-tokens N`（默认 1000000，0 关闭 token 触发）。消息数组改为按需增长（8→…，硬上限 4096，仅作内存兜底），不再是压缩触发条件
 - 会话元数据持久化，自动清理旧会话
 - 会话目录首次使用自动 `mkdir -p`（默认 `~/.ccode/sessions`）；`--session-dir DIR` / `CCODE_SESSION_DIR` 可覆盖，支持 `~/` 展开
@@ -86,6 +88,6 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（159 agent + 45 json + 32 http + 15 tui + 21 markdown + 5 tty + 8 e2e + 3 streaming；test-tui-commands 随 `ccode` 暂停）
+3. 现有测试套件全过（174 agent + 45 json + 32 http + 15 tui + 21 markdown + 5 tty + 8 e2e + 4 streaming；集成 37；`make mutate` 含 result/reasoning/webfetch 新 mutant 全 KILLED；test-tui-commands 随 `ccode` 暂停）
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟
 5. 工具调用/指令安全改动要过 `make fuzz-tool-args fuzz-command-paths fuzz-paths`，且 `make mutate`（故意注入错误看测试是否抓住）保持全部 KILLED

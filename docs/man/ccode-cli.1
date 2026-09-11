@@ -253,7 +253,13 @@ Switch to a saved session.
 .SH TOOLS
 .PP
 Read-only (always available):
-read_file, glob, grep, git_status, git_diff, git_stat.
+read_file, glob, grep, git_status, git_diff, git_stat, read_tool_output.
+.PP
+read_tool_output returns a window of an oversized tool result that was
+archived under the session's results directory (the inline result was
+truncated). Pass the tool_call_id of the truncated result; stream selects
+stdout (default) or stderr for commands; offset and limit are optional
+(limit capped at 64 KiB per call).
 .PP
 Read-write (with
 .BR \-\-write ):

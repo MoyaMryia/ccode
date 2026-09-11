@@ -312,6 +312,74 @@ else
     FAIL=$((FAIL + 1))
 fi
 
+echo "--- Oversized tool output is archived and retrievable ---"
+spill_dir="/tmp/ccode_spill_$$"
+rm -rf "$spill_dir"
+mkdir -p "$spill_dir"
+output=$(CCODE_WRITE_TOOLS=1 timeout "$TIMEOUT" "$CCODE" \
+    --write --auto-approve \
+    --save-session "$spill_dir/spill.json" \
+    -p "__ccode_test_result-spill-fixture" 2>&1) || true
+if echo "$output" | grep -q "spill ENDMARK9999"; then
+    echo "  PASS: truncated tool result retrieved from archive"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: archived tool result not retrievable"
+    [ -z "$output" ] || printf '    %s\n' "$output" | head -20 || true
+    FAIL=$((FAIL + 1))
+fi
+if [ -d "$spill_dir/spill.json.results" ] && \
+   [ -n "$(ls -A "$spill_dir/spill.json.results" 2>/dev/null)" ]; then
+    echo "  PASS: archive directory created next to the session"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: archive directory missing next to the session"
+    FAIL=$((FAIL + 1))
+fi
+output=$(CCODE_WRITE_TOOLS=1 timeout "$TIMEOUT" "$CCODE" \
+    --write --auto-approve --resume "$spill_dir/spill.json" \
+    -p "__ccode_test_result-spill-fixture resume" 2>&1) || true
+if echo "$output" | grep -q "spill ENDMARK9999"; then
+    echo "  PASS: archived result retrieved after --resume"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: archived result lost on --resume"
+    [ -z "$output" ] || printf '    %s\n' "$output" | head -20 || true
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$spill_dir"
+
+echo "--- Oversized stderr is archived and retrievable ---"
+spill_dir="/tmp/ccode_spill_err_$$"
+rm -rf "$spill_dir"
+mkdir -p "$spill_dir"
+output=$(CCODE_WRITE_TOOLS=1 timeout "$TIMEOUT" "$CCODE" \
+    --write --auto-approve --save-session "$spill_dir/err.json" \
+    -p "__ccode_test_result-spill-stderr" 2>&1) || true
+if echo "$output" | grep -q "stderr-spill ENDERR2"; then
+    echo "  PASS: truncated stderr retrieved via stream=stderr"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: archived stderr not retrievable"
+    [ -z "$output" ] || printf '    %s\n' "$output" | head -20 || true
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$spill_dir"
+
+echo "--- Thinking + tools must echo reasoning_content ---"
+# DeepSeek thinking mode with tools returns HTTP 400 unless every historical
+# assistant message carries its reasoning_content back. The mock enforces the
+# rule, so this only succeeds when ccode persists and replays it.
+output=$(timeout "$TIMEOUT" "$CCODE" -p "__ccode_test_thinking-tools" 2>&1) || true
+if echo "$output" | grep -q "thinking-tools done"; then
+    echo "  PASS: reasoning_content echoed across tool-call turns"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: reasoning_content not echoed (upstream would 400)"
+    [ -z "$output" ] || printf '    %s\n' "$output"
+    FAIL=$((FAIL + 1))
+fi
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 exit $FAIL

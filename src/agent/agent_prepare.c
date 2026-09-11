@@ -405,6 +405,73 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         return NULL;
     }
 
+    if (strcmp(name, "read_tool_output") == 0) {
+        int have_id = 0;
+        int have_offset = 0;
+        int have_limit = 0;
+        int have_stream = 0;
+        int i;
+        prepared->kind = PREPARED_READ_TOOL_OUTPUT;
+        prepared->result_offset = 0;
+        prepared->result_limit = CCODE_RESULT_PREVIEW_BYTES;
+        if (num_tokens < 1 || tokens[0].type != CCODE_JSMN_OBJECT ||
+            tokens[0].size > 8)
+            return "{\"error\":\"Invalid read_tool_output arguments\"}";
+        for (i = 1; i + 1 < num_tokens; i += 2) {
+            if (tokens[i].type != CCODE_JSMN_STRING)
+                return "{\"error\":\"Invalid read_tool_output arguments\"}";
+            if (ccode_jsmn_token_streq(arguments, &tokens[i], "tool_call_id")) {
+                if (have_id || tokens[i + 1].type != CCODE_JSMN_STRING ||
+                    copy_string_token_dyn(arguments, &tokens[i + 1],
+                                          &prepared->value) != 0)
+                    return "{\"error\":\"Invalid read_tool_output arguments\"}";
+                have_id = 1;
+            } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
+                                              "offset")) {
+                long v;
+                if (have_offset ||
+                    strict_nonnegative_integer_token(arguments, &tokens[i + 1],
+                                                     &v) != 0)
+                    return "{\"error\":\"Invalid read_tool_output offset\"}";
+                prepared->result_offset = (size_t)v;
+                have_offset = 1;
+            } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
+                                              "limit")) {
+                long v;
+                if (have_limit ||
+                    strict_nonnegative_integer_token(arguments, &tokens[i + 1],
+                                                     &v) != 0 || v <= 0)
+                    return "{\"error\":\"Invalid read_tool_output limit\"}";
+                prepared->result_limit = (size_t)v;
+                have_limit = 1;
+            } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
+                                              "stream")) {
+                if (have_stream || tokens[i + 1].type != CCODE_JSMN_STRING ||
+                    copy_string_token_dyn(arguments, &tokens[i + 1],
+                                          &prepared->content) != 0 ||
+                    (strcmp(prepared->content, "stdout") != 0 &&
+                     strcmp(prepared->content, "stderr") != 0))
+                    return "{\"error\":\"Invalid read_tool_output stream\"}";
+                have_stream = 1;
+            } else {
+                return "{\"error\":\"Invalid read_tool_output arguments\"}";
+            }
+        }
+        if (!have_id || prepared->value[0] == '\0')
+            return "{\"error\":\"Missing tool_call_id\"}";
+        /* Keep one read comfortably below the message-content cap so the
+         * result is never silently chopped before the model sees it. */
+        if (prepared->result_limit > CCODE_RESULT_PREVIEW_BYTES)
+            prepared->result_limit = CCODE_RESULT_PREVIEW_BYTES;
+        snprintf(prepared->display, sizeof(prepared->display),
+                 "read_tool_output id=%s offset=%lu limit=%lu%s%s",
+                 prepared->value, (unsigned long)prepared->result_offset,
+                 (unsigned long)prepared->result_limit,
+                 have_stream ? " stream=" : "",
+                 have_stream ? prepared->content : "");
+        return NULL;
+    }
+
     if (strcmp(name, "git_diff") == 0) {
         prepared->kind = PREPARED_GIT_DIFF;
         if (num_tokens == 1) {

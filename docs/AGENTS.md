@@ -48,6 +48,7 @@ http.c/h               URL 校验、socket/TLS/HTTP/SSE 传输
 json.c/h               流式解析服务商响应
 markdown.c/h           行式 markdown→ANSI（含控制字符/双向覆盖符消毒）
 agent/message.c/h      对话所有权、请求序列化
+agent/agent_results.c  超长工具结果存档（<session>.results/，内容寻址）与 read_tool_output 取回
 agent/agent.c/h        agent 循环、工具校验、本地执行、工作区、渲染开关
 tools/tools.c/h        按启用模式决定上游函数
 permissions/*          安全终端渲染和用户审批

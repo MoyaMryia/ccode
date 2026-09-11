@@ -138,6 +138,18 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "{\"type\":\"object\",\"properties\":{"
      "\"query\":{\"type\":\"string\",\"description\":\"Search query\"}"
      "},\"required\":[\"query\"]}"},
+
+    {"read_tool_output",
+     "Read a window of an oversized tool result that was archived because the "
+     "inline result was truncated. Pass the tool_call_id of the truncated "
+     "result (role 'tool'). For commands, stream selects stdout (default) or "
+     "stderr.",
+     "{\"type\":\"object\",\"properties\":{"
+     "\"tool_call_id\":{\"type\":\"string\",\"description\":\"ID of the tool call whose result was truncated\"},"
+     "\"stream\":{\"type\":\"string\",\"description\":\"'stdout' or 'stderr' for commands (optional, default stdout)\"},"
+     "\"offset\":{\"type\":\"number\",\"description\":\"Byte offset to start at (optional, default 0)\"},"
+     "\"limit\":{\"type\":\"number\",\"description\":\"Maximum bytes to return (optional, default 65536)\"}"
+     "},\"required\":[\"tool_call_id\"]}"},
 };
 
 const size_t ccode_tool_definitions_count =
@@ -214,7 +226,8 @@ char *ccode_build_readonly_tools_json(void) {
     size_t pos = 0;
     char *buf = malloc(cap);
     const char *readonly_names[] = {"read_file", "glob", "grep",
-                                    "git_status", "git_diff", "git_stat"};
+                                    "git_status", "git_diff", "git_stat",
+                                    "read_tool_output"};
     first = 1;
 
     if (!buf) return NULL;
@@ -258,7 +271,8 @@ char *ccode_build_write_tools_json(void) {
                                    "glob", "grep",
                                    "git_status", "git_diff", "git_stat",
                                    "task_create", "task_update", "task_list",
-                                   "web_fetch", "web_search", "agent_tool"};
+                                   "web_fetch", "web_search", "agent_tool",
+                                   "read_tool_output"};
     first = 1;
 
     if (!buf) return NULL;

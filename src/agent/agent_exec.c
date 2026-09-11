@@ -552,7 +552,8 @@ static int terminate_command_group(pid_t child, int *status) {
 }
 
 static void consume_command_output(int *fd, char *buffer, size_t *length,
-                                   int *truncated) {
+                                   int *truncated,
+                                   struct ccode_result_tail *tail) {
     char discard[4096];
     ssize_t n;
     size_t remaining;
@@ -569,6 +570,7 @@ static void consume_command_output(int *fd, char *buffer, size_t *length,
         n = read(*fd, discard, sizeof(discard));
         if (n > 0) {
             *truncated = 1;
+            if (tail) (void)ccode_result_tail_append(tail, discard, (size_t)n);
             return;
         }
     }
@@ -654,7 +656,17 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     char *result;
     size_t result_cap, result_pos;
     const char *lang_env;
+    struct ccode_result_tail stdout_tail;
+    struct ccode_result_tail stderr_tail;
 
+    memset(&stdout_tail, 0, sizeof(stdout_tail));
+    memset(&stderr_tail, 0, sizeof(stderr_tail));
+    free(ctx->last_result_blob);
+    ctx->last_result_blob = NULL;
+    ctx->last_result_total = 0;
+    free(ctx->last_result_blob_err);
+    ctx->last_result_blob_err = NULL;
+    ctx->last_result_total_err = 0;
     if (argc == 0)
         return ccode_strdup("{\"error\":\"No command specified\"}");
     if (!allow_shell && is_shell_string_invocation(argv, argc))
@@ -812,10 +824,10 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
 
             if (pfds[0].revents & (POLLIN | POLLHUP | POLLERR))
                 consume_command_output(&stdout_pipe[0], stdout_buf, &stdout_len,
-                                       &truncated_out);
+                                       &truncated_out, &stdout_tail);
             if (pfds[1].revents & (POLLIN | POLLHUP | POLLERR))
                 consume_command_output(&stderr_pipe[0], stderr_buf, &stderr_len,
-                                       &truncated_err);
+                                       &truncated_err, &stderr_tail);
 
             {
                 int cr = waitpid(child, &child_status, WNOHANG);
@@ -945,9 +957,35 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
                        WIFEXITED(status) ? WEXITSTATUS(status) : -1,
                        timed_out, 0, truncated_out, truncated_err);
     }
+    /* Archive the untruncated stdout when it exceeded the inline preview so
+     * the model can retrieve it with read_tool_output. stderr beyond the
+     * preview stays flagged, not archived. */
+    if (stdout_tail.len > 0 && ctx->results_dir[0] != '\0') {
+        char *blob_id = NULL;
+        size_t total = 0;
+        if (ccode_results_archive(ctx, stdout_buf, stdout_len,
+                                  stdout_tail.data, stdout_tail.len,
+                                  &blob_id, &total) == 0) {
+            ctx->last_result_blob = blob_id;
+            ctx->last_result_total = total;
+        }
+    }
+    if (stderr_tail.len > 0 && ctx->results_dir[0] != '\0') {
+        char *blob_id = NULL;
+        size_t total = 0;
+        if (ccode_results_archive(ctx, stderr_buf, stderr_len,
+                                  stderr_tail.data, stderr_tail.len,
+                                  &blob_id, &total) == 0) {
+            ctx->last_result_blob_err = blob_id;
+            ctx->last_result_total_err = total;
+        }
+    }
+    ccode_result_tail_free(&stdout_tail);
+    ccode_result_tail_free(&stderr_tail);
     return result;
 
 oom:
+    ccode_result_tail_free(&stdout_tail);
     free(result);
     return NULL;
 }

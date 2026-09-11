@@ -20,7 +20,8 @@
 
 /* Defined with the session helpers below; used by save() to create the
  * session directory on first write. */
-static int mkdir_p(const char *path);
+int mkdir_p(const char *path);
+static void remove_results_dir(const char *dir, const char *name);
 
 int ccode_conversation_init(struct ccode_conversation *conv, size_t capacity) {
     size_t initial;
@@ -39,6 +40,9 @@ void ccode_conversation_destroy(struct ccode_conversation *conv) {
     size_t i, j;
     for (i = 0; i < conv->count; i++) {
         free(conv->messages[i].content);
+        free(conv->messages[i].reasoning_content);
+        free(conv->messages[i].result_blob);
+        free(conv->messages[i].result_blob_err);
         for (j = 0; j < conv->messages[i].tool_call_count; j++) {
             free(conv->messages[i].tool_calls[j].id);
             free(conv->messages[i].tool_calls[j].name);
@@ -92,6 +96,67 @@ int ccode_conversation_add(struct ccode_conversation *conv, enum ccode_role role
     }
     conv->messages[conv->count - 1].role = role;
     conv->messages[conv->count - 1].content = content_copy;
+    return 0;
+}
+
+int ccode_conversation_set_reasoning(struct ccode_conversation *conv,
+                                     const char *reasoning) {
+    struct ccode_message *msg;
+    char *copy = NULL;
+
+    if (!conv || conv->count == 0) return -1;
+    msg = &conv->messages[conv->count - 1];
+    if (msg->role != CCODE_ROLE_ASSISTANT) return -1;
+
+    if (reasoning) {
+        size_t len = strlen(reasoning);
+        if (len > CCODE_MAX_CONTENT_LEN) len = CCODE_MAX_CONTENT_LEN;
+        copy = malloc(len + 1);
+        if (!copy) return -1;
+        memcpy(copy, reasoning, len);
+        copy[len] = '\0';
+    }
+    free(msg->reasoning_content);
+    msg->reasoning_content = copy;
+    return 0;
+}
+
+int ccode_conversation_set_result_blob(struct ccode_conversation *conv,
+                                       const char *blob_id, size_t total_bytes) {
+    struct ccode_message *msg;
+    char *copy = NULL;
+
+    if (!conv || conv->count == 0) return -1;
+    msg = &conv->messages[conv->count - 1];
+    if (msg->role != CCODE_ROLE_TOOL) return -1;
+
+    if (blob_id) {
+        copy = ccode_strdup(blob_id);
+        if (!copy) return -1;
+    }
+    free(msg->result_blob);
+    msg->result_blob = copy;
+    msg->result_total_bytes = total_bytes;
+    return 0;
+}
+
+int ccode_conversation_set_result_blob_err(struct ccode_conversation *conv,
+                                           const char *blob_id,
+                                           size_t total_bytes) {
+    struct ccode_message *msg;
+    char *copy = NULL;
+
+    if (!conv || conv->count == 0) return -1;
+    msg = &conv->messages[conv->count - 1];
+    if (msg->role != CCODE_ROLE_TOOL) return -1;
+
+    if (blob_id) {
+        copy = ccode_strdup(blob_id);
+        if (!copy) return -1;
+    }
+    free(msg->result_blob_err);
+    msg->result_blob_err = copy;
+    msg->result_err_total_bytes = total_bytes;
     return 0;
 }
 
@@ -213,6 +278,9 @@ size_t ccode_conversation_estimate_tokens(const struct ccode_conversation *conv,
         total += 4; /* role + JSON framing */
         if (conv->messages[i].content)
             total += ccode_estimate_text_tokens(conv->messages[i].content);
+        if (conv->messages[i].reasoning_content)
+            total += ccode_estimate_text_tokens(
+                conv->messages[i].reasoning_content);
         if (conv->messages[i].tool_call_id)
             total += ccode_estimate_text_tokens(conv->messages[i].tool_call_id);
         for (j = 0; j < conv->messages[i].tool_call_count; j++) {
@@ -235,6 +303,8 @@ static size_t estimate_request_size(struct ccode_conversation *conv,
         total += 100;
         if (conv->messages[i].content)
             total += strlen(conv->messages[i].content) * 2 + 10;
+        if (conv->messages[i].reasoning_content)
+            total += strlen(conv->messages[i].reasoning_content) * 2 + 30;
         for (j = 0; j < conv->messages[i].tool_call_count; j++) {
             total += 200;
             if (conv->messages[i].tool_calls[j].id)
@@ -301,9 +371,44 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
         if (ccode_append_cstr(&buf, &pos, &cap, role_str(conv->messages[i].role)) != 0)
             goto fail;
 
-        if (conv->messages[i].content) {
-            if (ccode_append_cstr(&buf, &pos, &cap, "\",\"content\":\"") != 0) goto fail;
-            escaped = ccode_json_escape(conv->messages[i].content);
+        {
+            /* OpenAI/DeepSeek require the content field to be present on
+             * user/tool messages (even when null). An assistant message with
+             * no text is sent as content:null - both when the model produced
+             * no content (NULL) and after a session round-trip normalized it
+             * to "" - so live and resumed requests stay byte-identical and
+             * upstream prefix caching is not broken. */
+            const char *content_value = conv->messages[i].content;
+            int content_is_null = content_value == NULL ||
+                (conv->messages[i].role == CCODE_ROLE_ASSISTANT &&
+                 content_value[0] == '\0');
+            if (!content_is_null) {
+                if (ccode_append_cstr(&buf, &pos, &cap, "\",\"content\":\"") != 0)
+                    goto fail;
+                escaped = ccode_json_escape(content_value);
+                if (!escaped) goto fail;
+                if (ccode_append_cstr(&buf, &pos, &cap, escaped) != 0) {
+                    free(escaped);
+                    goto fail;
+                }
+                free(escaped);
+                if (ccode_append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
+            } else {
+                if (ccode_append_cstr(&buf, &pos, &cap, "\",\"content\":null") != 0)
+                    goto fail;
+            }
+        }
+
+        if (conv->messages[i].role == CCODE_ROLE_ASSISTANT &&
+            conv->messages[i].reasoning_content) {
+            /* Echo the chain-of-thought exactly as received: DeepSeek thinking
+             * mode requires it on every historical assistant turn when the
+             * request carries tools, and upstream context caching keys on the
+             * same bytes. */
+            if (ccode_append_cstr(&buf, &pos, &cap,
+                                  ",\"reasoning_content\":\"") != 0)
+                goto fail;
+            escaped = ccode_json_escape(conv->messages[i].reasoning_content);
             if (!escaped) goto fail;
             if (ccode_append_cstr(&buf, &pos, &cap, escaped) != 0) {
                 free(escaped);
@@ -311,14 +416,6 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
             }
             free(escaped);
             if (ccode_append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
-        } else {
-            /* OpenAI/DeepSeek require the content field to be present on
-             * user/tool messages (even when null) and expect assistant
-             * messages that carry tool_calls to use content:null rather
-             * than content:"". Emitting the field as JSON null satisfies
-             * both shapes and survives round-trips through the loader. */
-            if (ccode_append_cstr(&buf, &pos, &cap, "\",\"content\":null") != 0)
-                goto fail;
         }
 
         if (conv->messages[i].tool_call_count > 0) {
@@ -392,6 +489,9 @@ fail:
 static void ccode_message_cleanup(struct ccode_message *msg) {
     size_t j;
     free(msg->content);
+    free(msg->reasoning_content);
+    free(msg->result_blob);
+    free(msg->result_blob_err);
     for (j = 0; j < msg->tool_call_count; j++) {
         free(msg->tool_calls[j].id);
         free(msg->tool_calls[j].name);
@@ -726,7 +826,7 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
     f = fdopen(fd, "wb");
     if (!f) { close(fd); unlink(temp_path); free(temp_path); return -1; }
 
-    fputs("{\"version\":3,\"messages\":[", f);
+    fputs("{\"version\":5,\"messages\":[", f);
     for (i = 0; i < conv->count; i++) {
         const char *role;
         char *esc;
@@ -745,11 +845,26 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
         fputc('"', f);
 
         {
-            const char *c = conv->messages[i].content ?
-                            conv->messages[i].content : "";
-            esc = ccode_json_escape(c);
+            /* Preserve the NULL / "" distinction for assistant messages so a
+             * reloaded session rebuilds the exact same request bytes. */
+            const char *c = conv->messages[i].content;
+            if (c == NULL && conv->messages[i].role == CCODE_ROLE_ASSISTANT) {
+                fputs(",\"content\":null", f);
+            } else {
+                esc = ccode_json_escape(c ? c : "");
+                if (!esc) goto done;
+                fputs(",\"content\":\"", f);
+                fputs(esc, f);
+                fputc('"', f);
+                free(esc);
+            }
+        }
+
+        if (conv->messages[i].role == CCODE_ROLE_ASSISTANT &&
+            conv->messages[i].reasoning_content) {
+            esc = ccode_json_escape(conv->messages[i].reasoning_content);
             if (!esc) goto done;
-            fputs(",\"content\":\"", f);
+            fputs(",\"reasoning_content\":\"", f);
             fputs(esc, f);
             fputc('"', f);
             free(esc);
@@ -786,6 +901,34 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
             if (!e_tcid) goto done;
             fputs(e_tcid, f); free(e_tcid);
             fputc('"', f);
+        }
+
+        if (conv->messages[i].result_blob ||
+            conv->messages[i].result_blob_err) {
+            int first_rr = 1;
+            fputs(",\"result_ref\":{", f);
+            if (conv->messages[i].result_blob) {
+                char *e_blob = ccode_json_escape(conv->messages[i].result_blob);
+                if (!e_blob) goto done;
+                fputs("\"blob\":\"", f);
+                fputs(e_blob, f);
+                fprintf(f, "\",\"total_bytes\":%lu",
+                        (unsigned long)conv->messages[i].result_total_bytes);
+                free(e_blob);
+                first_rr = 0;
+            }
+            if (conv->messages[i].result_blob_err) {
+                char *e_blob =
+                    ccode_json_escape(conv->messages[i].result_blob_err);
+                if (!e_blob) goto done;
+                if (!first_rr) fputc(',', f);
+                fputs("\"stderr_blob\":\"", f);
+                fputs(e_blob, f);
+                fprintf(f, "\",\"stderr_total_bytes\":%lu",
+                        (unsigned long)conv->messages[i].result_err_total_bytes);
+                free(e_blob);
+            }
+            fputc('}', f);
         }
 
         fputc('}', f);
@@ -1116,7 +1259,9 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
             if (toks[val_idx].type != CCODE_JSMN_PRIMITIVE ||
                 toks[val_idx].end - toks[val_idx].start != 1 ||
                 (buf[toks[val_idx].start] != '2' &&
-                 buf[toks[val_idx].start] != '3')) goto parse_fail;
+                 buf[toks[val_idx].start] != '3' &&
+                 buf[toks[val_idx].start] != '4' &&
+                 buf[toks[val_idx].start] != '5')) goto parse_fail;
             has_version = 1;
         } else if (ccode_jsmn_token_streq(buf, &toks[key_idx], "messages")) {
             if (has_messages) goto parse_fail;
@@ -1162,7 +1307,7 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
             char role_str[32];
             int msg_sub;
             int msg_idx;
-            int role_idx, content_idx, tc_idx, tcid_idx;
+            int role_idx, content_idx, tc_idx, tcid_idx, rc_idx, rr_idx;
             enum ccode_role r;
 
             if (child >= num_tokens ||
@@ -1173,10 +1318,11 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
                 goto load_fail;
             {
                 static const char *msg_keys[] = {
-                    "role", "content", "tool_calls", "tool_call_id"
+                    "role", "content", "tool_calls", "tool_call_id",
+                    "reasoning_content", "result_ref"
                 };
                 if (obj_check_known_keys(toks, num_tokens, msg_idx, buf,
-                                         msg_keys, 4) != 0) goto load_fail;
+                                         msg_keys, 6) != 0) goto load_fail;
             }
 
             role_idx = obj_find_val(toks, num_tokens, msg_idx, buf, "role");
@@ -1193,6 +1339,12 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
                                   "tool_calls");
             tcid_idx = obj_find_val(toks, num_tokens, msg_idx, buf,
                                     "tool_call_id");
+            rc_idx = obj_find_val(toks, num_tokens, msg_idx, buf,
+                                  "reasoning_content");
+            rr_idx = obj_find_val(toks, num_tokens, msg_idx, buf,
+                                  "result_ref");
+            /* reasoning_content belongs only to assistant turns. */
+            if (rc_idx >= 0 && r != CCODE_ROLE_ASSISTANT) goto load_fail;
 
             if (r == CCODE_ROLE_TOOL) {
                 /* Tool result: requires tool_call_id and content. */
@@ -1213,20 +1365,41 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
                                                         content_buf) != 0)
                     goto load_fail;
             } else {
-                /* system/user/assistant: content optional. */
+                /* system/user/assistant: content optional. Only assistant
+                 * messages may carry JSON null (a tool-call turn with no
+                 * text); user/system content must be a real string. */
                 char *content_ptr = NULL;
 
                 if (content_idx >= 0) {
-                    if (toks[content_idx].type != CCODE_JSMN_STRING)
+                    if (toks[content_idx].type == CCODE_JSMN_STRING) {
+                        if (ccode_json_unescape(buf + toks[content_idx].start,
+                                          buf + toks[content_idx].end,
+                                          content_buf, CCODE_MAX_CONTENT_LEN + 1) != 0)
+                            goto load_fail;
+                        content_ptr = content_buf;
+                    } else if (r == CCODE_ROLE_ASSISTANT &&
+                               toks[content_idx].type == CCODE_JSMN_PRIMITIVE &&
+                               ccode_jsmn_token_streq(buf, &toks[content_idx],
+                                                      "null")) {
+                        content_ptr = NULL;
+                    } else {
                         goto load_fail;
-                    if (ccode_json_unescape(buf + toks[content_idx].start,
-                                      buf + toks[content_idx].end,
-                                      content_buf, CCODE_MAX_CONTENT_LEN + 1) != 0)
-                        goto load_fail;
-                    content_ptr = content_buf;
+                    }
                 }
                 if (ccode_conversation_add(&loaded, r, content_ptr) != 0)
                     goto load_fail;
+
+                if (rc_idx >= 0) {
+                    if (toks[rc_idx].type != CCODE_JSMN_STRING)
+                        goto load_fail;
+                    if (ccode_json_unescape(buf + toks[rc_idx].start,
+                                      buf + toks[rc_idx].end,
+                                      content_buf, CCODE_MAX_CONTENT_LEN + 1) != 0)
+                        goto load_fail;
+                    if (ccode_conversation_set_reasoning(&loaded,
+                                                         content_buf) != 0)
+                        goto load_fail;
+                }
 
                 /* Parse tool_calls if present. */
                 if (tc_idx >= 0) {
@@ -1323,6 +1496,67 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
                             tc_child = tc_obj_idx + tc_sub;
                         }
                     }
+                }
+            }
+
+            if (rr_idx >= 0) {
+                int blob_idx, total_idx, sblob_idx, stotal_idx;
+                char blob_buf[256];
+                long total_val = 0;
+                if (r != CCODE_ROLE_TOOL) goto load_fail;
+                if (toks[rr_idx].type != CCODE_JSMN_OBJECT) goto load_fail;
+                if (obj_check_no_dups(toks, num_tokens, rr_idx, buf) != 0)
+                    goto load_fail;
+                {
+                    static const char *rr_keys[] = {
+                        "blob", "total_bytes",
+                        "stderr_blob", "stderr_total_bytes"
+                    };
+                    if (obj_check_known_keys(toks, num_tokens, rr_idx, buf,
+                                             rr_keys, 4) != 0) goto load_fail;
+                }
+                blob_idx = obj_find_val(toks, num_tokens, rr_idx, buf, "blob");
+                total_idx = obj_find_val(toks, num_tokens, rr_idx, buf,
+                                         "total_bytes");
+                sblob_idx = obj_find_val(toks, num_tokens, rr_idx, buf,
+                                         "stderr_blob");
+                stotal_idx = obj_find_val(toks, num_tokens, rr_idx, buf,
+                                          "stderr_total_bytes");
+                if (blob_idx < 0 && sblob_idx < 0) goto load_fail;
+                if ((blob_idx < 0) != (total_idx < 0)) goto load_fail;
+                if ((sblob_idx < 0) != (stotal_idx < 0)) goto load_fail;
+                if (blob_idx >= 0) {
+                    if (toks[blob_idx].type != CCODE_JSMN_STRING ||
+                        toks[total_idx].type != CCODE_JSMN_PRIMITIVE)
+                        goto load_fail;
+                    if (ccode_json_unescape(buf + toks[blob_idx].start,
+                                            buf + toks[blob_idx].end,
+                                            blob_buf, sizeof(blob_buf)) != 0)
+                        goto load_fail;
+                    if (blob_buf[0] == '\0') goto load_fail;
+                    if (ccode_json_token_to_int(buf, &toks[total_idx],
+                                                &total_val) != 0 || total_val < 0)
+                        goto load_fail;
+                    if (ccode_conversation_set_result_blob(&loaded, blob_buf,
+                                                           (size_t)total_val) != 0)
+                        goto load_fail;
+                }
+                if (sblob_idx >= 0) {
+                    if (toks[sblob_idx].type != CCODE_JSMN_STRING ||
+                        toks[stotal_idx].type != CCODE_JSMN_PRIMITIVE)
+                        goto load_fail;
+                    if (ccode_json_unescape(buf + toks[sblob_idx].start,
+                                            buf + toks[sblob_idx].end,
+                                            blob_buf, sizeof(blob_buf)) != 0)
+                        goto load_fail;
+                    if (blob_buf[0] == '\0') goto load_fail;
+                    if (ccode_json_token_to_int(buf, &toks[stotal_idx],
+                                                &total_val) != 0 || total_val < 0)
+                        goto load_fail;
+                    if (ccode_conversation_set_result_blob_err(&loaded,
+                                                               blob_buf,
+                                                               (size_t)total_val) != 0)
+                        goto load_fail;
                 }
             }
 
@@ -1425,7 +1659,7 @@ const char *ccode_session_dir(void) {
 
 /* Create `path` and any missing parent directories (mkdir -p). Returns 0 on
  * success; a component that exists as a non-directory fails. */
-static int mkdir_p(const char *path) {
+int mkdir_p(const char *path) {
     char buf[4096];
     size_t len, i;
     struct stat st;
@@ -1657,6 +1891,7 @@ int ccode_session_prune(void) {
             >= (int)sizeof(path))
             continue;
         (void)unlink(path);
+        remove_results_dir(dir, entries[i].name);
     }
     free(entries);
     return 0;
@@ -1830,6 +2065,41 @@ char *ccode_session_list_text(void) {
     return out;
 }
 
+/* Remove <dir>/<name>.results and its files (best effort). */
+static void remove_results_dir(const char *dir, const char *name) {
+    char path[4096];
+    DIR *d;
+    struct dirent *e;
+
+    if (snprintf(path, sizeof(path), "%s/%s.results", dir, name)
+        >= (int)sizeof(path)) return;
+    d = opendir(path);
+    if (d) {
+        while ((e = readdir(d)) != NULL) {
+            char child[4096];
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+                continue;
+            if (snprintf(child, sizeof(child), "%s/%s", path, e->d_name)
+                < (int)sizeof(child))
+                (void)unlink(child);
+        }
+        closedir(d);
+    }
+    (void)rmdir(path);
+}
+
+/* Move <dir>/<old>.results to <dir>/<new>.results (best effort). */
+static void rename_results_dir(const char *dir, const char *old_name,
+                               const char *new_name) {
+    char old_path[4096];
+    char new_path[4096];
+    if (snprintf(old_path, sizeof(old_path), "%s/%s.results", dir, old_name)
+        >= (int)sizeof(old_path)) return;
+    if (snprintf(new_path, sizeof(new_path), "%s/%s.results", dir, new_name)
+        >= (int)sizeof(new_path)) return;
+    (void)rename(old_path, new_path);
+}
+
 int ccode_session_delete(const char *name) {
     const char *dir = ccode_session_dir();
     char path[4096];
@@ -1841,6 +2111,7 @@ int ccode_session_delete(const char *name) {
     if (snprintf(path, sizeof(path), "%s/%s", dir, name) >= (int)sizeof(path))
         return -1;
     if (unlink(path) != 0) return -1;
+    remove_results_dir(dir, name);
     return 0;
 }
 
@@ -1865,6 +2136,7 @@ int ccode_session_rename(const char *old_name, const char *new_name) {
     if (snprintf(new_path, sizeof(new_path), "%s/%s", dir, new_name)
         >= (int)sizeof(new_path)) return -1;
     if (rename(old_path, new_path) != 0) return -1;
+    rename_results_dir(dir, old_name, new_name);
     return 0;
 }
 

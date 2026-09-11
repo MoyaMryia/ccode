@@ -86,7 +86,9 @@ void ccode_print_reasoning_delta(const char *content) {
         fputs("\n" CCODE_ANSI("2") "", stdout);
         g_reasoning_active = 1;
     }
-    ccode_fprint_safe(stdout, content, "");
+    /* *_text keeps real newlines/tabs so the streamed chain-of-thought stays
+     * readable; the other control bytes are still escaped. */
+    ccode_fprint_safe_text(stdout, content, "");
     fflush(stdout);
 }
 
@@ -406,6 +408,11 @@ void ccode_render_message(FILE *out, const struct ccode_message *msg) {
         ccode_fprint_safe_text(out, msg->content, "");
         fputc('\n', out);
     } else if (msg->role == CCODE_ROLE_ASSISTANT) {
+        if (msg->reasoning_content && msg->reasoning_content[0]) {
+            /* Show the persisted chain-of-thought dim, as it appeared live. */
+            ccode_print_reasoning_delta(msg->reasoning_content);
+            ccode_print_reasoning_end();
+        }
         if (msg->content && msg->content[0]) {
             /* Reuse the live markdown/plain renderer (stdout-bound). */
             ccode_print_content_reset();

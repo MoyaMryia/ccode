@@ -78,6 +78,19 @@ def test_json_protocol_streams_deltas():
             b'"text":" second"' in output and proc.returncode == 0), output + err
 
 
+def test_reasoning_keeps_real_newlines():
+    """Streamed reasoning_content must render real newlines/tabs, not the
+    escaped literal \\n that the single-line safe printer produces."""
+    proc = subprocess.Popen(
+        [CCODE, "--prompt", "__ccode_test_reasoning-newlines"],
+        env=environment(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = proc.communicate(timeout=TIMEOUT)
+    return (b"think line one\nthink\tline two" in out and
+            b"think line one\\nthink" not in out and
+            b"final answer" in out and
+            proc.returncode == 0), out + err
+
+
 def test_json_session_list_is_human_readable():
     """`/resume --list` (and /sessions) must render as text, not the raw
     {"sessions":[...]} payload, which the fork-based TUI would show verbatim."""
@@ -118,6 +131,8 @@ def main():
     try:
         for name, test in (("plain CLI", test_plain_streams_before_completion),
                            ("JSON protocol", test_json_protocol_streams_deltas),
+                           ("reasoning newlines",
+                            test_reasoning_keeps_real_newlines),
                            ("JSON session list",
                             test_json_session_list_is_human_readable)):
             ok, output = test()

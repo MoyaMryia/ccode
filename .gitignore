@@ -10,6 +10,7 @@ ansi-style-demo
 # Test binaries
 tests/test_json
 tests/test_agent
+tests/test_agent_asan
 tests/test_permissions
 tests/test_tui
 tests/test_markdown

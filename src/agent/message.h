@@ -29,9 +29,24 @@ struct ccode_tool_call {
 struct ccode_message {
     enum ccode_role role;
     char *content;
+    /* Chain-of-thought returned by a thinking model. Providers that carry the
+     * `tools` parameter (DeepSeek V3.2+ thinking mode) require it to be echoed
+     * back on every assistant turn or the request is rejected with HTTP 400;
+     * it is also concatenated into the cached context. NULL when absent. */
+    char *reasoning_content;
     struct ccode_tool_call *tool_calls;
     size_t tool_call_count;
     char *tool_call_id;
+    /* For a tool result whose output exceeded the inline preview: the id of
+     * the archived full output under the session's results dir, and its total
+     * byte count. Local metadata only - never sent upstream. NULL when the
+     * result fit inline. */
+    char *result_blob;
+    size_t result_total_bytes;
+    /* Optional second archive for a command's stderr overflow. NULL when the
+     * stderr preview was complete. */
+    char *result_blob_err;
+    size_t result_err_total_bytes;
 };
 
 struct ccode_conversation {
@@ -63,6 +78,23 @@ void ccode_conversation_destroy(struct ccode_conversation *conv);
 
 int ccode_conversation_add(struct ccode_conversation *conv, enum ccode_role role,
                            const char *content);
+
+/* Attach reasoning_content to the most recently added message, which must be
+ * an assistant turn. reasoning may be NULL to clear it. Returns 0 on success
+ * or -1 when the conversation is empty/not on an assistant or on OOM. */
+int ccode_conversation_set_reasoning(struct ccode_conversation *conv,
+                                     const char *reasoning);
+
+/* Attach an archived-result reference to the most recently added message,
+ * which must be a tool result. blob_id may be NULL to clear it. Returns 0 on
+ * success or -1 when the conversation is empty/not on a tool message or OOM. */
+int ccode_conversation_set_result_blob(struct ccode_conversation *conv,
+                                       const char *blob_id, size_t total_bytes);
+
+/* Same as above for a command's archived stderr stream. */
+int ccode_conversation_set_result_blob_err(struct ccode_conversation *conv,
+                                           const char *blob_id,
+                                           size_t total_bytes);
 
 int ccode_conversation_add_tool_call(struct ccode_conversation *conv,
                                      const char *id, const char *name,

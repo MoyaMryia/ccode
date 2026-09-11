@@ -47,7 +47,7 @@ src/
 ├── agent/
 │   ├── agent.c/h        # agent 主循环、工具调度、工作区管理
 │   ├── agent_*.c        # 按功能拆分的实现：fs/args/prepare/exec/output/cancel
-│   └── message.c/h      # 对话管理、请求序列化、会话持久化（v3 格式）
+│   └── message.c/h      # 对话管理、请求序列化、会话持久化（v5 格式）
 ├── cli/
 │   └── main.c           # ccode-cli 入口（JSON Lines 协议）
 ├── http.c/h             # HTTP/TLS 传输、SSE 流式接收（三态 TLS 后端）
@@ -128,7 +128,7 @@ SSE 按行解析 `data:` 事件，支持重定向、超时控制。
 
 | 类别 | 工具 |
 |------|------|
-| 只读 | `read_file`（带大小上限和截断标记）、`glob`、`grep`、`git_status`、`git_diff`、`git_stat` |
+| 只读 | `read_file`（带大小上限和截断标记）、`glob`、`grep`、`git_status`、`git_diff`、`git_stat`、`read_tool_output`（按 `tool_call_id` 取回被存档的超长工具输出窗口） |
 | 读写 | `write_file`（原子写入）、`edit_file`、`bash` / `run_command`、`delete_file` / `move_file`、`web_fetch` / `web_search`、`agent_tool`（子代理）、`task_create` / `task_update` / `task_list` |
 
 ### permissions/ — 审批
@@ -199,7 +199,10 @@ export CCODE_WORKSPACE="/path/to/project"   # 工作区，默认当前目录
 
 ### 会话
 
-存在 `$CCODE_SESSION_DIR`（默认 `~/.ccode/sessions/`），JSON v3 格式，带元数据。自动保存、可限制单会话大小和保留数量。
+存在 `$CCODE_SESSION_DIR`（默认 `~/.ccode/sessions/`），JSON v5 格式，带元数据。自动保存、可限制单会话大小和保留数量。
+
+- assistant 消息可带 `reasoning_content`（thinking 模型的思维链）。带 `tools` 的请求里 DeepSeek thinking 模式要求逐轮回传，否则上游 400；ccode 原样保存并在请求里回放（无 tools 时上游会忽略）。assistant 的空正文与 `content:null` 严格区分，保证 live 与 resume 的请求前缀字节一致，利于上游 prefix cache。
+- 超长工具结果（命令 stdout/stderr，或 `read_file` 读到的大文件）完整存进 `<session>.results/<id>`（内容哈希命名，0600，每流最多 4 MiB），消息里只留预览加本地 `result_ref`；`result_ref` 不回传上游。模型用 `read_tool_output(tool_call_id, stream, offset, limit)` 按 `tool_call_id` 分页取回（stdout/stderr 各自归档）。结果目录首次使用 `mkdir -p`；删除/重命名/剪枝会话时会一并清理该目录。
 
 ### 测试
 

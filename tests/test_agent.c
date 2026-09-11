@@ -37,6 +37,9 @@
 
 /* Test-only exports declared in agent.c. */
 char *test_exec_read_file(const char *workspace, const char *file_path);
+int test_configure_results(const char *session_path);
+const char *test_last_result_blob(void);
+const char *test_last_result_blob_err(void);
 char *test_exec_glob(const char *workspace, const char *pattern);
 char *test_exec_grep(const char *workspace, const char *pattern,
                      const char *include);
@@ -139,7 +142,7 @@ static void make_symlink(const char *target, const char *linkpath) {
     }
 }
 
-static void mkdir_p(const char *path) {
+static void test_mkdir_p(const char *path) {
     if (mkdir(path, 0755) == 0) return;
     if (errno == EEXIST) return;
     if (errno != ENOENT) { perror("mkdir"); exit(2); }
@@ -152,7 +155,7 @@ static void mkdir_p(const char *path) {
         if (plen >= sizeof(parent)) { perror("mkdir"); exit(2); }
         memcpy(parent, path, plen);
         parent[plen] = '\0';
-        mkdir_p(parent);
+        test_mkdir_p(parent);
         if (mkdir(path, 0755) != 0 && errno != EEXIST) {
             perror("mkdir"); exit(2);
         }
@@ -336,9 +339,10 @@ static int test_save_is_loadable_and_rejects_oversized_state(void) {
     ASSERT(ccode_conversation_save(&source, path, NULL, NULL, NULL) == 0);
     ASSERT(ccode_conversation_load(&loaded, path, NULL, NULL) == 0);
     ASSERT(loaded.count == 2);
-    /* NULL content is saved as content:"" (jsmn cannot parse null primitives
-     * adjacent to closing brackets), so it loads back as an empty string.
-     * The request serializer still emits content:null for NULL content. */
+    /* A NULL user/assistant content is a malformed state for user messages,
+     * which the provider requires to be a string; it is saved as content:""
+     * and loads back as an empty string. Assistant NULL is preserved
+     * separately (see test_assistant_content_round_trip_is_byte_stable). */
     ASSERT(loaded.messages[0].content != NULL);
     ASSERT(strcmp(loaded.messages[0].content, "") == 0);
     ASSERT(strcmp(loaded.messages[1].content, "reply") == 0);
@@ -360,6 +364,516 @@ static int test_save_is_loadable_and_rejects_oversized_state(void) {
     ccode_conversation_destroy(&source);
     ccode_conversation_destroy(&loaded);
     unlink(path);
+    return 1;
+}
+
+/* A live tool-call turn with no assistant text keeps content NULL; saving and
+ * reloading must preserve that so the rebuilt request is byte-identical and
+ * upstream prefix caching survives a resume. */
+static int test_assistant_content_round_trip_is_byte_stable(void) {
+    const char *path = "fixtures/session_null_content.json";
+    struct ccode_conversation live, resumed;
+    char *req_live, *req_resumed;
+
+    ASSERT(ccode_conversation_init(&live, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&live, CCODE_ROLE_SYSTEM, "sys") == 0);
+    ASSERT(ccode_conversation_add(&live, CCODE_ROLE_USER, "go") == 0);
+    ASSERT(ccode_conversation_add(&live, CCODE_ROLE_ASSISTANT, NULL) == 0);
+    ASSERT(ccode_conversation_add_tool_call(&live, "call_1", "read_file",
+                                            "{\"file_path\":\"a\"}") == 0);
+    ASSERT(ccode_conversation_add_tool_result(&live, "call_1",
+                                              "{\"ok\":true}") == 0);
+
+    ASSERT(ccode_conversation_save(&live, path, NULL, NULL, NULL) == 0);
+    ASSERT(ccode_conversation_init(&resumed, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_load(&resumed, path, NULL, NULL) == 0);
+    ASSERT(resumed.messages[2].content == NULL);
+
+    req_live = ccode_conversation_build_request(&live, "m", NULL, 0, NULL);
+    req_resumed = ccode_conversation_build_request(&resumed, "m", NULL, 0, NULL);
+    ASSERT(req_live != NULL && req_resumed != NULL);
+    ASSERT(strcmp(req_live, req_resumed) == 0);
+    ASSERT(strstr(req_live, "\"content\":null") != NULL);
+    ASSERT(strstr(req_live, "\"content\":\"\"") == NULL);
+
+    free(req_live);
+    free(req_resumed);
+    ccode_conversation_destroy(&live);
+    ccode_conversation_destroy(&resumed);
+    unlink(path);
+    return 1;
+}
+
+/* An assistant message whose content is the empty string (e.g. what a lossy
+ * older session produced) must serialize as content:null when it carries
+ * tool calls, never content:"". */
+static int test_assistant_empty_content_serializes_as_null(void) {
+    struct ccode_conversation conv;
+    char *req;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "") == 0);
+    ASSERT(ccode_conversation_add_tool_call(&conv, "call_1", "read_file",
+                                            "{}") == 0);
+    req = ccode_conversation_build_request(&conv, "m", NULL, 0, NULL);
+    ASSERT(req != NULL);
+    ASSERT(strstr(req, "\"content\":null") != NULL);
+    ASSERT(strstr(req, "\"content\":\"\"") == NULL);
+    free(req);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
+/* reasoning_content must survive a session round-trip and be echoed verbatim
+ * (required by DeepSeek thinking mode when the request carries tools). */
+static int test_reasoning_content_round_trips(void) {
+    const char *path = "fixtures/session_reasoning.json";
+    struct ccode_conversation live, resumed;
+    char *req;
+
+    ASSERT(ccode_conversation_init(&live, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&live, CCODE_ROLE_ASSISTANT, "answer") == 0);
+    ASSERT(ccode_conversation_set_reasoning(&live,
+        "step one\nstep two \"quoted\"") == 0);
+    ASSERT(ccode_conversation_add_tool_call(&live, "call_1", "read_file",
+                                            "{}") == 0);
+    ASSERT(ccode_conversation_save(&live, path, NULL, NULL, NULL) == 0);
+
+    ASSERT(ccode_conversation_init(&resumed, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_load(&resumed, path, NULL, NULL) == 0);
+    ASSERT(resumed.count == 1);
+    ASSERT(resumed.messages[0].reasoning_content != NULL);
+    ASSERT(strcmp(resumed.messages[0].reasoning_content,
+                  "step one\nstep two \"quoted\"") == 0);
+
+    req = ccode_conversation_build_request(&resumed, "m", NULL, 0, NULL);
+    ASSERT(req != NULL);
+    ASSERT(strstr(req,
+        "\"reasoning_content\":\"step one\\nstep two \\\"quoted\\\"\"") != NULL);
+    free(req);
+
+    ccode_conversation_destroy(&live);
+    ccode_conversation_destroy(&resumed);
+    unlink(path);
+    return 1;
+}
+
+/* reasoning_content on a non-assistant message is rejected fail-closed. */
+static int test_reasoning_content_requires_assistant(void) {
+    const char *path = "fixtures/session_reasoning_bad.json";
+    const char *bad =
+        "{\"version\":4,\"messages\":[{\"role\":\"user\",\"content\":\"x\","
+        "\"reasoning_content\":\"nope\"}],\"tasks\":null,\"changes\":null}";
+    struct ccode_conversation conv;
+
+    write_session_file(path, bad, strlen(bad));
+    ASSERT(ccode_conversation_init(&conv, 4) == 0);
+    ASSERT(ccode_conversation_load(&conv, path, NULL, NULL) == -1);
+    ccode_conversation_destroy(&conv);
+    unlink(path);
+    return 1;
+}
+
+/* result_ref is local metadata: it must survive save/load but never be sent
+ * to the provider. */
+static int test_result_blob_round_trip_and_strip(void) {
+    const char *path = "fixtures/session_result_ref.json";
+    struct ccode_conversation conv, loaded;
+    char *req;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add_tool_result(&conv, "call_1",
+                                              "{\"ok\":true}") == 0);
+    ASSERT(ccode_conversation_set_result_blob(&conv, "0123456789abcdef",
+                                              123456) == 0);
+    ASSERT(ccode_conversation_set_result_blob_err(&conv,
+                                                  "fedcba9876543210",
+                                                  654321) == 0);
+    ASSERT(ccode_conversation_save(&conv, path, NULL, NULL, NULL) == 0);
+
+    ASSERT(ccode_conversation_init(&loaded, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_load(&loaded, path, NULL, NULL) == 0);
+    ASSERT(loaded.count == 1);
+    ASSERT(loaded.messages[0].result_blob != NULL);
+    ASSERT(strcmp(loaded.messages[0].result_blob, "0123456789abcdef") == 0);
+    ASSERT(loaded.messages[0].result_total_bytes == 123456);
+    ASSERT(loaded.messages[0].result_blob_err != NULL);
+    ASSERT(strcmp(loaded.messages[0].result_blob_err,
+                  "fedcba9876543210") == 0);
+    ASSERT(loaded.messages[0].result_err_total_bytes == 654321);
+
+    req = ccode_conversation_build_request(&loaded, "m", NULL, 0, NULL);
+    ASSERT(req != NULL);
+    ASSERT(strstr(req, "result_ref") == NULL);
+    ASSERT(strstr(req, "0123456789abcdef") == NULL);
+    ASSERT(strstr(req, "fedcba9876543210") == NULL);
+    free(req);
+
+    ccode_conversation_destroy(&conv);
+    ccode_conversation_destroy(&loaded);
+    unlink(path);
+    return 1;
+}
+
+/* result_ref on a non-tool message is rejected fail-closed. */
+static int test_result_ref_requires_tool(void) {
+    const char *path = "fixtures/session_result_ref_bad.json";
+    const char *bad =
+        "{\"version\":5,\"messages\":[{\"role\":\"user\",\"content\":\"x\","
+        "\"result_ref\":{\"blob\":\"0123456789abcdef\",\"total_bytes\":1}}]"
+        ",\"tasks\":null,\"changes\":null}";
+    struct ccode_conversation conv;
+
+    write_session_file(path, bad, strlen(bad));
+    ASSERT(ccode_conversation_init(&conv, 4) == 0);
+    ASSERT(ccode_conversation_load(&conv, path, NULL, NULL) == -1);
+    ccode_conversation_destroy(&conv);
+    unlink(path);
+    return 1;
+}
+
+/* Archive/read: a full read, a mid window, boundaries, and hostile ids. */
+static int test_result_archive_and_read(void) {
+    struct agent_context ctx;
+    struct ccode_result_tail tail;
+    char base[512], blob_path[8192];
+    const char *preview = "PREVIEW-0123456789";
+    const char *body = "TAIL-abcdefghijklmnopqrstuvwxyz";
+    size_t plen = strlen(preview), tlen = strlen(body);
+    char *id = NULL, *data;
+    size_t total = 0, returned = 0, rtotal = 0;
+    int truncated = 0;
+    int i;
+
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&tail, 0, sizeof(tail));
+    snprintf(base, sizeof(base), "/tmp/ccode_results_probe_%d.json",
+             (int)getpid());
+    unlink(base);
+    ASSERT(ccode_results_configure(&ctx, base) == 0);
+    ASSERT(ctx.results_dir[0] != '\0');
+
+    ASSERT(ccode_results_archive(&ctx, preview, plen, body, tlen,
+                                 &id, &total) == 0);
+    ASSERT(id != NULL && strlen(id) == 16);
+    ASSERT(total == plen + tlen);
+
+    /* Deterministic: same bytes archive to the same content-addressed id. */
+    {
+        char *id2 = NULL;
+        size_t total2 = 0;
+        ASSERT(ccode_results_archive(&ctx, preview, plen, body, tlen,
+                                     &id2, &total2) == 0);
+        ASSERT(id2 != NULL && strcmp(id, id2) == 0 && total2 == total);
+        free(id2);
+    }
+
+    data = ccode_results_read(&ctx, id, 0, 100000, &returned, &rtotal,
+                              &truncated);
+    ASSERT(data != NULL && returned == plen + tlen && rtotal == plen + tlen);
+    ASSERT(truncated == 0);
+    ASSERT(strncmp(data, preview, plen) == 0);
+    ASSERT(strncmp(data + plen, body, tlen) == 0);
+    free(data);
+
+    data = ccode_results_read(&ctx, id, 3, 5, &returned, &rtotal, &truncated);
+    ASSERT(data != NULL && returned == 5 && truncated == 1);
+    ASSERT(strncmp(data, preview + 3, 5) == 0);
+    free(data);
+
+    data = ccode_results_read(&ctx, id, plen + tlen, 10, &returned, &rtotal,
+                              &truncated);
+    ASSERT(data != NULL && returned == 0 && truncated == 0);
+    free(data);
+
+    /* offset past the end */
+    ASSERT(ccode_results_read(&ctx, id, plen + tlen + 1, 10, &returned,
+                              &rtotal, &truncated) == NULL);
+    /* hostile / malformed ids */
+    ASSERT(ccode_results_read(&ctx, "../../etc/passwd", 0, 10, NULL, NULL,
+                              NULL) == NULL);
+    ASSERT(ccode_results_read(&ctx, "ABCDEF0123456789", 0, 10, NULL, NULL,
+                              NULL) == NULL);
+    ASSERT(ccode_results_read(&ctx, "short", 0, 10, NULL, NULL, NULL) == NULL);
+    /* valid hex, wrong length */
+    ASSERT(ccode_results_read(&ctx, "0123456789abcdef0", 0, 10, NULL, NULL,
+                              NULL) == NULL);
+    ASSERT(ccode_results_read(&ctx, "0123456789abcde", 0, 10, NULL, NULL,
+                              NULL) == NULL);
+    ASSERT(ccode_results_read(&ctx, "0000000000000000", 0, 10, NULL, NULL,
+                              NULL) == NULL);
+
+    /* tail capture is bounded and flags overflow instead of growing forever */
+    for (i = 0; i < 8; i++)
+        ASSERT(ccode_result_tail_append(&tail, body, tlen) == 0);
+    ASSERT(tail.overflow == 0);
+    {
+        char big[8192];
+        memset(big, 'x', sizeof(big));
+        for (i = 0; i < 700; i++) ccode_result_tail_append(&tail, big, sizeof(big));
+        ASSERT(tail.overflow == 1);
+        ASSERT(tail.len <= CCODE_RESULT_BLOB_MAX);
+    }
+    ccode_result_tail_free(&tail);
+
+    snprintf(blob_path, sizeof(blob_path), "%s/%s", ctx.results_dir, id);
+    unlink(blob_path);
+    rmdir(ctx.results_dir);
+    free(id);
+    return 1;
+}
+
+/* read_tool_output argument parsing: valid window, defaults, rejects. */
+static int test_read_tool_output_prepare(void) {
+    struct prepared_tool p;
+
+    memset(&p, 0, sizeof(p));
+    ASSERT(prepare_tool("read_tool_output",
+        "{\"tool_call_id\":\"call_spill1\",\"offset\":65536,"
+        "\"limit\":200000}", &p) == NULL);
+    ASSERT(p.kind == PREPARED_READ_TOOL_OUTPUT);
+    ASSERT(strcmp(p.value, "call_spill1") == 0);
+    ASSERT(p.result_offset == 65536);
+    ASSERT(p.result_limit == CCODE_RESULT_PREVIEW_BYTES);
+    prepared_tool_free(&p);
+
+    memset(&p, 0, sizeof(p));
+    ASSERT(prepare_tool("read_tool_output",
+        "{\"tool_call_id\":\"c1\"}", &p) == NULL);
+    ASSERT(p.result_offset == 0);
+    ASSERT(p.result_limit == CCODE_RESULT_PREVIEW_BYTES);
+    prepared_tool_free(&p);
+
+    memset(&p, 0, sizeof(p));
+    ASSERT(prepare_tool("read_tool_output",
+        "{\"tool_call_id\":\"c1\",\"stream\":\"stderr\"}", &p) == NULL);
+    ASSERT(strcmp(p.content, "stderr") == 0);
+    prepared_tool_free(&p);
+    memset(&p, 0, sizeof(p));
+    ASSERT(prepare_tool("read_tool_output",
+        "{\"tool_call_id\":\"c1\",\"stream\":\"bogus\"}", &p) != NULL);
+    prepared_tool_free(&p);
+
+    memset(&p, 0, sizeof(p));
+    ASSERT(prepare_tool("read_tool_output", "{}", &p) != NULL);
+    prepared_tool_free(&p);
+    memset(&p, 0, sizeof(p));
+    ASSERT(prepare_tool("read_tool_output",
+        "{\"tool_call_id\":\"c1\",\"bogus\":1}", &p) != NULL);
+    prepared_tool_free(&p);
+    return 1;
+}
+
+static int dir_exists(const char *p) {
+    struct stat st;
+    return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* Torture the reader: 1 MiB blob, boundary windows, and fuzzed offsets. */
+static int test_result_stress_windows(void) {
+    struct agent_context ctx;
+    char base[512];
+    char *big, *id = NULL, *data;
+    size_t n = 1024 * 1024;
+    size_t i, total = 0, returned = 0, rtotal = 0;
+    int truncated = 0;
+    unsigned long seed = 12345UL;
+    int k;
+
+    memset(&ctx, 0, sizeof(ctx));
+    snprintf(base, sizeof(base), "/tmp/ccode_results_stress_%d.json",
+             (int)getpid());
+    unlink(base);
+    ASSERT(ccode_results_configure(&ctx, base) == 0);
+
+    big = malloc(n);
+    ASSERT(big != NULL);
+    for (i = 0; i < n; i++) big[i] = (char)('a' + (int)(i % 26));
+    ASSERT(ccode_results_archive(&ctx, big, n, "", 0, &id, &total) == 0);
+    ASSERT(total == n && id != NULL);
+
+    {
+        size_t offs[] = {0, 1, 65535, 65536, n - 1, n};
+        size_t lims[] = {1, 65536, n, 1};
+        size_t a, b;
+        for (a = 0; a < sizeof(offs) / sizeof(offs[0]); a++) {
+            for (b = 0; b < sizeof(lims) / sizeof(lims[0]); b++) {
+                size_t expect;
+                data = ccode_results_read(&ctx, id, offs[a], lims[b],
+                                          &returned, &rtotal, &truncated);
+                ASSERT(data != NULL);
+                ASSERT(rtotal == n);
+                expect = n - offs[a];
+                if (expect > lims[b]) expect = lims[b];
+                ASSERT(returned == expect);
+                ASSERT(memcmp(data, big + offs[a], expect) == 0);
+                ASSERT(truncated == (offs[a] + returned < n));
+                free(data);
+            }
+        }
+    }
+    for (k = 0; k < 300; k++) {
+        size_t off, lim, expect;
+        seed = seed * 1103515245UL + 12345UL;
+        off = (size_t)(seed % (n + 100));
+        seed = seed * 1103515245UL + 12345UL;
+        lim = (size_t)(seed % 200000) + 1;
+        if (off > n) {
+            ASSERT(ccode_results_read(&ctx, id, off, lim, NULL, NULL,
+                                      NULL) == NULL);
+            continue;
+        }
+        data = ccode_results_read(&ctx, id, off, lim, &returned, &rtotal,
+                                  &truncated);
+        ASSERT(data != NULL && rtotal == n);
+        expect = n - off;
+        if (expect > lim) expect = lim;
+        ASSERT(returned == expect);
+        ASSERT(memcmp(data, big + off, expect) == 0);
+        free(data);
+    }
+
+    free(big);
+    {
+        char p[8192];
+        snprintf(p, sizeof(p), "%s/%s", ctx.results_dir, id);
+        unlink(p);
+    }
+    rmdir(ctx.results_dir);
+    free(id);
+    return 1;
+}
+
+/* read_file on a file larger than the preview must archive the whole file and
+ * expose it through the result store, not silently drop the tail. */
+static int test_read_file_archives_oversized(void) {
+    struct agent_context local;
+    char base[512], ws[256], *r, *data;
+    const char *blob;
+    size_t i, n = 120000, returned = 0, total = 0;
+    int truncated = 0;
+    char *content = malloc(n + 1);
+
+    ASSERT(content != NULL);
+    for (i = 0; i < n; i++) content[i] = (char)('a' + (int)(i % 26));
+    content[n] = '\0';
+    /* Isolated temp workspace: never perturb fixtures/ (glob/gitignore tests
+     * scan it, and a failed assertion here must not leave junk behind). */
+    snprintf(ws, sizeof(ws), "/tmp/ccode_read_ws_%d", (int)getpid());
+    mkdir(ws, 0700);
+    write_file_in(ws, "oversized_read.txt", content, n);
+    free(content);
+
+    test_reset_workspace();
+    snprintf(base, sizeof(base), "/tmp/ccode_read_archive_%d.json",
+             (int)getpid());
+    unlink(base);
+    ASSERT(test_configure_results(base) == 0);
+
+    r = test_exec_read_file(ws, "oversized_read.txt");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "\"truncated\":true") != NULL);
+    free(r);
+
+    blob = test_last_result_blob();
+    ASSERT(blob != NULL);
+    memset(&local, 0, sizeof(local));
+    ASSERT(ccode_results_configure(&local, base) == 0);
+    data = ccode_results_read(&local, blob, 0, n + 10, &returned, &total,
+                              &truncated);
+    ASSERT(data != NULL);
+    ASSERT(total == n && returned == n && truncated == 0);
+    ASSERT(strncmp(data, "abcdefghij", 10) == 0);
+    ASSERT(data[n - 1] == "abcdefghijklmnopqrstuvwxyz"[(n - 1) % 26]);
+    free(data);
+
+    {
+        char p[8192];
+        snprintf(p, sizeof(p), "%s/%s", local.results_dir, blob);
+        unlink(p);
+    }
+    rmdir(local.results_dir);
+    {
+        char p[1200];
+        snprintf(p, sizeof(p), "%s/oversized_read.txt", ws);
+        unlink(p);
+    }
+    rmdir(ws);
+    return 1;
+}
+
+/* A command whose stderr overflows the preview archives stderr separately. */
+static int test_command_archives_stderr(void) {
+    struct agent_context local;
+    char base[512], *r, *data;
+    const char *blob;
+    size_t returned = 0, total = 0;
+    int truncated = 0;
+
+    test_reset_workspace();
+    snprintf(base, sizeof(base), "/tmp/ccode_stderr_archive_%d.json",
+             (int)getpid());
+    unlink(base);
+    ASSERT(test_configure_results(base) == 0);
+
+    r = test_exec_tool(".", "bash",
+        "{\"command\":\"yes E | head -c 200000 1>&2\"}");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "\"stderr_truncated\":true") != NULL);
+    free(r);
+
+    blob = test_last_result_blob_err();
+    ASSERT(blob != NULL);
+    memset(&local, 0, sizeof(local));
+    ASSERT(ccode_results_configure(&local, base) == 0);
+    data = ccode_results_read(&local, blob, 0, 300000, &returned, &total,
+                              &truncated);
+    ASSERT(data != NULL);
+    ASSERT(total > 65536 && returned == total && truncated == 0);
+    ASSERT(strncmp(data, "E\n", 2) == 0);
+    free(data);
+
+    {
+        char p[8192];
+        snprintf(p, sizeof(p), "%s/%s", local.results_dir, blob);
+        unlink(p);
+    }
+    rmdir(local.results_dir);
+    return 1;
+}
+
+/* Configuring the archive for a brand-new nested session path must create the
+ * missing parents (the first turn can run before the session is ever saved). */
+static int test_result_configure_creates_parents(void) {
+    struct agent_context ctx;
+    char base[512], tmp[1024];
+    struct stat st;
+
+    snprintf(base, sizeof(base), "/tmp/ccode_cfg_parents_%d/a/b/c.json",
+             (int)getpid());
+    memset(&ctx, 0, sizeof(ctx));
+    ASSERT(ccode_results_configure(&ctx, base) == 0);
+    ASSERT(ctx.results_dir[0] != '\0');
+    ASSERT(stat(ctx.results_dir, &st) == 0 && S_ISDIR(st.st_mode));
+
+    rmdir(ctx.results_dir);
+    snprintf(tmp, sizeof(tmp), "/tmp/ccode_cfg_parents_%d/a/b", (int)getpid());
+    rmdir(tmp);
+    snprintf(tmp, sizeof(tmp), "/tmp/ccode_cfg_parents_%d/a", (int)getpid());
+    rmdir(tmp);
+    snprintf(tmp, sizeof(tmp), "/tmp/ccode_cfg_parents_%d", (int)getpid());
+    rmdir(tmp);
+    return 1;
+}
+
+/* A result path too long to hold ".results" must fail closed. */
+static int test_result_configure_rejects_long_path(void) {    struct agent_context ctx;
+    char huge[6000];
+    memset(&ctx, 0, sizeof(ctx));
+    memset(huge, 'a', sizeof(huge) - 1);
+    huge[sizeof(huge) - 1] = '\0';
+    ASSERT(ccode_results_configure(&ctx, huge) == -1);
+    ASSERT(ctx.results_dir[0] == '\0');
     return 1;
 }
 
@@ -543,7 +1057,7 @@ static int test_invalid_workspace_fails_closed(void) {
 
 static int test_read_rejects_symlink_ancestor(void) {
     char *r;
-    mkdir_p("fixtures/ancestor_real");
+    test_mkdir_p("fixtures/ancestor_real");
     write_file("fixtures/ancestor_real/secret.txt", "secret", 6);
     unlink("fixtures/ancestor_link");
     make_symlink("ancestor_real", "fixtures/ancestor_link");
@@ -575,7 +1089,7 @@ static int test_workspace_root_replacement_uses_fixed_fd(void) {
     char *r;
     snprintf(root, sizeof(root), "fixtures/root_%ld", (long)getpid());
     snprintf(moved, sizeof(moved), "fixtures/root_%ld_moved", (long)getpid());
-    mkdir_p(root);
+    test_mkdir_p(root);
     snprintf(file, sizeof(file), "%s/value.txt", root);
     write_file(file, "trusted", 7);
 
@@ -693,7 +1207,7 @@ static int test_small_text_passes(void) {
 }
 
 static int test_glob_emits_relative_paths(void) {
-    mkdir_p("fixtures/glob_relative/sub");
+    test_mkdir_p("fixtures/glob_relative/sub");
     write_file("fixtures/glob_relative/sub/alpha.c", "int a;\n", 7);
     write_file("fixtures/glob_relative/sub/beta.c",  "int b;\n", 7);
     write_file("fixtures/glob_relative/top.c",        "int t;\n", 7);
@@ -726,7 +1240,7 @@ static int test_glob_emits_relative_paths(void) {
 }
 
 static int test_glob_starstar_recurses(void) {
-    mkdir_p("fixtures/deep/d1/d2");
+    test_mkdir_p("fixtures/deep/d1/d2");
     write_file("fixtures/deep/d1/d2/x.h", "x\n", 2);
     {
         char *r;
@@ -741,7 +1255,7 @@ static int test_glob_starstar_recurses(void) {
 
 static int test_glob_nested_pattern_matches_relative_path(void) {
     char *r;
-    mkdir_p("fixtures/glob_nested/src/lib");
+    test_mkdir_p("fixtures/glob_nested/src/lib");
     write_file("fixtures/glob_nested/src/lib/nested.c", "int n;\n", 7);
     test_reset_workspace();
     r = test_exec_glob("fixtures/glob_nested", "src/**/*.c");
@@ -757,7 +1271,7 @@ static int test_glob_nested_pattern_matches_relative_path(void) {
 
 static int test_glob_truncates_after_max_results(void) {
     size_t i;
-    mkdir_p("fixtures/glob_limit");
+    test_mkdir_p("fixtures/glob_limit");
     /* Exceed the CCODE_MAX_GLOB_RESULTS (200) limit. */
     for (i = 0; i < 210; i++) {
         char name[96];
@@ -786,7 +1300,7 @@ static int test_glob_truncates_after_max_results(void) {
 }
 
 static int test_glob_rejects_symlink(void) {
-    mkdir_p("fixtures/glob_symlink");
+    test_mkdir_p("fixtures/glob_symlink");
     write_file("fixtures/glob_symlink/real_target.c", "int r;\n", 7);
     make_symlink("real_target.c", "fixtures/glob_symlink/link_target.c");
     {
@@ -806,7 +1320,7 @@ static int test_glob_rejects_symlink(void) {
 }
 
 static int test_grep_emits_relative_paths(void) {
-    mkdir_p("fixtures/grep_relative/grep_sub");
+    test_mkdir_p("fixtures/grep_relative/grep_sub");
     write_file("fixtures/grep_relative/grep_sub/gamma.c", "int marker_alpha = 1;\n", 23);
     write_file("fixtures/grep_relative/grep_top.c",       "int marker_alpha = 2;\n", 23);
     {
@@ -837,7 +1351,7 @@ static int test_grep_emits_relative_paths(void) {
 static int test_grep_truncates_after_max_matches(void) {
     size_t i;
     char text[64];
-    mkdir_p("fixtures/grep_limit");
+    test_mkdir_p("fixtures/grep_limit");
     snprintf(text, sizeof(text), "needle\n");
     for (i = 0; i < 210; i++) {
         char name[96];
@@ -866,7 +1380,7 @@ static int test_grep_truncates_after_max_matches(void) {
 }
 
 static int test_grep_uses_include_filter(void) {
-    mkdir_p("fixtures/grep_include/inc_sub");
+    test_mkdir_p("fixtures/grep_include/inc_sub");
     write_file("fixtures/grep_include/inc_sub/a.c",   "include_match\n", 14);
     write_file("fixtures/grep_include/inc_sub/a.py", "include_match\n", 14);
     {
@@ -887,7 +1401,7 @@ static int test_grep_uses_include_filter(void) {
 
 static int test_grep_without_include(void) {
     char *r;
-    mkdir_p("fixtures/grep_no_include");
+    test_mkdir_p("fixtures/grep_no_include");
     write_file("fixtures/grep_no_include/no_include.txt", "literal[needle]\n", 16);
     test_reset_workspace();
     r = test_exec_tool("fixtures/grep_no_include", "grep", "{\"pattern\":\"literal[needle]\"}");
@@ -919,7 +1433,7 @@ static int test_grep_with_context(void) {
 static int test_glob_respects_gitignore(void) {
     char *r;
     unlink("fixtures/.gitignore");
-    mkdir_p("fixtures/gi_sub");
+    test_mkdir_p("fixtures/gi_sub");
     write_file("fixtures/gi_sub/keep.c", "int x;\n", 7);
     write_file("fixtures/gi_sub/ignore.o", "data\n", 5);
     write_file("fixtures/.gitignore", "*.o\n", 4);
@@ -941,7 +1455,7 @@ static int test_grep_skips_binary(void) {
     size_t i;
     for (i = 0; i < sizeof(bin); i++) bin[i] = (unsigned char)(i % 256);
     bin[0] = 0; bin[1] = 0;
-    mkdir_p("fixtures/grep_binary");
+    test_mkdir_p("fixtures/grep_binary");
     write_file("fixtures/grep_binary/grep_bin.bin", bin, sizeof(bin));
     write_file("fixtures/grep_binary/grep_bin.txt", "needle\n", 7);
     test_reset_workspace();
@@ -977,7 +1491,7 @@ static int test_edit_file_rejects_binary(void) {
 static int test_grep_respects_gitignore(void) {
     char *r;
     unlink("fixtures/.gitignore");
-    mkdir_p("fixtures/gi_sub2");
+    test_mkdir_p("fixtures/gi_sub2");
     write_file("fixtures/gi_sub2/src.c",   "my_data\n", 8);
     write_file("fixtures/gi_sub2/output.o", "my_data\n", 8);
     write_file("fixtures/.gitignore", "*.o\n", 4);
@@ -1475,7 +1989,7 @@ static int test_tool_argument_shapes(void) {
 static int test_tool_arguments_decode_json_strings(void) {
     char *r;
 
-    mkdir_p("fixtures/json_decode/slash");
+    test_mkdir_p("fixtures/json_decode/slash");
     write_file("fixtures/json_decode/escaped name.txt", "decoded", 7);
     test_reset_workspace();
     r = test_exec_tool("fixtures/json_decode", "read_file",
@@ -1581,7 +2095,7 @@ static int test_decoded_argument_length_limit(void) {
 static int test_scan_byte_budget_truncates(void) {
     int fd;
     char *r;
-    mkdir_p("fixtures_budget");
+    test_mkdir_p("fixtures_budget");
     fd = open("fixtures_budget/large.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     ASSERT(fd >= 0);
     ASSERT(ftruncate(fd, 9 * 1024 * 1024) == 0);
@@ -2235,7 +2749,7 @@ static int setup_git_repo(void) {
     if (!git_repo_path) return 0;
     memcpy(git_repo_path, path, plen + 1);
 
-    mkdir_p(git_repo_path);
+    test_mkdir_p(git_repo_path);
 
     /* git init */
     test_reset_workspace();
@@ -2412,7 +2926,7 @@ static int test_git_status_non_repository(void) {
     char *r;
 
     snprintf(dir, sizeof(dir), "/tmp/ccode_notarepo_%ld", (long)getpid());
-    mkdir_p(dir);
+    test_mkdir_p(dir);
     test_reset_workspace();
     r = test_exec_tool(dir, "git_status", "{}");
     ASSERT(r != NULL);
@@ -2532,7 +3046,7 @@ static int test_git_does_not_discover_parent_repository(void) {
     snprintf(root, sizeof(root), "fixtures/parent_repo_%ld", (long)getpid());
     snprintf(nested, sizeof(nested), "%s/workspace", root);
     snprintf(sibling, sizeof(sibling), "%s/outside.txt", root);
-    mkdir_p(nested);
+    test_mkdir_p(nested);
     test_reset_workspace();
     argv[0] = "git"; argv[1] = "init"; argv[2] = NULL;
     r = test_exec_run_command(root, argv, 2, 10000); free(r);
@@ -2890,8 +3404,8 @@ static int test_conversation_hard_cap(void) {
 }
 
 static int test_glob_path_scope_restricts_results(void) {
-    mkdir_p("fixtures/glob_scope_a");
-    mkdir_p("fixtures/glob_scope_b");
+    test_mkdir_p("fixtures/glob_scope_a");
+    test_mkdir_p("fixtures/glob_scope_b");
     write_file("fixtures/glob_scope_a/match.c", "a\n", 2);
     write_file("fixtures/glob_scope_b/match.c", "b\n", 2);
     write_file("fixtures/glob_top_match.c",     "t\n", 2);
@@ -2915,8 +3429,8 @@ static int test_glob_path_scope_restricts_results(void) {
 }
 
 static int test_grep_path_scope_restricts_results(void) {
-    mkdir_p("fixtures/grep_scope_a");
-    mkdir_p("fixtures/grep_scope_b");
+    test_mkdir_p("fixtures/grep_scope_a");
+    test_mkdir_p("fixtures/grep_scope_b");
     write_file("fixtures/grep_scope_a/match.txt", "needle\n", 7);
     write_file("fixtures/grep_scope_b/match.txt", "needle\n", 7);
     write_file("fixtures/grep_top_match.txt",     "needle\n", 7);
@@ -2946,7 +3460,7 @@ static int test_temp_cleanup(void) {
     int found_a = 0;
     int found_b = 0;
 
-    mkdir_p("fixtures");
+    test_mkdir_p("fixtures");
     test_reset_workspace();
     ccode_test_cleanup_residual_temp_files();
 
@@ -3016,7 +3530,7 @@ static int test_cancel_flag_resets(void) {
 static int test_gitignore_respects_when_enabled(void) {
     char *r;
     unlink("fixtures/.gitignore");
-    mkdir_p("fixtures/gi_sub_en");
+    test_mkdir_p("fixtures/gi_sub_en");
     write_file("fixtures/gi_sub_en/keep.c", "int x;\n", 7);
     write_file("fixtures/gi_sub_en/ignore.o", "data\n", 5);
     write_file("fixtures/.gitignore", "*.o\n", 4);
@@ -3037,7 +3551,7 @@ static int test_gitignore_respects_when_enabled(void) {
 static int test_gitignore_override_env_includes_ignored(void) {
     char *r;
     unlink("fixtures/.gitignore");
-    mkdir_p("fixtures/gi_sub_ov");
+    test_mkdir_p("fixtures/gi_sub_ov");
     write_file("fixtures/gi_sub_ov/keep.c", "int x;\n", 7);
     write_file("fixtures/gi_sub_ov/ignore.o", "data\n", 5);
     write_file("fixtures/.gitignore", "*.o\n", 4);
@@ -3059,7 +3573,7 @@ static int test_gitignore_override_env_includes_ignored(void) {
 static int test_gitignore_nested_directory_wins(void) {
     char *r;
     unlink("fixtures/.gitignore");
-    mkdir_p("fixtures/gi_nested/inner");
+    test_mkdir_p("fixtures/gi_nested/inner");
     write_file("fixtures/gi_nested/keep.c", "k\n", 2);
     write_file("fixtures/gi_nested/inner/skip.c", "sk\n", 3);
     write_file("fixtures/gi_nested/inner/.gitignore", "skip.c\n", 7);
@@ -3093,7 +3607,7 @@ static int test_git_stat_non_repository(void) {
     char dir[300];
     char *r;
     snprintf(dir, sizeof(dir), "/tmp/ccode_notarepo_stat_%ld", (long)getpid());
-    mkdir_p(dir);
+    test_mkdir_p(dir);
     test_reset_workspace();
     r = test_exec_tool(dir, "git_stat", "{}");
     ASSERT(r != NULL);
@@ -3198,6 +3712,51 @@ static void teardown_session_test(void) {
     closedir(d);
     rmdir(session_test_dir);
     unsetenv("CCODE_SESSION_DIR");
+}
+
+/* Deleting/renaming a session must take its .results archive with it. */
+static int test_result_lifecycle_delete_and_rename(void) {
+    struct agent_context ctx;
+    struct ccode_conversation conv;
+    char session[1024], oldres[1100], newres[1100];
+    char *id = NULL;
+    size_t total = 0;
+
+    ASSERT(setup_session_test() == 0);
+    snprintf(session, sizeof(session), "%s/life.json", session_test_dir);
+    ASSERT(ccode_conversation_init(&conv, 4) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hi") == 0);
+    ASSERT(ccode_conversation_save(&conv, session, NULL, NULL, NULL) == 0);
+
+    ASSERT(ccode_results_configure(&ctx, session) == 0);
+    snprintf(oldres, sizeof(oldres), "%s.results", session);
+    ASSERT(dir_exists(oldres));
+    ASSERT(ccode_results_archive(&ctx, "payload", 7, "", 0, &id, &total) == 0);
+    free(id);
+
+    ASSERT(ccode_session_delete("life.json") == 0);
+    ASSERT(!dir_exists(oldres));
+
+    /* rename carries the archive to the new session name */
+    id = NULL;
+    total = 0;
+    ASSERT(ccode_conversation_save(&conv, session, NULL, NULL, NULL) == 0);
+    memset(&ctx, 0, sizeof(ctx));
+    ASSERT(ccode_results_configure(&ctx, session) == 0);
+    ASSERT(ccode_results_archive(&ctx, "payload", 7, "tail", 4, &id, &total) == 0);
+    free(id);
+    snprintf(newres, sizeof(newres), "%s/life2.json.results", session_test_dir);
+    ASSERT(dir_exists(oldres));
+    ASSERT(ccode_session_rename("life.json", "life2.json") == 0);
+    ASSERT(!dir_exists(oldres));
+    ASSERT(dir_exists(newres));
+
+    ASSERT(ccode_session_delete("life2.json") == 0);
+    ASSERT(!dir_exists(newres));
+
+    ccode_conversation_destroy(&conv);
+    teardown_session_test();
+    return 1;
 }
 
 static int test_session_list_empty(void) {
@@ -4122,6 +4681,52 @@ static int test_web_search_parse_html(void) {
     ASSERT(r != NULL);
     ASSERT(strstr(r, "\"results\":[]") != NULL);
     free(r);
+
+    /* Oversized fields stay valid JSON and are bounded. */
+    {
+        char *bad = malloc(60000);
+        char *out;
+        size_t pos = 0;
+        int i;
+        ASSERT(bad != NULL);
+        pos += (size_t)snprintf(bad + pos, 60000 - pos,
+            "<li class=\"b_algo\"><h2><a href=\"");
+        for (i = 0; i < 10000; i++) bad[pos++] = 'u';
+        pos += (size_t)snprintf(bad + pos, 60000 - pos, "\">");
+        for (i = 0; i < 10000; i++) bad[pos++] = 'T';
+        pos += (size_t)snprintf(bad + pos, 60000 - pos, "</a></h2><p>");
+        for (i = 0; i < 10000; i++) bad[pos++] = 'S';
+        pos += (size_t)snprintf(bad + pos, 60000 - pos, "</p></li>");
+        bad[pos] = '\0';
+        out = ccode_web_search_parse_html(bad, pos);
+        ASSERT(out != NULL);
+        ASSERT(out[0] == '{');
+        ASSERT(out[strlen(out) - 1] == '}');
+        ASSERT(strlen(out) < 4096 * 4 + 256);
+        free(out);
+        free(bad);
+    }
+    /* More than WS_MAX_RESULTS blocks are capped. */
+    {
+        char *many = malloc(20000);
+        char *out;
+        size_t pos = 0;
+        int i, count = 0;
+        const char *p;
+        ASSERT(many != NULL);
+        for (i = 0; i < 20; i++)
+            pos += (size_t)snprintf(many + pos, 20000 - pos,
+                "<li class=\"b_algo\"><h2><a href=\"https://e/%d\">t%d</a></h2>"
+                "<p>s%d</p></li>", i, i, i);
+        many[pos] = '\0';
+        out = ccode_web_search_parse_html(many, pos);
+        ASSERT(out != NULL);
+        p = out;
+        while ((p = strstr(p, "\"title\"")) != NULL) { count++; p++; }
+        ASSERT(count == 8);
+        free(out);
+        free(many);
+    }
     return 1;
 }
 
@@ -4411,7 +5016,7 @@ static int test_session_prune_keep_count(void) {
         memcpy(old_env, saved, strlen(saved) + 1);
     }
     snprintf(dir, sizeof(dir), "fixtures/session_prune_%ld", (long)getpid());
-    mkdir_p(dir);
+    test_mkdir_p(dir);
     if (setenv("CCODE_SESSION_DIR", dir, 1) != 0) goto out;
     if (setenv("CCODE_SESSION_KEEP_COUNT", "3", 1) != 0) goto out;
 
@@ -4621,7 +5226,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    mkdir_p("fixtures");
+    test_mkdir_p("fixtures");
 
     fprintf(stderr, "=== agent.c unit tests ===\n");
 
@@ -4764,6 +5369,20 @@ int main(int argc, char **argv) {
     TEST(load_rejects_strict_schema_and_is_transactional);
     TEST(content_limit_is_exact);
     TEST(save_is_loadable_and_rejects_oversized_state);
+    TEST(assistant_content_round_trip_is_byte_stable);
+    TEST(assistant_empty_content_serializes_as_null);
+    TEST(reasoning_content_round_trips);
+    TEST(reasoning_content_requires_assistant);
+    TEST(result_blob_round_trip_and_strip);
+    TEST(result_ref_requires_tool);
+    TEST(result_archive_and_read);
+    TEST(read_tool_output_prepare);
+    TEST(read_file_archives_oversized);
+    TEST(command_archives_stderr);
+    TEST(result_lifecycle_delete_and_rename);
+    TEST(result_stress_windows);
+    TEST(result_configure_creates_parents);
+    TEST(result_configure_rejects_long_path);
 
     /* Phase 5: Session management tests */
     TEST(session_list_empty);

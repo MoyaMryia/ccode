@@ -48,6 +48,12 @@ struct ccode_change {
 #define CCODE_MAX_TASKS 16
 #define CCODE_MAX_TASK_LEN 256
 
+/* Tool results larger than the inline preview are archived whole under the
+ * session's results directory; the model sees the preview and can pull more
+ * with read_tool_output. */
+#define CCODE_RESULT_PREVIEW_BYTES (64 * 1024)
+#define CCODE_RESULT_BLOB_MAX (4 * 1024 * 1024)
+
 struct ccode_task {
     char id[16];
     char content[CCODE_MAX_TASK_LEN];
@@ -78,12 +84,55 @@ struct agent_context {
     int subagent_depth;
     char *last_change_summary;
     char *last_task_summary;
+    /* Per-session archive for oversized tool results (<session>.results).
+     * Empty when the session is not being saved: nothing is spilled. */
+    char results_dir[4096];
+    char *last_result_blob;
+    size_t last_result_total;
+    char *last_result_blob_err;
+    size_t last_result_total_err;
 };
+
+/* Growable capture of command output beyond the inline preview. Bounded by
+ * CCODE_RESULT_BLOB_MAX; overflow is flagged, never silent. */
+struct ccode_result_tail {
+    char *data;
+    size_t len;
+    size_t cap;
+    int overflow;
+};
+int ccode_result_tail_append(struct ccode_result_tail *t,
+                             const char *p, size_t n);
+void ccode_result_tail_free(struct ccode_result_tail *t);
+
+/* Configure ctx->results_dir from a session file path (creates the directory).
+ * A NULL/empty path disables spilling. Returns 0 on success, -1 on failure. */
+int ccode_results_configure(struct agent_context *ctx, const char *session_path);
+
+/* Archive preview+tail as one content-addressed blob. On success *id_out is a
+ * newly allocated id (caller frees) and *total_out is preview_len+tail_len.
+ * Returns 0 on success, -1 on failure. */
+int ccode_results_archive(struct agent_context *ctx,
+                          const char *preview, size_t preview_len,
+                          const char *tail, size_t tail_len,
+                          char **id_out, size_t *total_out);
+
+/* Read up to limit bytes at offset from blob id (validated hex name inside
+ * ctx->results_dir). On success returns a newly allocated buffer (caller
+ * frees), and sets returned_out, total_out and truncated_out (more remains).
+ * Returns NULL on failure. */
+char *ccode_results_read(struct agent_context *ctx, const char *id,
+                         size_t offset, size_t limit,
+                         size_t *returned_out, size_t *total_out,
+                         int *truncated_out);
 
 /* Initialize the fixed-size portion of a fresh context (zeroes everything
  * and marks the workspace as uninitialized). Pointer fields (the summary
  * caches) are left untouched by this function. */
 void ccode_agent_context_init(struct agent_context *ctx);
+
+/* Create path and any missing parents (mkdir -p). Defined in message.c. */
+int mkdir_p(const char *path);
 
 enum prepared_tool_kind {
     PREPARED_READ_FILE,
@@ -104,6 +153,7 @@ enum prepared_tool_kind {
     PREPARED_WEB_FETCH,
     PREPARED_AGENT_TOOL,
     PREPARED_WEB_SEARCH,
+    PREPARED_READ_TOOL_OUTPUT,
 
 };
 
@@ -130,6 +180,9 @@ struct prepared_tool {
     int web_timeout_sec;
     size_t web_max_size;
     int read_only_subagent;
+    /* read_tool_output window: value holds the tool_call_id. */
+    size_t result_offset;
+    size_t result_limit;
 };
 
 /* Free the heap-owned fields of `prepared` and zero them. Safe on a zeroed

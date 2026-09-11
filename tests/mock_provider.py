@@ -271,6 +271,57 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                     })},
                 ]
 
+        elif test_mode == "thinking-tools":
+            # DeepSeek thinking mode with tools: every historical assistant
+            # message MUST carry reasoning_content or the API returns 400.
+            thinking_on = (isinstance(req.get("thinking"), dict) and
+                           req["thinking"].get("type") == "enabled")
+            has_tools = bool(req.get("tools"))
+            if thinking_on and has_tools:
+                for msg in req.get("messages", []):
+                    if (msg.get("role") == "assistant" and
+                            not isinstance(msg.get("reasoning_content"), str)):
+                        err_body = json.dumps({"error": {
+                            "message": "reasoning_content is required in the "
+                                       "assistant message when tools are used",
+                            "type": "invalid_request_error",
+                            "code": "invalid_request_error"}})
+                        self.send_response(400)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length",
+                                         str(len(err_body.encode("utf-8"))))
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(err_body.encode("utf-8"))
+                        self.close_connection = True
+                        return
+            has_tool_result = any(msg.get("role") == "tool"
+                                  for msg in req.get("messages", []))
+            if has_tool_result:
+                events = [
+                    {"data": json.dumps({"choices": [{"index": 0, "delta": {
+                        "reasoning_content": "The tool returned; answer now."},
+                        "finish_reason": None}]})},
+                    {"data": json.dumps({"choices": [{"index": 0, "delta": {
+                        "content": "thinking-tools done"},
+                        "finish_reason": "stop"}]})},
+                ]
+            else:
+                events = [
+                    {"data": json.dumps({"choices": [{"index": 0, "delta": {
+                        "reasoning_content": "I should inspect the file."},
+                        "finish_reason": None}]})},
+                    {"data": json.dumps({"choices": [{"index": 0, "delta": {
+                        "tool_calls": [{
+                            "index": 0, "id": "call_think1",
+                            "type": "function",
+                            "function": {"name": "read_file",
+                                         "arguments": '{"file_path":"test.txt"}'}}]},
+                        "finish_reason": None}]})},
+                    {"data": json.dumps({"choices": [{"index": 0, "delta": {},
+                        "finish_reason": "tool_calls"}]})},
+                ]
+
         elif test_mode == "tool-calls-write":
             has_tool_result = any(msg.get("role") == "tool"
                                   for msg in req.get("messages", []))
@@ -608,6 +659,148 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                           {"data": json.dumps({
                               "choices": [{"index": 0, "delta": {},
                                            "finish_reason": "tool_calls"}]})}]
+
+        elif test_mode == "reasoning-newlines":
+            # Chain-of-thought must render real newlines/tabs, not the
+            # escaped "\n" form used for single-line safety rendering.
+            events = [
+                {"data": json.dumps({
+                    "choices": [{"index": 0,
+                                 "delta": {"reasoning_content":
+                                           "think line one\nthink\tline two"},
+                                 "finish_reason": None}]
+                })},
+                {"data": json.dumps({
+                    "choices": [{"index": 0,
+                                 "delta": {"content": "final answer"},
+                                 "finish_reason": None}]
+                })},
+                {"data": json.dumps({
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+                })},
+            ]
+
+        elif test_mode == "result-spill-fixture":
+            # Turn 1: run a command whose stdout far exceeds the 64 KiB inline
+            # preview. Turn 2: the model must notice stdout_truncated and pull
+            # the archived tail with read_tool_output. Turn 3: verify the tail
+            # marker survived the archive/read round-trip.
+            msgs = req.get("messages", [])
+            tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+            read_results = [m for m in tool_msgs
+                            if "returned_bytes" in str(m.get("content", ""))]
+            if not tool_msgs:
+                events = [
+                    {"data": json.dumps({"choices": [{"index": 0, "delta": {
+                        "content": "Generating a huge output..."},
+                        "finish_reason": None}]})},
+                    {"data": json.dumps({"choices": [{"index": 0, "delta": {
+                        "tool_calls": [{
+                            "index": 0, "id": "call_spill1", "type": "function",
+                            "function": {
+                                "name": "bash",
+                                "arguments": json.dumps({"command":
+                                    "printf START; yes A | head -c 200000; "
+                                    "printf ENDMARK9999"})}}]},
+                        "finish_reason": None}]})},
+                    {"data": json.dumps({"choices": [{"index": 0, "delta": {},
+                        "finish_reason": "tool_calls"}]})},
+                ]
+            elif not read_results:
+                tcid = None
+                for m in tool_msgs:
+                    if "stdout_truncated" in str(m.get("content", "")):
+                        tcid = m.get("tool_call_id")
+                if tcid is None:
+                    events = [{"data": json.dumps({"choices": [{
+                        "index": 0, "delta": {"content": "RESULT_NOT_TRUNCATED"},
+                        "finish_reason": "stop"}]})}]
+                else:
+                    events = [
+                        {"data": json.dumps({"choices": [{"index": 0, "delta": {
+                            "content": "Pulling the archived tail..."},
+                            "finish_reason": None}]})},
+                        {"data": json.dumps({"choices": [{"index": 0, "delta": {
+                            "tool_calls": [{
+                                "index": 0, "id": "call_read1",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_tool_output",
+                                    "arguments": json.dumps({
+                                        "tool_call_id": tcid,
+                                        "offset": 199000,
+                                        "limit": 65536})}}]},
+                            "finish_reason": None}]})},
+                        {"data": json.dumps({"choices": [{"index": 0, "delta": {},
+                            "finish_reason": "tool_calls"}]})},
+                    ]
+            else:
+                got = str(read_results[-1].get("content", ""))
+                marker = "ENDMARK9999" if "ENDMARK9999" in got else "TAIL_MISSING"
+                events = [{"data": json.dumps({"choices": [{"index": 0, "delta": {
+                    "content": "spill " + marker},
+                    "finish_reason": "stop"}]})}]
+
+        elif test_mode == "result-spill-stderr":
+            # Same as result-spill-fixture but the huge stream is stderr, so
+            # only the stderr archive should exist and stream=stderr must
+            # select it.
+            msgs = req.get("messages", [])
+            tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+            read_results = [m for m in tool_msgs
+                            if "returned_bytes" in str(m.get("content", ""))]
+            if not tool_msgs:
+                events = [
+                    {"data": json.dumps({"choices": [{"index": 0, "delta": {
+                        "content": "Generating a huge stderr..."},
+                        "finish_reason": None}]})},
+                    {"data": json.dumps({"choices": [{"index": 0, "delta": {
+                        "tool_calls": [{
+                            "index": 0, "id": "call_spillerr", "type": "function",
+                            "function": {
+                                "name": "bash",
+                                "arguments": json.dumps({"command":
+                                    "printf OUT; yes E | head -c 200000 1>&2; "
+                                    "printf ENDERR2 1>&2"})}}]},
+                        "finish_reason": None}]})},
+                    {"data": json.dumps({"choices": [{"index": 0, "delta": {},
+                        "finish_reason": "tool_calls"}]})},
+                ]
+            elif not read_results:
+                tcid = None
+                for m in tool_msgs:
+                    if "stderr_truncated" in str(m.get("content", "")):
+                        tcid = m.get("tool_call_id")
+                if tcid is None:
+                    events = [{"data": json.dumps({"choices": [{
+                        "index": 0, "delta": {"content": "STDERR_NOT_TRUNCATED"},
+                        "finish_reason": "stop"}]})}]
+                else:
+                    events = [
+                        {"data": json.dumps({"choices": [{"index": 0, "delta": {
+                            "content": "Pulling archived stderr..."},
+                            "finish_reason": None}]})},
+                        {"data": json.dumps({"choices": [{"index": 0, "delta": {
+                            "tool_calls": [{
+                                "index": 0, "id": "call_readerr",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_tool_output",
+                                    "arguments": json.dumps({
+                                        "tool_call_id": tcid,
+                                        "stream": "stderr",
+                                        "offset": 199000,
+                                        "limit": 65536})}}]},
+                            "finish_reason": None}]})},
+                        {"data": json.dumps({"choices": [{"index": 0, "delta": {},
+                            "finish_reason": "tool_calls"}]})},
+                    ]
+            else:
+                got = str(read_results[-1].get("content", ""))
+                marker = "ENDERR2" if "ENDERR2" in got else "STDERR_TAIL_MISSING"
+                events = [{"data": json.dumps({"choices": [{"index": 0, "delta": {
+                    "content": "stderr-spill " + marker},
+                    "finish_reason": "stop"}]})}]
 
         elif test_mode == "incomplete":
             events = [

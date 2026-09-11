@@ -1236,6 +1236,38 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
         }
     }
 
+    /* When the preview is cut short, keep the untruncated file on disk so the
+     * model can page through it with read_tool_output. Only raw bytes are
+     * archived; binary payloads are skipped (read_file rejects them anyway). */
+    if (file_size > read_limit && ctx->results_dir[0] != '\0') {
+        int afd = open_regular_at_workspace(ctx, file_path);
+        if (afd >= 0) {
+            size_t cap = file_size > CCODE_RESULT_BLOB_MAX
+                         ? CCODE_RESULT_BLOB_MAX : file_size;
+            char *full = malloc(cap + 1);
+            if (full) {
+                size_t got = 0;
+                while (got < cap) {
+                    ssize_t r = read(afd, full + got, cap - got);
+                    if (r <= 0) break;
+                    got += (size_t)r;
+                }
+                if (got > 0 &&
+                    !is_binary_content((const unsigned char *)full, got)) {
+                    char *bid = NULL;
+                    size_t tot = 0;
+                    if (ccode_results_archive(ctx, full, got, "", 0,
+                                              &bid, &tot) == 0) {
+                        ctx->last_result_blob = bid;
+                        ctx->last_result_total = tot;
+                    }
+                }
+                free(full);
+            }
+            close(afd);
+        }
+    }
+
     free(source);
 
     if (read_size < file_size) {
