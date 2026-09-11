@@ -4045,6 +4045,65 @@ out:
     return ok;
 }
 
+static char *capture_render_result(const char *json) {
+    FILE *f = tmpfile();
+    long len;
+    char *buf;
+    if (!f) return NULL;
+    ccode_render_tool_result(f, json);
+    fflush(f);
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    len = ftell(f);
+    if (len < 0) { fclose(f); return NULL; }
+    rewind(f);
+    buf = malloc((size_t)len + 1);
+    if (!buf) { fclose(f); return NULL; }
+    if (fread(buf, 1, (size_t)len, f) != (size_t)len) {
+        free(buf); fclose(f); return NULL;
+    }
+    buf[len] = '\0';
+    fclose(f);
+    return buf;
+}
+
+static int test_render_tool_result_parses_json(void) {
+    char *out;
+
+    /* Command result: exit summary plus real newlines in stdout, no JSON. */
+    out = capture_render_result(
+        "{\"exit_code\":0,\"timed_out\":false,"
+        "\"stdout\":\"hi\\nthere\\n\",\"stderr\":\"\"}");
+    ASSERT(out != NULL);
+    ASSERT(strstr(out, "[result]") != NULL);
+    ASSERT(strstr(out, "exit=0") != NULL);
+    ASSERT(strstr(out, "hi\nthere\n") != NULL);
+    ASSERT(strstr(out, "{\"exit_code\"") == NULL);
+    free(out);
+
+    /* File result: content unwrapped. */
+    out = capture_render_result("{\"content\":\"int main(void)\\n\"}");
+    ASSERT(out != NULL);
+    ASSERT(strstr(out, "int main(void)\n") != NULL);
+    ASSERT(strstr(out, "\"content\"") == NULL);
+    free(out);
+
+    /* Denial: error + reason, not raw JSON. */
+    out = capture_render_result(
+        "{\"error\":\"Permission denied by user\",\"reason\":\"nope\"}");
+    ASSERT(out != NULL);
+    ASSERT(strstr(out, "Permission denied by user") != NULL);
+    ASSERT(strstr(out, "(nope)") != NULL);
+    free(out);
+
+    /* Unknown shape falls back to sanitised text (information preserved). */
+    out = capture_render_result("{\"ok\":true}");
+    ASSERT(out != NULL);
+    ASSERT(strstr(out, "ok") != NULL);
+    free(out);
+
+    return 1;
+}
+
 int main(int argc, char **argv) {
     int repo_ok;
 
@@ -4288,6 +4347,7 @@ int main(int argc, char **argv) {
 
     /* Phase 5: Session management tests */
     TEST(session_list_empty);
+    TEST(render_tool_result_parses_json);
     TEST(session_save_and_list);
     TEST(session_dir_creates_parents);
     TEST(session_save_creates_parent);

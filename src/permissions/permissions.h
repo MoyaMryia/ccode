@@ -26,5 +26,9 @@ void ccode_fprint_safe(FILE *stream, const char *value,
                        const char *null_value);
 void ccode_fprint_safe_full(FILE *stream, const char *value,
                             const char *null_value);
+/* Unbounded, sanitising printer that keeps real newlines/tabs so multi-line
+ * tool output stays readable. Other control/bidi characters are escaped. */
+void ccode_fprint_safe_text(FILE *stream, const char *value,
+                            const char *null_value);
 
 #endif

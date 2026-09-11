@@ -253,6 +253,7 @@ static int run_pending_subagents(struct agent_context *ctx,
         if (!result)
             result = ccode_strdup("{\"error\":\"Sub-agent failed\"}");
         if (!result) return -1;
+        if (!cfg->quiet) ccode_render_tool_result(stdout, result);
         if (ccode_conversation_add_tool_result(conv, jobs[i].id,
                                                result) != 0) {
             free(result);
@@ -473,6 +474,7 @@ static int run_pending_subagents(struct agent_context *ctx,
             free(jobs[i].buf);
             return -1;
         }
+        if (!cfg->quiet) ccode_render_tool_result(stdout, result);
         if (ccode_conversation_add_tool_result(conv, jobs[i].id,
                                                result) != 0) {
             free(result);
@@ -587,12 +589,14 @@ static int is_enabled_tool(const char *name, int write_enabled) {
               strcmp(name, "task_list") == 0));
 }
 
-static int append_tool_error(struct ccode_conversation *conv, const char *id,
+static int append_tool_error(const struct ccode_agent_config *cfg,
+                             struct ccode_conversation *conv, const char *id,
                              const char *message) {
     char *result = ccode_strdup(message);
     int status;
 
     if (!result) return -1;
+    if (!cfg->quiet) ccode_render_tool_result(stdout, result);
     status = ccode_conversation_add_tool_result(conv, id, result);
     free(result);
     return status;
@@ -853,12 +857,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                             "{\"error\":\"Refused incomplete tool call\"}";
                         tid = acc.tool_calls[i].id
                             ? acc.tool_calls[i].id : "unknown";
-                        fprintf(stderr,
-                                "  " CCODE_ANSI("33") "[refused]" CCODE_ANSI("0") "  incomplete tool call "
-                                "(index=%d id=", acc.tool_calls[i].index);
-                        ccode_fprint_safe(stderr, tid, "unknown");
-                        fputs(")\n", stderr);
-                        if (append_tool_error(conv, tid, deny) != 0) {
+                        if (append_tool_error(cfg, conv, tid, deny) != 0) {
                             ccode_sse_accumulator_destroy(&acc);
                             fprintf(stderr, "Out of memory.\n");
                             result = -1;
@@ -870,11 +869,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                     if (strlen(acc.tool_calls[i].arguments) > MAX_TOOL_OUTPUT) {
                         const char *deny =
                             "{\"error\":\"Tool arguments too large\"}";
-                        fprintf(stderr,
-                                "  " CCODE_ANSI("33") "[refused]" CCODE_ANSI("0") "  oversized arguments "
-                                "(index=%d)\n",
-                                acc.tool_calls[i].index);
-                        if (append_tool_error(conv,
+                        if (append_tool_error(cfg, conv,
                                 acc.tool_calls[i].id, deny) != 0) {
                             ccode_sse_accumulator_destroy(&acc);
                             fprintf(stderr, "Out of memory.\n");
@@ -886,12 +881,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
 
                     if (conversation_has_tool_result(conv,
                                                      acc.tool_calls[i].id)) {
-                        fputs("  " CCODE_ANSI("33") "[refused]" CCODE_ANSI("0") "  duplicate tool_call_id: ",
-                              stderr);
-                        ccode_fprint_safe(stderr, acc.tool_calls[i].id,
-                                          "(unknown)");
-                        fputc('\n', stderr);
-                        if (append_tool_error(conv, acc.tool_calls[i].id,
+                        if (append_tool_error(cfg, conv, acc.tool_calls[i].id,
                                 "{\"error\":\"Duplicate tool call id\"}") != 0) {
                             ccode_sse_accumulator_destroy(&acc);
                             fprintf(stderr, "Out of memory.\n");
@@ -902,12 +892,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                     }
 
                     if (!cfg->read_only_tools && !cfg->tools_enabled) {
-                        fputs("  " CCODE_ANSI("33") "[denied]" CCODE_ANSI("0") "  ", stderr);
-                        ccode_fprint_safe(stderr, acc.tool_calls[i].name,
-                                          "(unknown)");
-                        fputs(": tools are not enabled\n", stderr);
                         change_log_add_denied(ctx, acc.tool_calls[i].name);
-                        if (append_tool_error(conv, acc.tool_calls[i].id,
+                        if (append_tool_error(cfg, conv, acc.tool_calls[i].id,
                                 "{\"error\":\"Tools are not enabled\"}") != 0) {
                             ccode_sse_accumulator_destroy(&acc);
                             fprintf(stderr, "Out of memory.\n");
@@ -918,12 +904,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                     }
                     if (!is_enabled_tool(acc.tool_calls[i].name,
                                          cfg->tools_enabled)) {
-                        fputs("  " CCODE_ANSI("33") "[denied]" CCODE_ANSI("0") "  ", stderr);
-                        ccode_fprint_safe(stderr, acc.tool_calls[i].name,
-                                          "(unknown)");
-                        fputs(": unavailable\n", stderr);
                         change_log_add_denied(ctx, acc.tool_calls[i].name);
-                        if (append_tool_error(conv, acc.tool_calls[i].id,
+                        if (append_tool_error(cfg, conv, acc.tool_calls[i].id,
                                 "{\"error\":\"Tool is unavailable\"}") != 0) {
                             ccode_sse_accumulator_destroy(&acc);
                             fprintf(stderr, "Out of memory.\n");
@@ -950,11 +932,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                             acc.tool_calls[i].name, NULL, &prepared);
                     }
                     if (prepare_error) {
-                        fputs("  " CCODE_ANSI("33") "[refused]" CCODE_ANSI("0") "  ", stderr);
-                        ccode_fprint_safe(stderr, acc.tool_calls[i].name,
-                                          "(unknown)");
-                        fputs(": invalid arguments\n", stderr);
-                        if (append_tool_error(conv, acc.tool_calls[i].id,
+                        if (append_tool_error(cfg, conv, acc.tool_calls[i].id,
                                               prepare_error) != 0) {
                             ccode_sse_accumulator_destroy(&acc);
                             fprintf(stderr, "Out of memory.\n");
@@ -984,12 +962,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
 
                         policy_error = command_policy_refuse(ctx, &prepared);
                         if (policy_error) {
-                            fputs("  " CCODE_ANSI("33") "[refused]" CCODE_ANSI("0") "  ", stderr);
-                            ccode_fprint_safe(stderr, acc.tool_calls[i].name,
-                                              "(unknown)");
-                            fputc('\n', stderr);
                             change_log_add_denied(ctx, acc.tool_calls[i].name);
-                            if (append_tool_error(conv, acc.tool_calls[i].id,
+                            if (append_tool_error(cfg, conv, acc.tool_calls[i].id,
                                                   policy_error) != 0) {
                                 free(policy_error);
                                 ccode_sse_accumulator_destroy(&acc);
@@ -1002,16 +976,13 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         }
 
                         if (!ccode_permission_ask(&preq)) {
-                            fputs("  " CCODE_ANSI("33") "[denied]" CCODE_ANSI("0") "  ", stderr);
-                            ccode_fprint_safe(stderr, acc.tool_calls[i].name,
-                                              "(unknown)");
-                            fputc('\n', stderr);
                             change_log_add_denied(ctx, acc.tool_calls[i].name);
                             deny_json = format_tool_error_reason(
                                 "Permission denied by user",
                                 preq.deny_reason);
                             if (!deny_json ||
-                                append_tool_error(conv, acc.tool_calls[i].id,
+                                append_tool_error(cfg, conv,
+                                                  acc.tool_calls[i].id,
                                                   deny_json) != 0) {
                                 free(deny_json);
                                 ccode_sse_accumulator_destroy(&acc);
@@ -1024,12 +995,9 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         }
                     }
 
-                    fputs("  " CCODE_ANSI("33") "[run]" CCODE_ANSI("0") "  ", stderr);
-                    ccode_fprint_safe(stderr, acc.tool_calls[i].name,
-                                      "(unknown)");
-                    fputc('(', stderr);
-                    ccode_fprint_safe(stderr, prepared.display, "");
-                    fputs(")...\n", stderr);
+                    if (!cfg->quiet)
+                        ccode_render_tool_call(stdout, acc.tool_calls[i].name,
+                                               prepared.display);
 
                     if (prepared.kind == PREPARED_AGENT_TOOL) {
                         /* Defer sub-agent execution: read-only delegates run
@@ -1072,6 +1040,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                                                             &prepared);
                     }
                     if (tool_result) {
+                        if (!cfg->quiet)
+                            ccode_render_tool_result(stdout, tool_result);
                         if (ccode_conversation_add_tool_result(conv,
                                 acc.tool_calls[i].id, tool_result) != 0) {
                             free(tool_result);
@@ -1085,9 +1055,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         /* Never leave the model without a tool response: a
                          * silent gap would stall the agent loop or make the
                          * next request violate the assistant/tool pairing. */
-                        fputs("  " CCODE_ANSI("33") "[error]" CCODE_ANSI("0") "  tool execution "
-                              "returned no result\n", stderr);
-                        if (append_tool_error(conv, acc.tool_calls[i].id,
+                        if (append_tool_error(cfg, conv, acc.tool_calls[i].id,
                                 "{\"error\":\"Tool execution failed\"}") != 0) {
                             ccode_sse_accumulator_destroy(&acc);
                             fprintf(stderr, "Out of memory.\n");
@@ -1130,6 +1098,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                     if (!sub_result) sub_result =
                         ccode_strdup("{\"error\":\"Sub-agent failed\"}");
                     if (sub_result) {
+                        if (!cfg->quiet)
+                            ccode_render_tool_result(stdout, sub_result);
                         if (ccode_conversation_add_tool_result(
                                 conv, serial_subagents[i].id,
                                 sub_result) != 0) {
@@ -1398,43 +1368,18 @@ static void print_session_list(void) {
 
 /* Print a loaded conversation so a resumed session shows its prior context
  * before the next prompt is read. System messages (the coding-agent prompt or
- * a compaction summary) are skipped; tool calls/results are summarized
- * compactly. Every model/user-derived string is sanitized and length-bounded
- * by ccode_fprint_safe. */
+ * a compaction summary) are skipped. Rendering is shared with the live turn
+ * loop (ccode_render_message) so both views look identical. */
 static void print_resumed_conversation(const struct ccode_conversation *conv) {
-    size_t i, j;
+    size_t i;
     if (conv->count == 0) return;
     fputs("  " CCODE_ANSI("2") "--- session transcript ---"
-          CCODE_ANSI("0") "\n", stderr);
-    for (i = 0; i < conv->count; i++) {
-        const struct ccode_message *m = &conv->messages[i];
-        if (m->role == CCODE_ROLE_SYSTEM) continue;
-        if (m->role == CCODE_ROLE_USER) {
-            fputs("  " CCODE_ANSI("36") "user: " CCODE_ANSI("0"), stderr);
-            ccode_fprint_safe(stderr, m->content, "");
-            fputc('\n', stderr);
-        } else if (m->role == CCODE_ROLE_ASSISTANT) {
-            if (m->content && m->content[0]) {
-                fputs("  " CCODE_ANSI("32") "assistant: " CCODE_ANSI("0"),
-                      stderr);
-                ccode_fprint_safe(stderr, m->content, "");
-                fputc('\n', stderr);
-            }
-            for (j = 0; j < m->tool_call_count; j++) {
-                fputs("    " CCODE_ANSI("2") "tool-call: " CCODE_ANSI("0"),
-                      stderr);
-                ccode_fprint_safe(stderr, m->tool_calls[j].name, "(?)");
-                fputc('\n', stderr);
-            }
-        } else if (m->role == CCODE_ROLE_TOOL) {
-            fputs("    " CCODE_ANSI("2") "tool-result: " CCODE_ANSI("0"),
-                  stderr);
-            ccode_fprint_safe(stderr, m->content, "(empty)");
-            fputc('\n', stderr);
-        }
-    }
+          CCODE_ANSI("0") "\n", stdout);
+    for (i = 0; i < conv->count; i++)
+        ccode_render_message(stdout, &conv->messages[i]);
     fputs("  " CCODE_ANSI("2") "--- end transcript ---"
-          CCODE_ANSI("0") "\n", stderr);
+          CCODE_ANSI("0") "\n", stdout);
+    fflush(stdout);
 }
 
 int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {

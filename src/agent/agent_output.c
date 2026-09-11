@@ -200,3 +200,223 @@ const char *ccode_coding_agent_system_prompt(void) {
     }
     return prompt;
 }
+
+/* ── Unified conversation rendering ──
+ *
+ * Shared by the live turn loop and the resumed-session transcript so both
+ * views look identical. Tool results are parsed out of their stored JSON
+ * into readable fields; all model/tool-derived strings go through the
+ * sanitising printers. Callers pass stdout. */
+
+static void render_string_value(FILE *out, const char *js,
+                                const ccode_jsmntok_t *tok) {
+    char *s = ccode_json_token_string(js, tok);
+    if (s) {
+        ccode_fprint_safe_text(out, s, "");
+        free(s);
+    }
+}
+
+/* Print "label<decoded string>" when key exists and is non-empty. */
+static void render_json_string_at(FILE *out, const char *label,
+                                  const char *js, ccode_jsmntok_t *toks,
+                                  int ntok, int parent, const char *key) {
+    ccode_jsmntok_t *tok = ccode_json_find_key(toks, ntok, parent, js, key);
+    char *s;
+    if (!tok || tok->type != CCODE_JSMN_STRING) return;
+    s = ccode_json_token_string(js, tok);
+    if (!s || s[0] == '\0') { free(s); return; }
+    fputs(label, out);
+    ccode_fprint_safe_text(out, s, "");
+    fputc('\n', out);
+    free(s);
+}
+
+static int json_has_key(const char *js, ccode_jsmntok_t *toks, int ntok,
+                        const char *key) {
+    return ccode_json_find_key(toks, ntok, 0, js, key) != NULL;
+}
+
+static int json_true(const char *js, ccode_jsmntok_t *toks, int ntok,
+                     const char *key) {
+    ccode_jsmntok_t *tok = ccode_json_find_key(toks, ntok, 0, js, key);
+    return tok && tok->type == CCODE_JSMN_PRIMITIVE &&
+           tok->end - tok->start == 4 &&
+           strncmp(js + tok->start, "true", 4) == 0;
+}
+
+/* run_command/bash: exit/signal/timed_out summary + stdout/stderr blocks. */
+static void render_command_result(FILE *out, const char *js,
+                                  ccode_jsmntok_t *toks, int ntok) {
+    ccode_jsmntok_t *tok;
+    long v;
+
+    fputc(' ', out);
+    tok = ccode_json_find_key(toks, ntok, 0, js, "exit_code");
+    if (tok && tok->type == CCODE_JSMN_PRIMITIVE) {
+        if (ccode_json_token_to_int(js, tok, &v) == 0)
+            fprintf(out, "exit=%ld", v);
+        else
+            fputs("exit=null", out);
+    }
+    tok = ccode_json_find_key(toks, ntok, 0, js, "signal");
+    if (tok && tok->type == CCODE_JSMN_PRIMITIVE &&
+        ccode_json_token_to_int(js, tok, &v) == 0)
+        fprintf(out, " signal=%ld", v);
+    if (json_true(js, toks, ntok, "timed_out")) fputs(" timed_out", out);
+    if (json_true(js, toks, ntok, "stdout_truncated"))
+        fputs(" stdout_truncated", out);
+    if (json_true(js, toks, ntok, "stderr_truncated"))
+        fputs(" stderr_truncated", out);
+    fputc('\n', out);
+    render_json_string_at(out, "    stdout: ", js, toks, ntok, 0, "stdout");
+    render_json_string_at(out, "    stderr: ", js, toks, ntok, 0, "stderr");
+}
+
+/* glob/grep/web_search: one line per array entry. */
+static void render_list_result(FILE *out, const char *js,
+                               ccode_jsmntok_t *toks, int ntok,
+                               const char *key) {
+    ccode_jsmntok_t *arr = ccode_json_find_key(toks, ntok, 0, js, key);
+    int i;
+    if (!arr || arr->type != CCODE_JSMN_ARRAY) return;
+    for (i = 0; i < arr->size; i++) {
+        ccode_jsmntok_t *el = ccode_json_find_index(toks, ntok,
+                                                    (int)(arr - toks), i);
+        if (!el) continue;
+        if (el->type == CCODE_JSMN_STRING) {
+            fputs("    ", out);
+            render_string_value(out, js, el);
+            fputc('\n', out);
+        } else if (el->type == CCODE_JSMN_OBJECT) {
+            int idx = (int)(el - toks);
+            render_json_string_at(out, "    ", js, toks, ntok, idx, "title");
+            render_json_string_at(out, "    ", js, toks, ntok, idx, "url");
+            render_json_string_at(out, "    ", js, toks, ntok, idx, "snippet");
+        }
+    }
+}
+
+void ccode_render_tool_result(FILE *out, const char *result_json) {
+    ccode_jsmn_parser parser;
+    ccode_jsmntok_t tokens[128];
+    int ntok;
+    ccode_jsmntok_t *tok;
+
+    fputs("  " CCODE_ANSI("2") "[result]" CCODE_ANSI("0"), out);
+    if (!result_json || result_json[0] == '\0') {
+        fputs(" (empty)\n", out);
+        return;
+    }
+    ccode_jsmn_init(&parser);
+    ntok = ccode_jsmn_parse(&parser, result_json, strlen(result_json),
+                            tokens, 128);
+    if (ntok <= 0 || tokens[0].type != CCODE_JSMN_OBJECT) {
+        fputc(' ', out);
+        ccode_fprint_safe_text(out, result_json, "");
+        fputc('\n', out);
+        return;
+    }
+
+    tok = ccode_json_find_key(tokens, ntok, 0, result_json, "error");
+    if (tok && tok->type == CCODE_JSMN_STRING) {
+        char *err = ccode_json_token_string(result_json, tok);
+        fputc(' ', out);
+        fputs(CCODE_ANSI("33"), out);
+        ccode_fprint_safe_text(out, err ? err : "error", "error");
+        fputs(CCODE_ANSI("0"), out);
+        free(err);
+        tok = ccode_json_find_key(tokens, ntok, 0, result_json, "reason");
+        if (tok && tok->type == CCODE_JSMN_STRING) {
+            char *r = ccode_json_token_string(result_json, tok);
+            if (r && r[0]) {
+                fputs("  (", out);
+                ccode_fprint_safe_text(out, r, "");
+                fputc(')', out);
+            }
+            free(r);
+        }
+        fputc('\n', out);
+        return;
+    }
+
+    if (json_has_key(result_json, tokens, ntok, "stdout") ||
+        json_has_key(result_json, tokens, ntok, "stderr") ||
+        json_has_key(result_json, tokens, ntok, "exit_code")) {
+        render_command_result(out, result_json, tokens, ntok);
+        return;
+    }
+
+    tok = ccode_json_find_key(tokens, ntok, 0, result_json, "content");
+    if (tok && tok->type == CCODE_JSMN_STRING) {
+        fputc('\n', out);
+        render_string_value(out, result_json, tok);
+        fputc('\n', out);
+        return;
+    }
+
+    if (json_has_key(result_json, tokens, ntok, "files")) {
+        fputc('\n', out);
+        render_list_result(out, result_json, tokens, ntok, "files");
+        return;
+    }
+    if (json_has_key(result_json, tokens, ntok, "matches")) {
+        fputc('\n', out);
+        render_list_result(out, result_json, tokens, ntok, "matches");
+        return;
+    }
+    if (json_has_key(result_json, tokens, ntok, "results")) {
+        fputc('\n', out);
+        render_list_result(out, result_json, tokens, ntok, "results");
+        return;
+    }
+
+    tok = ccode_json_find_key(tokens, ntok, 0, result_json, "status");
+    if (tok && tok->type == CCODE_JSMN_STRING) {
+        fputc(' ', out);
+        render_string_value(out, result_json, tok);
+        fputc('\n', out);
+        return;
+    }
+
+    /* Unknown shape: keep the information, sanitised. */
+    if (strstr(result_json, "\"ok\":true") != NULL) {
+        fputs(" ok\n", out);
+        return;
+    }
+    fputc(' ', out);
+    ccode_fprint_safe_text(out, result_json, "");
+    fputc('\n', out);
+}
+
+void ccode_render_tool_call(FILE *out, const char *name, const char *detail) {
+    fputs("  " CCODE_ANSI("33") "[run]" CCODE_ANSI("0") "  ", out);
+    ccode_fprint_safe(out, name ? name : "(unknown)", "(unknown)");
+    fputc('(', out);
+    ccode_fprint_safe(out, detail ? detail : "", "");
+    fputs(")...\n", out);
+}
+
+void ccode_render_message(FILE *out, const struct ccode_message *msg) {
+    size_t j;
+    if (!msg) return;
+    if (msg->role == CCODE_ROLE_SYSTEM) return;
+    if (msg->role == CCODE_ROLE_USER) {
+        fputs("  " CCODE_ANSI("36") "user: " CCODE_ANSI("0"), out);
+        ccode_fprint_safe_text(out, msg->content, "");
+        fputc('\n', out);
+    } else if (msg->role == CCODE_ROLE_ASSISTANT) {
+        if (msg->content && msg->content[0]) {
+            /* Reuse the live markdown/plain renderer (stdout-bound). */
+            ccode_print_content_reset();
+            ccode_print_content_delta(msg->content);
+            ccode_print_content_flush();
+            fputc('\n', out);
+        }
+        for (j = 0; j < msg->tool_call_count; j++)
+            ccode_render_tool_call(out, msg->tool_calls[j].name,
+                                   msg->tool_calls[j].arguments);
+    } else if (msg->role == CCODE_ROLE_TOOL) {
+        ccode_render_tool_result(out, msg->content);
+    }
+}

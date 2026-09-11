@@ -20,7 +20,8 @@ static int is_bidi_control(unsigned int cp) {
 }
 
 static void fprint_safe_limit(FILE *stream, const char *value,
-                              const char *null_value, size_t limit) {
+                              const char *null_value, size_t limit,
+                              int keep_layout) {
     const unsigned char *s;
     size_t value_len;
     size_t offset = 0;
@@ -39,7 +40,9 @@ static void fprint_safe_limit(FILE *stream, const char *value,
         if (offset + length > limit) break;
 
         if (length == 1 && cp < 0x20U) {
-            if (cp == '\n') fputs("\\n", stream);
+            if (keep_layout && cp == '\n') fputc('\n', stream);
+            else if (keep_layout && cp == '\t') fputc('\t', stream);
+            else if (cp == '\n') fputs("\\n", stream);
             else if (cp == '\r') fputs("\\r", stream);
             else if (cp == '\t') fputs("\\t", stream);
             else fprintf(stream, "\\x%02X", cp);
@@ -61,12 +64,19 @@ static void fprint_safe_limit(FILE *stream, const char *value,
 void ccode_fprint_safe(FILE *stream, const char *value,
                        const char *null_value) {
     fprint_safe_limit(stream, value, null_value,
-                      CCODE_PERMISSION_DISPLAY_LIMIT);
+                      CCODE_PERMISSION_DISPLAY_LIMIT, 0);
 }
 
 void ccode_fprint_safe_full(FILE *stream, const char *value,
                             const char *null_value) {
-    fprint_safe_limit(stream, value, null_value, (size_t)-1);
+    fprint_safe_limit(stream, value, null_value, (size_t)-1, 0);
+}
+
+void ccode_fprint_safe_text(FILE *stream, const char *value,
+                            const char *null_value) {
+    /* Same sanitising as the *_full variant but keeps real newlines/tabs so
+     * multi-line tool output stays readable. Unbounded, like *_full. */
+    fprint_safe_limit(stream, value, null_value, (size_t)-1, 1);
 }
 
 int ccode_permission_parse_reply(const char *line,

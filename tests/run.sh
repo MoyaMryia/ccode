@@ -303,7 +303,7 @@ else
     FAIL=$((FAIL + 1))
 fi
 output=$(timeout "$TIMEOUT" "$CCODE" -p "__ccode_test_tool-calls-write" 2>&1) || true
-if echo "$output" | grep -q "write_file: unavailable"; then
+if echo "$output" | grep -q "Tool is unavailable"; then
     echo "  PASS: default read-only mode denies write tools"
     PASS=$((PASS + 1))
 else

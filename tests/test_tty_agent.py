@@ -177,7 +177,7 @@ def test_deny_via_tty():
         enable_tools=True,
         approve=False)
     output = stdout.decode() + stderr.decode()
-    if "[denied]" in output and "(denied)" in output:
+    if "Permission denied" in output and "(denied)" in output:
         print("  PASS: tool denied via TTY and recorded in session summary")
         return True
     else:

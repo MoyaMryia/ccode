@@ -1,6 +1,7 @@
 #ifndef CCODE_AGENT_H
 #define CCODE_AGENT_H
 
+#include <stdio.h>
 #include <sys/types.h>
 #include "message.h"
 
@@ -59,6 +60,14 @@ void ccode_print_reasoning_end(void);
 void ccode_print_content_set_markdown(int enabled);
 void ccode_print_content_flush(void);
 void ccode_print_content_reset(void);
+
+/* Unified conversation rendering shared by the live turn loop and the
+ * resumed-session transcript. All functions write to `out` (stdout for both
+ * callers) so the two views look identical. Model/tool-derived strings are
+ * sanitised; tool results are parsed into readable fields. */
+void ccode_render_tool_call(FILE *out, const char *name, const char *detail);
+void ccode_render_tool_result(FILE *out, const char *result_json);
+void ccode_render_message(FILE *out, const struct ccode_message *msg);
 
 /* Default behavior contract injected when local tools are enabled. */
 const char *ccode_coding_agent_system_prompt(void);

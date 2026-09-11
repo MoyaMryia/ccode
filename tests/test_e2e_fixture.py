@@ -232,6 +232,15 @@ def main():
             print("  FAIL: no tool execution visible")
             tests_failed += 1
 
+        # Tool results must be rendered as parsed, readable fields -- not the
+        # stored JSON blob. (A raw result would contain e.g. {"content":...}.)
+        if ("[result]" in output and '{"content"' not in output and
+                '{"exit_code"' not in output):
+            print("  PASS: tool results rendered readably")
+        else:
+            print("  FAIL: tool results leaked raw JSON")
+            tests_failed += 1
+
         if ("mode=read-write" in output or "mode=read-only" in output or
                 "mode=none" in output):
             print("  PASS: status line shows active mode")

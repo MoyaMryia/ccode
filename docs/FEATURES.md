@@ -27,12 +27,13 @@
 - `agent_tool`（子代理，独立循环、默认只读、深度上限 3）；只读子代理并行 fork 运行，其自身的只读工具（read_file/glob/grep/git_*，均限工作区内）自动放行——子进程在自己的进程组里读控制终端会触发 SIGTTIN 停住并让父进程 poll 死等，且多个子进程争抢同一 stdin，所以不再逐次弹审批
 - 工具调用参数解析：容忍模型把参数包进一层或多层 `{"arguments": ...}`（对象与 JSON 字符串形式混合），最多 8 层；超限报 `nested too deep`，信封值非对象/字符串、或信封带尾随数据时明确拒绝；多键信封不再被误判
 - 工具调用参数转义：流式收到的原始转义参数在存入对话前只解码一次，回灌请求时只转义一次，历史里的 assistant tool_call 不再双重转义（旧行为会把 `{"command":"ls"}` 回灌成 `{\"command\":\"ls\"}`，把模型带偏、越纠越乱）
-- 调试输出：每次收到服务商返回的工具调用，按原样（OpenAI 响应 JSON）打印 `[tool-call] {...}` 到 stderr；当前无条件开启，后续再改成 flag/env 可选
+- 调试输出：`--debug`（= `--default` + 原始 JSON 调试）开启后，每次收到服务商返回的工具调用按原样（OpenAI 响应 JSON）打印 `[tool-call] {...}` 到 stderr；默认关闭
 
 ### 会话与模型
 
 - 会话保存 / 列表 / 删除 / 重命名 / 导出 / 恢复 / 多会话
-- 恢复会话（`--resume` 或 `/resume`）后先把已加载的对话（user/assistant 文本 + 工具调用与结果摘要，系统提示跳过）打印出来再进入下一轮；恢复后 `/exit` 写回原会话文件
+- 恢复会话（`--resume` 或 `/resume`）后先把已加载的对话打印出来再进入下一轮（系统提示跳过）；恢复后 `/exit` 写回原会话文件
+- 工具调用与结果 live 与 resume 共用同一套渲染（`agent_output.c`）：调用行 `[run]  name(detail)`；结果行 `[result]` 把存储的 JSON 解析成可读字段——命令 `exit=`/`stdout`/`stderr`，文件 `content`，列表 `files`/`matches`/`results`，错误 `error`(+`reason`)——保留真实换行、其它控制符经 `ccode_fprint_safe_text` 消毒，统一输出到 stdout。不再有独立的 resume 格式或 256 字节截断
 - 会话元数据持久化，自动清理旧会话
 - 会话目录首次使用自动 `mkdir -p`（默认 `~/.ccode/sessions`）；`--session-dir DIR` / `CCODE_SESSION_DIR` 可覆盖，支持 `~/` 展开
 - 模型列表 / 搜索 / 详情 / 切换 / 默认模型
@@ -82,6 +83,6 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（148 agent + 45 json + 30 http + 15 tui + 21 markdown + 5 tty + 7 e2e + 3 streaming；test-tui-commands 随 `ccode` 暂停）
+3. 现有测试套件全过（149 agent + 45 json + 32 http + 15 tui + 21 markdown + 5 tty + 8 e2e + 3 streaming；test-tui-commands 随 `ccode` 暂停）
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟
 5. 工具调用/指令安全改动要过 `make fuzz-tool-args fuzz-command-paths fuzz-paths`，且 `make mutate`（故意注入错误看测试是否抓住）保持全部 KILLED
