@@ -165,8 +165,7 @@ int copy_string_token(const char *json, const ccode_jsmntok_t *token,
             encoded[3] = (unsigned char)(0x80U | (cp & 0x3fU));
             encoded_len = 4;
         }
-        if (out_pos + encoded_len >= dest_size ||
-            out_pos + encoded_len > CCODE_MAX_ARGUMENT_LEN) return -1;
+        if (out_pos + encoded_len >= dest_size) return -1;
         memcpy(dest + out_pos, encoded, encoded_len);
         out_pos += encoded_len;
     }

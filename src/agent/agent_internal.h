@@ -109,26 +109,32 @@ enum prepared_tool_kind {
 
 struct prepared_tool {
     enum prepared_tool_kind kind;
-    char value[4096];
-    char content[4096];
-    char tool_path[4096];
-    char destination[4096];
-    char include[4096];
+    /* Variable-length model-provided strings are heap-allocated (never NULL
+     * after prepare_tool; empty string when absent). Release with
+     * prepared_tool_free(). */
+    char *value;
+    char *content;
+    char *tool_path;
+    char *destination;
+    char *include;
     int have_include;
     int context_lines;
     int use_regex;
-    char old_string[4096];
-    char new_string[4096];
-    /* Approval display: worst case is a full value + a full content plus
-     * JSON quoting/separator overhead, hence 2 * 4096 + 64. */
+    char *old_string;
+    char *new_string;
+    /* Approval display: bounded human-facing summary (truncated if long). */
     char display[2 * 4096 + 64];
-    char argv[CCODE_MAX_ARGS][256];
+    char *argv[CCODE_MAX_ARGS];
     size_t argc;
     int timeout_ms;
     int web_timeout_sec;
     size_t web_max_size;
     int read_only_subagent;
 };
+
+/* Free the heap-owned fields of `prepared` and zero them. Safe on a zeroed
+ * struct (callers must zero-init before the first prepare_tool). */
+void prepared_tool_free(struct prepared_tool *prepared);
 
 /* ── Cross-module helpers. ctx is the owning agent_context for every
  * function below; sub-agents pass their derived context so workspace /

@@ -167,13 +167,70 @@ static const char *refuse_path(const char *error, const char *value,
     return buf;
 }
 
+/* Decode a string token into a freshly allocated buffer (caller owns it via
+ * prepared_tool_free). Unlike the fixed-buffer copy_string_token this is not
+ * capped at CCODE_MAX_ARGUMENT_LEN; the caller bounds the encoded arguments. */
+static int copy_string_token_dyn(const char *json, const ccode_jsmntok_t *token,
+                                 char **out) {
+    size_t len = (size_t)(token->end - token->start);
+    char *buf = malloc(len + 1);
+    if (!buf) return -1;
+    if (copy_string_token(json, token, buf, len + 1) != 0) {
+        free(buf);
+        return -1;
+    }
+    free(*out);
+    *out = buf;
+    return 0;
+}
+
+/* Allocate empty strings for every string field so prepare_tool_inner can
+ * read [0] without a NULL check. */
+static int prepared_tool_defaults(struct prepared_tool *p) {
+    p->value = ccode_strdup("");
+    p->content = ccode_strdup("");
+    p->tool_path = ccode_strdup("");
+    p->destination = ccode_strdup("");
+    p->include = ccode_strdup("");
+    p->old_string = ccode_strdup("");
+    p->new_string = ccode_strdup("");
+    if (!p->value || !p->content || !p->tool_path || !p->destination ||
+        !p->include || !p->old_string || !p->new_string)
+        return -1;
+    return 0;
+}
+
+void prepared_tool_free(struct prepared_tool *prepared) {
+    size_t i;
+    if (!prepared) return;
+    free(prepared->value);
+    free(prepared->content);
+    free(prepared->tool_path);
+    free(prepared->destination);
+    free(prepared->include);
+    free(prepared->old_string);
+    free(prepared->new_string);
+    for (i = 0; i < CCODE_MAX_ARGS; i++) {
+        free(prepared->argv[i]);
+        prepared->argv[i] = NULL;
+    }
+    prepared->value = NULL;
+    prepared->content = NULL;
+    prepared->tool_path = NULL;
+    prepared->destination = NULL;
+    prepared->include = NULL;
+    prepared->old_string = NULL;
+    prepared->new_string = NULL;
+    prepared->argc = 0;
+    prepared->display[0] = '\0';
+}
+
 static const char *prepare_tool_inner(const char *name, const char *arguments,
                                       struct prepared_tool *prepared) {
     ccode_jsmn_parser parser;
     ccode_jsmntok_t tokens[128];
     int num_tokens;
 
-    memset(prepared, 0, sizeof(*prepared));
     if (!name) return "{\"error\":\"Missing tool name\"}";
     if (!arguments) return "{\"error\":\"Missing tool arguments\"}";
     if (strlen(arguments) > MAX_TOOL_OUTPUT)
@@ -200,18 +257,15 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                 tokens[i + 1].type != CCODE_JSMN_STRING)
                 return "{\"error\":\"Invalid edit_file arguments\"}";
             if (ccode_jsmn_token_streq(arguments, &tokens[i], "file_path")) {
-                if (have_path || copy_string_token(arguments, &tokens[i + 1],
-                    prepared->value, sizeof(prepared->value)) != 0)
+                if (have_path || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
                     return "{\"error\":\"Invalid edit_file arguments\"}";
                 have_path = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "old_string")) {
-                if (have_old || copy_string_token(arguments, &tokens[i + 1],
-                    prepared->old_string, sizeof(prepared->old_string)) != 0)
+                if (have_old || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->old_string) != 0)
                     return "{\"error\":\"Invalid edit_file arguments\"}";
                 have_old = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "new_string")) {
-                if (have_new || copy_string_token(arguments, &tokens[i + 1],
-                    prepared->new_string, sizeof(prepared->new_string)) != 0)
+                if (have_new || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->new_string) != 0)
                     return "{\"error\":\"Invalid edit_file arguments\"}";
                 have_new = 1;
             } else {
@@ -260,8 +314,7 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                         if (elem_idx >= num_tokens ||
                             tokens[elem_idx].type != CCODE_JSMN_STRING)
                             return "{\"error\":\"Invalid argv element\"}";
-                        if (copy_string_token(arguments, &tokens[elem_idx],
-                            prepared->argv[j], sizeof(prepared->argv[j])) != 0)
+                        if (copy_string_token_dyn(arguments, &tokens[elem_idx], &prepared->argv[j]) != 0)
                             return "{\"error\":\"Invalid argv element\"}";
                         if (prepared->argv[j][0] == '~' &&
                             (prepared->argv[j][1] == '/' || prepared->argv[j][1] == '\0'))
@@ -342,8 +395,7 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
             tokens[1].type != CCODE_JSMN_STRING ||
             tokens[2].type != CCODE_JSMN_STRING ||
             !ccode_jsmn_token_streq(arguments, &tokens[1], "path") ||
-            copy_string_token(arguments, &tokens[2], prepared->value,
-                               sizeof(prepared->value)) != 0)
+            copy_string_token_dyn(arguments, &tokens[2], &prepared->value) != 0)
             return "{\"error\":\"Invalid git_status arguments\"}";
         if (!is_workspace_relative_path(prepared->value, 1))
             return refuse_path("Invalid git_status path", prepared->value,
@@ -373,13 +425,11 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                     tokens[i + 1].type != CCODE_JSMN_STRING)
                     return "{\"error\":\"Invalid git_diff arguments\"}";
                 if (ccode_jsmn_token_streq(arguments, &tokens[i], "path")) {
-                    if (have_path || copy_string_token(arguments, &tokens[i + 1],
-                        prepared->value, sizeof(prepared->value)) != 0)
+                    if (have_path || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
                         return "{\"error\":\"Invalid git_diff arguments\"}";
                     have_path = 1;
                 } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "cached")) {
-                    if (have_cached || copy_string_token(arguments, &tokens[i + 1],
-                        prepared->content, sizeof(prepared->content)) != 0)
+                    if (have_cached || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->content) != 0)
                         return "{\"error\":\"Invalid git_diff arguments\"}";
                     if (strcmp(prepared->content, "true") != 0 &&
                         strcmp(prepared->content, "1") != 0)
@@ -422,14 +472,12 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                     tokens[i + 1].type != CCODE_JSMN_STRING)
                     return "{\"error\":\"Invalid git_stat arguments\"}";
                 if (ccode_jsmn_token_streq(arguments, &tokens[i], "path")) {
-                    if (have_path || copy_string_token(arguments, &tokens[i + 1],
-                        prepared->value, sizeof(prepared->value)) != 0)
+                    if (have_path || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
                         return "{\"error\":\"Invalid git_stat arguments\"}";
                     have_path = 1;
                 } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
                                                     "cached")) {
-                    if (have_cached || copy_string_token(arguments, &tokens[i + 1],
-                        prepared->content, sizeof(prepared->content)) != 0)
+                    if (have_cached || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->content) != 0)
                         return "{\"error\":\"Invalid git_stat arguments\"}";
                     if (strcmp(prepared->content, "true") != 0 &&
                         strcmp(prepared->content, "1") != 0)
@@ -456,8 +504,7 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         if (num_tokens != 3 || tokens[0].size != 2 ||
             tokens[1].type != CCODE_JSMN_STRING ||
             !ccode_jsmn_token_streq(arguments, &tokens[1], "file_path") ||
-            copy_string_token(arguments, &tokens[2], prepared->value,
-                              sizeof(prepared->value)) != 0)
+            copy_string_token_dyn(arguments, &tokens[2], &prepared->value) != 0)
             return "{\"error\":\"Invalid read_file arguments: expected "
                    "{\\\"file_path\\\": \\\"<path>\\\"}\"}";
         if (is_home_relative_path(prepared->value))
@@ -479,15 +526,11 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
             if (tokens[i].type != CCODE_JSMN_STRING)
                 return "{\"error\":\"Invalid write_file arguments\"}";
             if (ccode_jsmn_token_streq(arguments, &tokens[i], "file_path")) {
-                if (have_path || copy_string_token(arguments, &tokens[i + 1],
-                                                   prepared->value,
-                                                   sizeof(prepared->value)) != 0)
+                if (have_path || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
                     return "{\"error\":\"Invalid write_file arguments\"}";
                 have_path = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "content")) {
-                if (have_content || copy_string_token(arguments, &tokens[i + 1],
-                                                      prepared->content,
-                                                      sizeof(prepared->content)) != 0)
+                if (have_content || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->content) != 0)
                     return "{\"error\":\"Invalid write_file arguments\"}";
                 have_content = 1;
             } else {
@@ -517,15 +560,11 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                 return "{\"error\":\"Invalid glob arguments\"}";
             if (ccode_jsmn_token_streq(arguments, &tokens[i], "pattern")) {
                 if (prepared->value[0] != '\0' ||
-                    copy_string_token(arguments, &tokens[i + 1],
-                                      prepared->value,
-                                      sizeof(prepared->value)) != 0)
+                    copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
                     return "{\"error\":\"Invalid glob arguments\"}";
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "path")) {
                 if (have_path ||
-                    copy_string_token(arguments, &tokens[i + 1],
-                                      prepared->tool_path,
-                                      sizeof(prepared->tool_path)) != 0)
+                    copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->tool_path) != 0)
                     return "{\"error\":\"Invalid glob arguments\"}";
                 have_path = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "regex")) {
@@ -577,16 +616,12 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
             }
             if (ccode_jsmn_token_streq(arguments, &tokens[i], "pattern")) {
                 if (have_pattern ||
-                    copy_string_token(arguments, &tokens[i + 1],
-                                      prepared->value,
-                                      sizeof(prepared->value)) != 0)
+                    copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
                     return "{\"error\":\"Invalid grep arguments\"}";
                 have_pattern = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "include")) {
                 if (prepared->have_include ||
-                    copy_string_token(arguments, &tokens[i + 1],
-                                      prepared->include,
-                                      sizeof(prepared->include)) != 0)
+                    copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->include) != 0)
                     return "{\"error\":\"Invalid grep arguments\"}";
                 prepared->have_include = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "context")) {
@@ -603,9 +638,7 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                 have_context = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "path")) {
                 if (have_path ||
-                    copy_string_token(arguments, &tokens[i + 1],
-                                      prepared->tool_path,
-                                      sizeof(prepared->tool_path)) != 0)
+                    copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->tool_path) != 0)
                     return "{\"error\":\"Invalid grep arguments\"}";
                 have_path = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "regex")) {
@@ -668,8 +701,7 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         if (num_tokens != 3 || tokens[0].size != 2 ||
             tokens[1].type != CCODE_JSMN_STRING ||
             !ccode_jsmn_token_streq(arguments, &tokens[1], "content") ||
-            copy_string_token(arguments, &tokens[2], prepared->value,
-                              sizeof(prepared->value)) != 0)
+            copy_string_token_dyn(arguments, &tokens[2], &prepared->value) != 0)
             return "{\"error\":\"Invalid task_create arguments\"}";
         prepared->kind = PREPARED_TASK_CREATE;
         snprintf(prepared->display, sizeof(prepared->display),
@@ -687,13 +719,11 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                 tokens[i + 1].type != CCODE_JSMN_STRING)
                 return "{\"error\":\"Invalid task_update arguments\"}";
             if (ccode_jsmn_token_streq(arguments, &tokens[i], "id")) {
-                if (have_id || copy_string_token(arguments, &tokens[i + 1],
-                    prepared->value, sizeof(prepared->value)) != 0)
+                if (have_id || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
                     return "{\"error\":\"Invalid task_update arguments\"}";
                 have_id = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "status")) {
-                if (have_status || copy_string_token(arguments, &tokens[i + 1],
-                    prepared->content, sizeof(prepared->content)) != 0)
+                if (have_status || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->content) != 0)
                     return "{\"error\":\"Invalid task_update arguments\"}";
                 have_status = 1;
             } else {
@@ -718,8 +748,7 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         if (num_tokens != 3 || tokens[0].size != 2 ||
             tokens[1].type != CCODE_JSMN_STRING ||
             !ccode_jsmn_token_streq(arguments, &tokens[1], "command") ||
-            copy_string_token(arguments, &tokens[2], prepared->value,
-                              sizeof(prepared->value)) != 0)
+            copy_string_token_dyn(arguments, &tokens[2], &prepared->value) != 0)
             return "{\"error\":\"Invalid bash arguments\"}";
         if (contains_home_path(prepared->value))
             return refuse_path("Home-relative paths are not allowed",
@@ -734,8 +763,7 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         if (num_tokens != 3 || tokens[0].size != 2 ||
             tokens[1].type != CCODE_JSMN_STRING ||
             !ccode_jsmn_token_streq(arguments, &tokens[1], "file_path") ||
-            copy_string_token(arguments, &tokens[2], prepared->value,
-                              sizeof(prepared->value)) != 0)
+            copy_string_token_dyn(arguments, &tokens[2], &prepared->value) != 0)
             return "{\"error\":\"Invalid delete_file arguments\"}";
         if (!is_workspace_relative_path(prepared->value, 0))
             return refuse_path("Invalid delete_file path", prepared->value,
@@ -755,13 +783,11 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
             if (tokens[i].type != CCODE_JSMN_STRING)
                 return "{\"error\":\"Invalid move_file arguments\"}";
             if (ccode_jsmn_token_streq(arguments, &tokens[i], "source")) {
-                if (have_source || copy_string_token(arguments, &tokens[i + 1],
-                    prepared->value, sizeof(prepared->value)) != 0)
+                if (have_source || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
                     return "{\"error\":\"Invalid move_file arguments\"}";
                 have_source = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "destination")) {
-                if (have_dest || copy_string_token(arguments, &tokens[i + 1],
-                    prepared->destination, sizeof(prepared->destination)) != 0)
+                if (have_dest || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->destination) != 0)
                     return "{\"error\":\"Invalid move_file arguments\"}";
                 have_dest = 1;
             } else {
@@ -796,13 +822,11 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
             if (tokens[i].type != CCODE_JSMN_STRING)
                 return "{\"error\":\"Invalid web_fetch arguments\"}";
             if (ccode_jsmn_token_streq(arguments, &tokens[i], "url")) {
-                if (have_url || copy_string_token(arguments, &tokens[i + 1],
-                    prepared->value, sizeof(prepared->value)) != 0)
+                if (have_url || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
                     return "{\"error\":\"Invalid web_fetch url\"}";
                 have_url = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "method")) {
-                if (copy_string_token(arguments, &tokens[i + 1],
-                    prepared->content, sizeof(prepared->content)) != 0)
+                if (copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->content) != 0)
                     return "{\"error\":\"Invalid web_fetch method\"}";
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "timeout")) {
                 if (i + 1 >= num_tokens ||
@@ -853,15 +877,13 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
             if (tokens[i].type != CCODE_JSMN_STRING)
                 return "{\"error\":\"Invalid agent_tool arguments\"}";
             if (ccode_jsmn_token_streq(arguments, &tokens[i], "task")) {
-                if (have_task || copy_string_token(arguments, &tokens[i + 1],
-                    prepared->value, sizeof(prepared->value)) != 0)
+                if (have_task || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
                     return "{\"error\":\"Invalid agent_tool task\"}";
                 have_task = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
                                               "read_only")) {
                 if (have_read_only ||
-                    copy_string_token(arguments, &tokens[i + 1],
-                        prepared->content, sizeof(prepared->content)) != 0)
+                    copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->content) != 0)
                     return "{\"error\":\"Invalid agent_tool read_only\"}";
                 have_read_only = 1;
                 if (strcmp(prepared->content, "false") == 0 ||
@@ -896,8 +918,7 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
             if (tokens[i].type != CCODE_JSMN_STRING)
                 return "{\"error\":\"Invalid web_search arguments\"}";
             if (ccode_jsmn_token_streq(arguments, &tokens[i], "query")) {
-                if (have_query || copy_string_token(arguments, &tokens[i + 1],
-                    prepared->value, sizeof(prepared->value)) != 0)
+                if (have_query || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
                     return "{\"error\":\"Invalid web_search query\"}";
                 have_query = 1;
             } else {
@@ -962,8 +983,15 @@ const char *prepare_tool(const char *name, const char *arguments,
                                 struct prepared_tool *prepared) {
     char *unwrapped = NULL;
     const char *result;
-    int status = unwrap_tool_arguments(arguments, &unwrapped);
+    int status;
 
+    prepared_tool_free(prepared);
+    if (prepared_tool_defaults(prepared) != 0) {
+        prepared_tool_free(prepared);
+        return "{\"error\":\"Out of memory\"}";
+    }
+
+    status = unwrap_tool_arguments(arguments, &unwrapped);
     if (status == TOOL_ARG_UNWRAP_TOO_DEEP)
         return explain_tool_error(name,
             "{\"error\":\"Tool arguments nested too deep\"}");

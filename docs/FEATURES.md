@@ -26,6 +26,7 @@
 - `web_search`（Bing 端点可配）
 - `agent_tool`（子代理，独立循环、默认只读、深度上限 3）；只读子代理并行 fork 运行，其自身的只读工具（read_file/glob/grep/git_*，均限工作区内）自动放行——子进程在自己的进程组里读控制终端会触发 SIGTTIN 停住并让父进程 poll 死等，且多个子进程争抢同一 stdin，所以不再逐次弹审批
 - 工具调用参数解析：容忍模型把参数包进一层或多层 `{"arguments": ...}`（对象与 JSON 字符串形式混合），最多 8 层；超限报 `nested too deep`，信封值非对象/字符串、或信封带尾随数据时明确拒绝；多键信封不再被误判。校验失败时错误附带该工具的参数 schema（`expected parameters: ...`），让模型知道该传什么，而不是只回一句 `Invalid ... arguments`
+- 工具字符串参数堆分配（`prepared_tool` 的 value/content/path/old/new/argv 等），不再受旧 4095 字节上限，只受整包 `MAX_TOOL_OUTPUT`（50KB）约束；`web_search` 结果会话重载的 100KB 栈缓冲也改堆分配。valgrind（单测 + 800 例 fuzz-tool-args）0 error / 0 leak
 - 工具调用参数转义：流式收到的原始转义参数在存入对话前只解码一次，回灌请求时只转义一次，历史里的 assistant tool_call 不再双重转义（旧行为会把 `{"command":"ls"}` 回灌成 `{\"command\":\"ls\"}`，把模型带偏、越纠越乱）
 - 调试输出：`--debug`（= `--default` + 原始 JSON 调试）开启后，每次收到服务商返回的工具调用按原样（OpenAI 响应 JSON）打印 `[tool-call] {...}` 到 stderr；默认关闭
 

@@ -994,6 +994,7 @@ static int test_grep_respects_gitignore(void) {
 static int test_tool_error_explains_expected_args(void) {
     struct prepared_tool prepared;
     const char *err;
+    memset(&prepared, 0, sizeof(prepared));
 
     /* Generic "Invalid arguments" failures must carry the tool's expected
      * parameters so the model can correct itself. write_file's schema names
@@ -1020,12 +1021,14 @@ static int test_tool_error_explains_expected_args(void) {
     ASSERT(strstr(err, "must not be empty") != NULL);
     ASSERT(strstr(err, "old_string") != NULL);
 
+    prepared_tool_free(&prepared);
     return 1;
 }
 
 static int test_tool_security_refusal_has_reason(void) {
     struct prepared_tool prepared;
     const char *err;
+    memset(&prepared, 0, sizeof(prepared));
 
     /* Home-relative path: the refusal must name the value and the rule. */
     err = prepare_tool("read_file", "{\"file_path\":\"~/secret\"}",
@@ -1044,6 +1047,7 @@ static int test_tool_security_refusal_has_reason(void) {
     ASSERT(strstr(err, "\"reason\"") != NULL);
     ASSERT(strstr(err, "../outside") != NULL);
 
+    prepared_tool_free(&prepared);
     return 1;
 }
 
@@ -1094,16 +1098,18 @@ static int test_tool_arguments_are_strict(void) {
     ASSERT(r != NULL && strstr(r, "Invalid grep arguments") != NULL);
     free(r);
 
-    long_json = malloc(4200);
+    /* String arguments are now dynamically sized; the remaining bound is the
+     * whole encoded argument payload (MAX_TOOL_OUTPUT). */
+    long_json = malloc(60000);
     ASSERT(long_json != NULL);
     memcpy(long_json, "{\"pattern\":\"", 12);
-    for (i = 12; i < 4180; i++) long_json[i] = 'a';
-    long_json[4180] = '\"';
-    long_json[4181] = '}';
-    long_json[4182] = '\0';
+    for (i = 12; i < 59990; i++) long_json[i] = 'a';
+    long_json[59990] = '\"';
+    long_json[59991] = '}';
+    long_json[59992] = '\0';
     r = test_exec_tool("fixtures", "glob", long_json);
     free(long_json);
-    ASSERT(r != NULL && strstr(r, "Invalid glob arguments") != NULL);
+    ASSERT(r != NULL && strstr(r, "Tool arguments too large") != NULL);
     free(r);
     return 1;
 }
@@ -1536,22 +1542,34 @@ static int test_decoded_argument_length_limit(void) {
     size_t i;
     size_t pos = 0;
 
-    json = malloc(12 + 4096 * 6 + 3);
+    /* The old fixed ~4KB decoded cap is gone; strings are heap-allocated.
+     * The only remaining bound is the whole encoded payload (MAX_TOOL_OUTPUT),
+     * so 5000 decoded chars must now be accepted. */
+    json = malloc(12 + 5000 * 6 + 3);
     ASSERT(json != NULL);
     memcpy(json + pos, "{\"pattern\":\"", 12);
     pos += 12;
-    for (i = 0; i < 4095; i++) {
+    for (i = 0; i < 5000; i++) {
         memcpy(json + pos, "\\u0061", 6);
         pos += 6;
     }
     memcpy(json + pos, "\"}", 3);
     r = test_exec_tool("fixtures", "glob", json);
     ASSERT(r != NULL && strstr(r, "Invalid glob arguments") == NULL);
+    ASSERT(r != NULL && strstr(r, "Tool arguments too large") == NULL);
     free(r);
 
-    memcpy(json + pos, "\\u0061\"}", 9);
+    /* An encoded payload beyond MAX_TOOL_OUTPUT is rejected. */
+    json = realloc(json, 12 + 9000 * 6 + 3);
+    ASSERT(json != NULL);
+    pos = 12;
+    for (i = 0; i < 9000; i++) {
+        memcpy(json + pos, "\\u0061", 6);
+        pos += 6;
+    }
+    memcpy(json + pos, "\"}", 3);
     r = test_exec_tool("fixtures", "glob", json);
-    ASSERT(r != NULL && strstr(r, "Invalid glob arguments") != NULL);
+    ASSERT(r != NULL && strstr(r, "Tool arguments too large") != NULL);
     free(r);
     free(json);
     return 1;
@@ -4393,9 +4411,11 @@ int main(int argc, char **argv) {
             args = (char *)malloc(alen + 1);
             if (!args || fread(args, 1, alen, stdin) != alen) return 2;
             args[alen] = '\0';
+            memset(&prepared, 0, sizeof(prepared));
             err = prepare_tool(tool, args, &prepared);
             printf("%s\n", err ? err : "OK");
             fflush(stdout);
+            prepared_tool_free(&prepared);
             free(tool);
             free(args);
         }

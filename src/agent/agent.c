@@ -558,9 +558,17 @@ static char *execute_prepared_tool(struct agent_context *ctx,
 static char *exec_tool(const char *workspace, const char *name,
                        const char *arguments) {
     struct prepared_tool prepared;
-    const char *error = prepare_tool(name, arguments, &prepared);
-    if (error) return ccode_strdup(error);
-    return execute_prepared_tool(&agent_ctx, NULL, workspace, &prepared);
+    char *out;
+    const char *error;
+    memset(&prepared, 0, sizeof(prepared));
+    error = prepare_tool(name, arguments, &prepared);
+    if (error) {
+        prepared_tool_free(&prepared);
+        return ccode_strdup(error);
+    }
+    out = execute_prepared_tool(&agent_ctx, NULL, workspace, &prepared);
+    prepared_tool_free(&prepared);
+    return out;
 }
 #endif
 static int is_readonly_tool(const char *name) {
@@ -851,9 +859,10 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                     size_t pending_count = 0;
                     struct pending_subagent serial_subagents[CCODE_MAX_PARALLEL_SUBAGENTS];
                     size_t serial_count = 0;
+                    struct prepared_tool prepared;
+                    memset(&prepared, 0, sizeof(prepared));
                 for (i = 0; i < acc.tool_call_count; i++) {
                     char *tool_result;
-                    struct prepared_tool prepared;
                     const char *prepare_error;
 
                     if (!acc.tool_calls[i].id ||
@@ -1073,6 +1082,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         }
                     }
                 }
+                prepared_tool_free(&prepared);
                 if (result < 0) {
                     for (i = 0; i < pending_count; i++) {
                         free(pending[i].id);
@@ -2291,15 +2301,25 @@ int test_decode_string(const char *json, char *dest, size_t dest_size) {
 int test_prepare_tool_display(const char *name, const char *arguments,
                               char *dest, size_t dest_size) {
     struct prepared_tool prepared;
-    const char *error = prepare_tool(name, arguments, &prepared);
+    const char *error;
     int n;
-    if (error) return -1;
+    memset(&prepared, 0, sizeof(prepared));
+    error = prepare_tool(name, arguments, &prepared);
+    if (error) {
+        prepared_tool_free(&prepared);
+        return -1;
+    }
     n = snprintf(dest, dest_size, "%s", prepared.display);
+    prepared_tool_free(&prepared);
     return n >= 0 && (size_t)n < dest_size ? 0 : -1;
 }
 const char *test_prepare_tool_error(const char *name, const char *arguments) {
     struct prepared_tool prepared;
-    return prepare_tool(name, arguments, &prepared);
+    const char *err;
+    memset(&prepared, 0, sizeof(prepared));
+    err = prepare_tool(name, arguments, &prepared);
+    prepared_tool_free(&prepared);
+    return err;
 }
 void test_change_log_reset(void) { change_log_reset(&agent_ctx); }
 int test_change_log_count(void) { return agent_ctx.change_count; }
