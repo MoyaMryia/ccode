@@ -22,6 +22,8 @@ static void tui_fill_agent(struct ccode_agent_config *agent_cfg,
     agent_cfg->save_session = config->save_session;
     agent_cfg->resume_session = config->resume_session;
     agent_cfg->print_raw_json = config->print_raw_json;
+    agent_cfg->context_tokens = config->context_tokens > 0
+                                ? (size_t)config->context_tokens : 0;
     agent_cfg->workspace = getenv("CCODE_WORKSPACE");
     if (!agent_cfg->workspace) agent_cfg->workspace = ".";
 }

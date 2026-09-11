@@ -40,6 +40,9 @@ struct ccode_agent_config {
     /* Emit raw tool-call JSON (OpenAI wire format) to stderr for debugging.
      * Only meaningful in interactive runs; sub-agent configs inherit it. */
     int print_raw_json;
+    /* Approximate context window in tokens; auto-compaction triggers near
+     * this. 0 disables the token trigger. */
+    size_t context_tokens;
     ccode_content_callback on_content;
     void *on_content_context;
     ccode_content_callback on_reasoning;

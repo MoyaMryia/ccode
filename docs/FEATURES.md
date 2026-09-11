@@ -34,6 +34,8 @@
 - 会话保存 / 列表 / 删除 / 重命名 / 导出 / 恢复 / 多会话
 - 恢复会话（`--resume` 或 `/resume`）后先把已加载的对话打印出来再进入下一轮（系统提示跳过）；恢复后 `/exit` 写回原会话文件
 - 工具调用与结果 live 与 resume 共用同一套渲染（`agent_output.c`）：调用行 `[run]  name(detail)`；结果行 `[result]` 把存储的 JSON 解析成可读字段——命令 `exit=`/`stdout`/`stderr`，文件 `content`，列表 `files`/`matches`/`results`，错误 `error`(+`reason`)——保留真实换行、其它控制符经 `ccode_fprint_safe_text` 消毒，统一输出到 stdout。不再有独立的 resume 格式或 256 字节截断
+- 上下文压缩（`/compact`，以及估算请求接近上下文窗口 90% 时自动）不切断 assistant(tool_calls) 与 tool 结果的配对；构造请求时再兜底丢弃孤儿 `tool` 消息，旧压缩 bug 留下的会话也能继续，不再触发上游 `Messages with role 'tool' must be a response to a preceding message with 'tool_calls'` 400
+- token 用量为估算（无 tokenizer）：按 DeepSeek 公布的「英文字符 ≈0.3、中文字符 ≈0.6 token」折算，加每消息框架开销；上下文窗口 `CCODE_CONTEXT_TOKENS` / `--context-tokens N`（默认 1000000，0 关闭 token 触发）。消息数组改为按需增长（8→…，硬上限 4096，仅作内存兜底），不再是压缩触发条件
 - 会话元数据持久化，自动清理旧会话
 - 会话目录首次使用自动 `mkdir -p`（默认 `~/.ccode/sessions`）；`--session-dir DIR` / `CCODE_SESSION_DIR` 可覆盖，支持 `~/` 展开
 - 模型列表 / 搜索 / 详情 / 切换 / 默认模型
@@ -83,6 +85,6 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（153 agent + 45 json + 32 http + 15 tui + 21 markdown + 5 tty + 8 e2e + 3 streaming；test-tui-commands 随 `ccode` 暂停）
+3. 现有测试套件全过（159 agent + 45 json + 32 http + 15 tui + 21 markdown + 5 tty + 8 e2e + 3 streaming；test-tui-commands 随 `ccode` 暂停）
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟
 5. 工具调用/指令安全改动要过 `make fuzz-tool-args fuzz-command-paths fuzz-paths`，且 `make mutate`（故意注入错误看测试是否抓住）保持全部 KILLED

@@ -756,14 +756,23 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
             }
         }
 
-        /* Compact once the conversation is 4/5 full so the request stays
-         * under the provider-side message budget. */
-        if (conv->count > CCODE_MAX_MESSAGES * 4 / 5) {
-            const char *ch = NULL;
-            const char *tk = NULL;
-            if (ctx->change_count > 0) ch = change_log_serialize(&agent_ctx);
-            if (ctx->task_count > 0) tk = task_list_serialize(ctx);
-            ccode_conversation_compact(conv, ch, tk);
+        /* Compact once the estimated request approaches the model's context
+         * window. The estimate is char-based (ccode has no tokenizer). The
+         * message-count guard is only a last resort so the growable array
+         * stays under its hard cap (add_message would otherwise fail). */
+        {
+            size_t est = ccode_conversation_estimate_tokens(conv, tools_json);
+            size_t limit = cfg->context_tokens;
+            int over_tokens = limit > 0 && est > limit - limit / 10;
+            int over_capacity = conv->max_capacity > 16 &&
+                                conv->count >= conv->max_capacity - 8;
+            if (over_tokens || over_capacity) {
+                const char *ch = NULL;
+                const char *tk = NULL;
+                if (ctx->change_count > 0) ch = change_log_serialize(&agent_ctx);
+                if (ctx->task_count > 0) tk = task_list_serialize(ctx);
+                ccode_conversation_compact(conv, ch, tk);
+            }
         }
 
         body = ccode_conversation_build_request(conv, cfg->model, tools_json,

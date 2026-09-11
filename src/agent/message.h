@@ -5,7 +5,10 @@
 #include <sys/types.h>
 #include <time.h>
 
-#define CCODE_MAX_MESSAGES 256
+/* The conversation array grows on demand from CCODE_INITIAL_MESSAGES up to
+ * CCODE_MAX_MESSAGES (a hard memory bound, not a compaction trigger). */
+#define CCODE_INITIAL_MESSAGES 8
+#define CCODE_MAX_MESSAGES 4096
 #define CCODE_MAX_TOOL_CALLS 64
 #define CCODE_MAX_CONTENT_LEN (1024 * 100)
 #define CCODE_SESSION_NAME_MAX 256
@@ -34,7 +37,8 @@ struct ccode_message {
 struct ccode_conversation {
     struct ccode_message *messages;
     size_t count;
-    size_t capacity;
+    size_t capacity;      /* allocated slots */
+    size_t max_capacity;  /* hard growth cap */
 };
 
 /* Session metadata stored alongside conversation data. */
@@ -73,6 +77,13 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
                                        const char *tools_json,
                                        int thinking_enabled,
                                        const char *thinking_effort);
+
+/* Rough token estimate (no tokenizer): DeepSeek's published ratio of
+ * ~0.3 token per English char and ~0.6 per non-ASCII char, plus per-message
+ * framing overhead. Used to decide when to compact. */
+size_t ccode_estimate_text_tokens(const char *text);
+size_t ccode_conversation_estimate_tokens(const struct ccode_conversation *conv,
+                                          const char *tools_json);
 
 void ccode_conversation_compact(struct ccode_conversation *conv,
                                  const char *change_log_json,

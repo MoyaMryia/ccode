@@ -43,6 +43,7 @@ void ccode_print_usage(const char *program) {
         "      --allow-http       Allow http:// API endpoints beyond loopback\n"
         "                         (plaintext, known risk; loopback http always allowed)\n"
         "      --no-markdown      Disable markdown rendering (raw output)\n"
+        "      --context-tokens N Approximate context window; auto-compact near it (default 1000000, 0=off)\n"
         "      --session-dir DIR  Session storage directory\n"
         "  -h, --help             Show this help\n"
         "\n"
@@ -56,6 +57,7 @@ void ccode_print_usage(const char *program) {
         "  CCODE_THINKING             Send the thinking field (default: 1, set 0 to disable)\n"
         "  CCODE_THINKING_EFFORT      Reasoning effort: low, medium, high, xhigh, or max (default: high);\n"
         "                             off/none/empty disables the reasoning_effort field\n"
+        "  CCODE_CONTEXT_TOKENS       Approximate context window in tokens (default: 1000000)\n"
         "\n"
         "REPL slash commands (interactive mode):\n"
         "  /help        Show available slash commands\n"
@@ -159,6 +161,13 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
     {
         const char *md = getenv("CCODE_MARKDOWN");
         config->markdown = (!md || md[0] != '0') ? 1 : 0;
+    }
+    {
+        /* Approximate context window in tokens. DeepSeek's family is 1M;
+         * other models differ, so allow an explicit override. */
+        const char *ct = getenv("CCODE_CONTEXT_TOKENS");
+        config->context_tokens = ct ? atol(ct) : 1000000;
+        if (config->context_tokens < 0) config->context_tokens = 1000000;
     }
     {
         const char *tk = getenv("CCODE_THINKING");
@@ -286,6 +295,16 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
         }
         if (strcmp(argv[i], "--no-markdown") == 0) {
             config->markdown = 0;
+            continue;
+        }
+        if (strcmp(argv[i], "--context-tokens") == 0 && i + 1 < argc) {
+            long n = atol(argv[++i]);
+            if (n < 0) {
+                fprintf(stderr, "Invalid --context-tokens value: %s\n",
+                        argv[i]);
+                return -1;
+            }
+            config->context_tokens = n;
             continue;
         }
         if (strcmp(argv[i], "--save-session") == 0 && i + 1 < argc) {

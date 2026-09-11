@@ -23,11 +23,15 @@
 static int mkdir_p(const char *path);
 
 int ccode_conversation_init(struct ccode_conversation *conv, size_t capacity) {
-    if (capacity == 0 || capacity > CCODE_MAX_MESSAGES) capacity = CCODE_MAX_MESSAGES;
-    conv->messages = calloc(capacity, sizeof(struct ccode_message));
+    size_t initial;
+    if (capacity == 0 || capacity > CCODE_MAX_MESSAGES)
+        capacity = CCODE_MAX_MESSAGES;
+    initial = capacity < CCODE_INITIAL_MESSAGES ? capacity : CCODE_INITIAL_MESSAGES;
+    conv->messages = calloc(initial, sizeof(struct ccode_message));
     if (!conv->messages) return -1;
     conv->count = 0;
-    conv->capacity = capacity;
+    conv->capacity = initial;
+    conv->max_capacity = capacity;
     return 0;
 }
 
@@ -47,10 +51,25 @@ void ccode_conversation_destroy(struct ccode_conversation *conv) {
     conv->messages = NULL;
     conv->count = 0;
     conv->capacity = 0;
+    conv->max_capacity = 0;
 }
 
 static int add_message(struct ccode_conversation *conv) {
-    if (conv->count >= conv->capacity) return -1;
+    if (conv->count >= conv->max_capacity) return -1;
+    if (conv->count >= conv->capacity) {
+        size_t new_cap = conv->capacity ? conv->capacity * 2
+                                        : CCODE_INITIAL_MESSAGES;
+        struct ccode_message *grown;
+        if (new_cap > conv->max_capacity) new_cap = conv->max_capacity;
+        if (new_cap <= conv->capacity) return -1;
+        grown = realloc(conv->messages,
+                        new_cap * sizeof(struct ccode_message));
+        if (!grown) return -1;
+        memset(grown + conv->capacity, 0,
+               (new_cap - conv->capacity) * sizeof(struct ccode_message));
+        conv->messages = grown;
+        conv->capacity = new_cap;
+    }
     memset(&conv->messages[conv->count], 0, sizeof(struct ccode_message));
     conv->count++;
     return 0;
@@ -158,9 +177,59 @@ static const char *role_str(enum ccode_role role) {
     return "user";
 }
 
+/* DeepSeek's published approximation: 1 English character ~= 0.3 token and
+ * 1 Chinese (non-ASCII) character ~= 0.6 token. Fixed-point x10 keeps it in
+ * integer math; the result is rounded up. */
+size_t ccode_estimate_text_tokens(const char *text) {
+    size_t x10 = 0;
+    const unsigned char *p = (const unsigned char *)text;
+    while (p && *p != '\0') {
+        if (*p < 0x80) {
+            x10 += 3;
+            p++;
+        } else {
+            size_t len;
+            if ((*p & 0xE0) == 0xC0) len = 2;
+            else if ((*p & 0xF0) == 0xE0) len = 3;
+            else if ((*p & 0xF8) == 0xF0) len = 4;
+            else len = 1;
+            x10 += 6;
+            p += len;
+        }
+    }
+    return (x10 + 9) / 10;
+}
+
+/* Rough token estimate for the whole request: message/tool-call framing
+ * overhead plus the text and tool-schema bodies. Used to decide when to
+ * compact (ccode has no tokenizer; this is an estimate only). */
+size_t ccode_conversation_estimate_tokens(const struct ccode_conversation *conv,
+                                          const char *tools_json) {
+    size_t total = 0;
+    size_t i, j;
+    if (!conv) return 0;
+    if (tools_json) total += ccode_estimate_text_tokens(tools_json);
+    for (i = 0; i < conv->count; i++) {
+        total += 4; /* role + JSON framing */
+        if (conv->messages[i].content)
+            total += ccode_estimate_text_tokens(conv->messages[i].content);
+        if (conv->messages[i].tool_call_id)
+            total += ccode_estimate_text_tokens(conv->messages[i].tool_call_id);
+        for (j = 0; j < conv->messages[i].tool_call_count; j++) {
+            total += 4;
+            if (conv->messages[i].tool_calls[j].name)
+                total += ccode_estimate_text_tokens(
+                    conv->messages[i].tool_calls[j].name);
+            if (conv->messages[i].tool_calls[j].arguments)
+                total += ccode_estimate_text_tokens(
+                    conv->messages[i].tool_calls[j].arguments);
+        }
+    }
+    return total;
+}
+
 static size_t estimate_request_size(struct ccode_conversation *conv,
-                                    const char *model) {
-    size_t total = strlen(model) + 100;
+                                    const char *model) {    size_t total = strlen(model) + 100;
     size_t i, j;
     for (i = 0; i < conv->count; i++) {
         total += 100;
@@ -191,6 +260,8 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
     size_t pos = 0;
     char *buf = malloc(cap);
     size_t i, j;
+    const struct ccode_message *open_assistant = NULL;
+    int first_emitted = 1;
 
     if (!buf) return NULL;
     buf[0] = '\0';
@@ -201,7 +272,31 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
     if (ccode_append_cstr(&buf, &pos, &cap, "\",\"messages\":[") != 0) goto fail;
 
     for (i = 0; i < conv->count; i++) {
-        if (i > 0 && ccode_append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
+        /* Skip an orphan tool message: its tool_call_id must answer the last         * emitted assistant tool_calls. Providers reject orphans with HTTP
+         * 400, and an older compaction bug could leave them in a session. */
+        if (conv->messages[i].role == CCODE_ROLE_TOOL) {
+            int answered = 0;
+            if (open_assistant) {
+                for (j = 0; j < open_assistant->tool_call_count; j++) {
+                    if (conv->messages[i].tool_call_id &&
+                        open_assistant->tool_calls[j].id &&
+                        strcmp(conv->messages[i].tool_call_id,
+                               open_assistant->tool_calls[j].id) == 0) {
+                        answered = 1;
+                        break;
+                    }
+                }
+            }
+            if (!answered) continue;
+        } else if (conv->messages[i].role == CCODE_ROLE_ASSISTANT) {
+            open_assistant = conv->messages[i].tool_call_count > 0
+                             ? &conv->messages[i] : NULL;
+        } else {
+            open_assistant = NULL;
+        }
+        if (!first_emitted && ccode_append_cstr(&buf, &pos, &cap, ",") != 0)
+            goto fail;
+        first_emitted = 0;
         if (ccode_append_cstr(&buf, &pos, &cap, "{\"role\":\"") != 0) goto fail;
         if (ccode_append_cstr(&buf, &pos, &cap, role_str(conv->messages[i].role)) != 0)
             goto fail;
@@ -397,6 +492,7 @@ void ccode_conversation_compact(struct ccode_conversation *conv,
      * middle is replaced by a compacted summary message. */
     size_t keep_first = 2;
     size_t keep_last = 8;
+    size_t tail_start;
     size_t i, j, write_idx;
     denied_count = 0;
     error_count = 0;
@@ -405,6 +501,29 @@ void ccode_conversation_compact(struct ccode_conversation *conv,
     tool_call_count = 0;
 
     if (conv->count <= keep_first + keep_last + 2) return;
+
+    /* Never split an assistant(tool_calls) from its tool results. Providers
+     * reject an orphan tool message (no preceding tool_calls) and an
+     * assistant tool_calls that is not answered, so extend the kept head past
+     * a tool group that belongs to an assistant, and start the kept tail at a
+     * non-tool message. */
+    if (keep_first < conv->count &&
+        conv->messages[keep_first].role == CCODE_ROLE_TOOL) {
+        size_t group = keep_first;
+        while (group > 0 && conv->messages[group - 1].role == CCODE_ROLE_TOOL)
+            group--;
+        if (group > 0 && conv->messages[group - 1].role == CCODE_ROLE_ASSISTANT &&
+            conv->messages[group - 1].tool_call_count > 0) {
+            while (keep_first < conv->count &&
+                   conv->messages[keep_first].role == CCODE_ROLE_TOOL)
+                keep_first++;
+        }
+    }
+    tail_start = conv->count - keep_last;
+    while (tail_start < conv->count &&
+           conv->messages[tail_start].role == CCODE_ROLE_TOOL)
+        tail_start++;
+    if (tail_start <= keep_first) return;
 
     summary_len = 4096;
     summary = malloc(summary_len);
@@ -420,7 +539,7 @@ void ccode_conversation_compact(struct ccode_conversation *conv,
         if (n > 0 && (size_t)n < summary_len) pos += (size_t)n;
 
         /* Scan dropped messages for tool calls and results. */
-        for (i = keep_first; i < conv->count - keep_last; i++) {
+        for (i = keep_first; i < tail_start; i++) {
             const char *role = role_str(conv->messages[i].role);
             size_t avail;
             dropped++;
@@ -499,7 +618,7 @@ void ccode_conversation_compact(struct ccode_conversation *conv,
         snprintf(summary + pos, summary_len - pos, "\"}");
     }
 
-    for (i = keep_first; i < conv->count - keep_last; i++) {
+    for (i = keep_first; i < tail_start; i++) {
         ccode_message_cleanup(&conv->messages[i]);
     }
 
@@ -511,7 +630,7 @@ void ccode_conversation_compact(struct ccode_conversation *conv,
     }
 
     write_idx = keep_first + 1;
-    for (i = conv->count - keep_last; i < conv->count; i++) {
+    for (i = tail_start; i < conv->count; i++) {
         if (write_idx != i) {
             memcpy(&conv->messages[write_idx], &conv->messages[i],
                    sizeof(struct ccode_message));
@@ -856,6 +975,38 @@ static int obj_check_known_keys(ccode_jsmntok_t *toks, int num_tokens,
     return 0;
 }
 
+/* Parse `js` into a token array, doubling the buffer when jsmn runs out.
+ * On success *toks_out is a malloc'd array (caller frees) and the token count
+ * is returned; on failure -1 with *toks_out NULL. */
+static int parse_tokens_growable(const char *js, size_t len,
+                                 ccode_jsmntok_t **toks_out) {
+    size_t cap = 8192;
+    const size_t cap_max = (size_t)1 << 20; /* ~16MB of tokens */
+    ccode_jsmntok_t *toks = malloc(cap * sizeof(*toks));
+    ccode_jsmn_parser parser;
+    int n;
+
+    *toks_out = NULL;
+    if (!toks) return -1;
+    for (;;) {
+        ccode_jsmn_init(&parser);
+        n = ccode_jsmn_parse(&parser, js, len, toks, (unsigned int)cap);
+        if (n >= 0) {
+            *toks_out = toks;
+            return n;
+        }
+        if (cap >= cap_max) break;
+        cap *= 2;
+        {
+            ccode_jsmntok_t *grown = realloc(toks, cap * sizeof(*toks));
+            if (!grown) break;
+            toks = grown;
+        }
+    }
+    free(toks);
+    return -1;
+}
+
 int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
                             char **tasks_json_out, char **changes_json_out) {
     FILE *f;
@@ -864,8 +1015,8 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
     long fsize;
     char *buf;
     size_t read_size;
-    ccode_jsmn_parser parser;
-    ccode_jsmntok_t toks[8192];
+    ccode_jsmntok_t *toks = NULL;
+    char *content_buf = NULL;
     int num_tokens;
     int i;
     struct ccode_conversation loaded;
@@ -903,33 +1054,35 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
     fclose(f);
     buf[read_size] = '\0';
 
-    ccode_jsmn_init(&parser);
-    num_tokens = ccode_jsmn_parse(&parser, buf, read_size, toks, 8192);
-    if (num_tokens < 0 || num_tokens < 3 ||
+    num_tokens = parse_tokens_growable(buf, read_size, &toks);
+    if (num_tokens < 3 ||
         toks[0].type != CCODE_JSMN_OBJECT ||
         toks[0].end <= 0 || buf[toks[0].end - 1] != '}') {
+        free(toks);
         free(buf);
         return -1;
     }
     for (i = toks[0].end; (size_t)i < read_size; i++) {
         if (buf[i] != ' ' && buf[i] != '\t' &&
             buf[i] != '\r' && buf[i] != '\n') {
+            free(toks);
             free(buf);
             return -1;
         }
-    }
-    /* Validate the root object and check for trailing data.
+    }    /* Validate the root object and check for trailing data.
      * Note: jsmn may push the last primitive token at its done label,
      * so we allow one token more than the root's subtree. */
     {
         int subtree = token_subtree(toks, num_tokens, 0);
         if (subtree < 0 ||
             (subtree != num_tokens && subtree != num_tokens - 1)) {
+            free(toks);
             free(buf);
             return -1;
         }
     }
     if (obj_check_no_dups(toks, num_tokens, 0, buf) != 0) {
+        free(toks);
         free(buf);
         return -1;
     }
@@ -940,6 +1093,7 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
         };
         if (obj_check_known_keys(toks, num_tokens, 0, buf,
                                  root_keys, 5) != 0) {
+            free(toks);
             free(buf);
             return -1;
         }
@@ -989,10 +1143,14 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
     if (!has_version || !has_messages) goto parse_fail;
 
     if (ccode_conversation_init(&loaded, CCODE_MAX_MESSAGES) != 0) {
+        free(toks);
         free(buf);
         return -1;
     }
     loaded_initialized = 1;
+
+    content_buf = malloc(CCODE_MAX_CONTENT_LEN + 1);
+    if (!content_buf) goto load_fail;
 
     /* Parse messages array. */
     {
@@ -1038,7 +1196,6 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
 
             if (r == CCODE_ROLE_TOOL) {
                 /* Tool result: requires tool_call_id and content. */
-                char content_buf[CCODE_MAX_CONTENT_LEN + 1];
                 char tcid_buf[256];
                 if (tcid_idx < 0 ||
                     toks[tcid_idx].type != CCODE_JSMN_STRING) goto load_fail;
@@ -1046,7 +1203,7 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
                     toks[content_idx].type != CCODE_JSMN_STRING) goto load_fail;
                 if (ccode_json_unescape(buf + toks[content_idx].start,
                                   buf + toks[content_idx].end,
-                                  content_buf, sizeof(content_buf)) != 0)
+                                  content_buf, CCODE_MAX_CONTENT_LEN + 1) != 0)
                     goto load_fail;
                 if (ccode_json_unescape(buf + toks[tcid_idx].start,
                                   buf + toks[tcid_idx].end,
@@ -1057,7 +1214,6 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
                     goto load_fail;
             } else {
                 /* system/user/assistant: content optional. */
-                char content_buf[CCODE_MAX_CONTENT_LEN + 1];
                 char *content_ptr = NULL;
 
                 if (content_idx >= 0) {
@@ -1065,7 +1221,7 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
                         goto load_fail;
                     if (ccode_json_unescape(buf + toks[content_idx].start,
                                       buf + toks[content_idx].end,
-                                      content_buf, sizeof(content_buf)) != 0)
+                                      content_buf, CCODE_MAX_CONTENT_LEN + 1) != 0)
                         goto load_fail;
                     content_ptr = content_buf;
                 }
@@ -1198,6 +1354,8 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
         (*changes_json_out)[end - start] = '\0';
     }
 
+    free(content_buf);
+    free(toks);
     free(buf);
     ccode_conversation_destroy(conv);
     *conv = loaded;
@@ -1214,6 +1372,8 @@ load_fail:
     }
     if (loaded_initialized) ccode_conversation_destroy(&loaded);
 parse_fail:
+    free(content_buf);
+    free(toks);
     free(buf);
     return -1;
 }
@@ -1311,8 +1471,7 @@ static int count_messages_in_file(const char *path) {
     long fsize;
     char *buf;
     size_t read_size;
-    ccode_jsmn_parser parser;
-    ccode_jsmntok_t toks[8192];
+    ccode_jsmntok_t *toks = NULL;
     int num_tokens;
     int i, result;
 
@@ -1333,8 +1492,7 @@ static int count_messages_in_file(const char *path) {
     fclose(f);
     buf[read_size] = '\0';
 
-    ccode_jsmn_init(&parser);
-    num_tokens = ccode_jsmn_parse(&parser, buf, read_size, toks, 8192);
+    num_tokens = parse_tokens_growable(buf, read_size, &toks);
     if (num_tokens < 0) { free(buf); return -1; }
 
     result = -1;
@@ -1347,6 +1505,7 @@ static int count_messages_in_file(const char *path) {
             break;
         }
     }
+    free(toks);
     free(buf);
     return result;
 }
@@ -1359,8 +1518,7 @@ static int read_session_model(const char *path, char *model, size_t model_size) 
     long fsize;
     char *buf;
     size_t read_size;
-    ccode_jsmn_parser parser;
-    ccode_jsmntok_t toks[8192];
+    ccode_jsmntok_t *toks = NULL;
     int num_tokens;
     int i;
     int meta_idx = -1;
@@ -1383,8 +1541,7 @@ static int read_session_model(const char *path, char *model, size_t model_size) 
     fclose(f);
     buf[read_size] = '\0';
 
-    ccode_jsmn_init(&parser);
-    num_tokens = ccode_jsmn_parse(&parser, buf, read_size, toks, 8192);
+    num_tokens = parse_tokens_growable(buf, read_size, &toks);
     if (num_tokens < 0) { free(buf); return -1; }
 
     /* Find the metadata object. */
@@ -1419,6 +1576,7 @@ static int read_session_model(const char *path, char *model, size_t model_size) 
         }
     }
 
+    free(toks);
     free(buf);
     return 0;
 }

@@ -155,6 +155,11 @@ remote http is refused otherwise.
 .B \-\-no-markdown
 Disable markdown rendering in human-facing output.
 .TP
+.BI \-\-context-tokens " N"
+Approximate context window in tokens; the conversation is compacted when the
+estimated request reaches 90% of it. Default 1000000 (DeepSeek family);
+0 disables the token trigger. The estimate is char-based (no tokenizer).
+.TP
 .BI \-\-save-session " PATH"
 Save the conversation to
 .I PATH
@@ -349,6 +354,10 @@ Set 0 to disable thinking mode (enabled by default).
 .B CCODE_THINKING_EFFORT
 Thinking effort: low, medium, high, xhigh, max (default high).
 Set to off, none or empty to omit the reasoning_effort field.
+.TP
+.B CCODE_CONTEXT_TOKENS
+Approximate context window in tokens (default 1000000). Auto-compaction
+triggers near 90% of it; 0 disables the token trigger.
 .SH LIMITS
 Built-in (not configurable) resource bounds:
 .TP

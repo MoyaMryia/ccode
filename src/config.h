@@ -26,6 +26,9 @@ struct ccode_config {
     /* Print raw tool-call JSON (OpenAI wire format) for debugging.
      * Implied by --debug, which also applies the --default preset. */
     int print_raw_json;
+    /* Approximate context window in tokens; auto-compaction triggers near
+     * this. 0 disables the token trigger. */
+    long context_tokens;
 };
 
 int ccode_parse_args(int argc, char **argv, struct ccode_config *config);

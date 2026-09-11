@@ -2721,6 +2721,153 @@ static int test_compact_ignores_false_timed_out(void) {
     return 1;
 }
 
+static int compacted_has_orphan_tool(const struct ccode_conversation *conv) {
+    size_t i, j;
+    const struct ccode_message *open = NULL;
+    for (i = 0; i < conv->count; i++) {
+        const struct ccode_message *m = &conv->messages[i];
+        if (m->role == CCODE_ROLE_ASSISTANT) {
+            open = m->tool_call_count > 0 ? m : NULL;
+        } else if (m->role == CCODE_ROLE_TOOL) {
+            int ok = 0;
+            if (!open) return 1;
+            for (j = 0; j < open->tool_call_count; j++) {
+                if (m->tool_call_id && open->tool_calls[j].id &&
+                    strcmp(m->tool_call_id, open->tool_calls[j].id) == 0) {
+                    ok = 1;
+                    break;
+                }
+            }
+            if (!ok) return 1;
+        } else {
+            open = NULL;
+        }
+    }
+    return 0;
+}
+
+/* Compaction must not split an assistant(tool_calls) from its tool results:
+ * providers reject an orphan tool (or an unanswered tool_calls) with 400. */
+static int test_compact_keeps_tool_call_pairs(void) {
+    struct ccode_conversation conv;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, "sys") == 0);
+    /* Head group straddles the keep_first boundary. */
+    ASSERT(ccode_conversation_add_tool_call(&conv, "h1", "read_file", "{}") == 0);
+    ASSERT(ccode_conversation_add_tool_result(&conv, "h1",
+        "{\"content\":\"x\"}") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "u") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "a") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "u") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "a") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "u") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "a") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "u") == 0);
+    /* Tail group: its tool lands exactly on the keep_last boundary. */
+    ASSERT(ccode_conversation_add_tool_call(&conv, "x1", "read_file", "{}") == 0);
+    ASSERT(ccode_conversation_add_tool_result(&conv, "x1",
+        "{\"content\":\"y\"}") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "u") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "a") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "u") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "a") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "u") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "a") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "u") == 0);
+
+    ccode_conversation_compact(&conv, NULL, NULL);
+    ASSERT(compacted_has_orphan_tool(&conv) == 0);
+    ASSERT(conv.messages[3].role == CCODE_ROLE_SYSTEM);
+    ASSERT(conv.messages[1].role == CCODE_ROLE_ASSISTANT);
+    ASSERT(conv.messages[1].tool_call_count == 1);
+    ASSERT(conv.messages[2].role == CCODE_ROLE_TOOL);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
+/* A session already corrupted by the old compaction bug still sends: the
+ * request builder drops orphan tool messages instead of failing upstream. */
+static int test_build_request_skips_orphan_tools(void) {
+    struct ccode_conversation conv;
+    char *body;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, "sys") == 0);
+    ASSERT(ccode_conversation_add_tool_result(&conv, "orphan-id",
+        "{\"content\":\"ORPHAN_MARKER\"}") == 0);
+    ASSERT(ccode_conversation_add_tool_call(&conv, "good-id", "read_file",
+                                            "{}") == 0);
+    ASSERT(ccode_conversation_add_tool_result(&conv, "good-id",
+        "{\"content\":\"GOOD_MARKER\"}") == 0);
+
+    body = ccode_conversation_build_request(&conv, "m", NULL, 0, NULL);
+    ASSERT(body != NULL);
+    ASSERT(strstr(body, "ORPHAN_MARKER") == NULL);
+    ASSERT(strstr(body, "orphan-id") == NULL);
+    ASSERT(strstr(body, "GOOD_MARKER") != NULL);
+    ASSERT(strstr(body, "good-id") != NULL);
+    free(body);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
+static int test_estimate_text_tokens(void) {
+    /* DeepSeek ratio: EN char 0.3, CJK char 0.6, rounded up. */
+    ASSERT(ccode_estimate_text_tokens(NULL) == 0);
+    ASSERT(ccode_estimate_text_tokens("") == 0);
+    ASSERT(ccode_estimate_text_tokens("Hello!") == 2);  /* 6*0.3=1.8 */
+    ASSERT(ccode_estimate_text_tokens("你好") == 2);     /* 2*0.6=1.2 */
+    ASSERT(ccode_estimate_text_tokens("中a") == 1);      /* 0.6+0.3=0.9 */
+    return 1;
+}
+
+static int test_estimate_conversation_tokens(void) {
+    struct ccode_conversation conv;
+    size_t a, b;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "Hello!") == 0);
+    a = ccode_conversation_estimate_tokens(&conv, NULL);
+    ASSERT(a == 4 + 2); /* per-message framing + text */
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "你好") == 0);
+    b = ccode_conversation_estimate_tokens(&conv, NULL);
+    ASSERT(b == a + 4 + 2);
+    ASSERT(ccode_conversation_estimate_tokens(&conv, "\"tools\":[]") > b);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
+static int test_conversation_grows_dynamically(void) {
+    struct ccode_conversation conv;
+    int i;
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(conv.capacity == CCODE_INITIAL_MESSAGES);
+    for (i = 0; i < 100; i++) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "m%d", i);
+        ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, buf) == 0);
+    }
+    ASSERT(conv.count == 100);
+    ASSERT(conv.capacity >= 100);
+    ASSERT(conv.capacity <= CCODE_MAX_MESSAGES);
+    ASSERT(strcmp(conv.messages[50].content, "m50") == 0);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
+static int test_conversation_hard_cap(void) {
+    struct ccode_conversation conv;
+    int i;
+    ASSERT(ccode_conversation_init(&conv, 8) == 0);
+    ASSERT(conv.max_capacity == 8);
+    for (i = 0; i < 8; i++)
+        ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "x") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "x") != 0);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
 static int test_glob_path_scope_restricts_results(void) {
     mkdir_p("fixtures/glob_scope_a");
     mkdir_p("fixtures/glob_scope_b");
@@ -4454,6 +4601,12 @@ int main(int argc, char **argv) {
     TEST(duplicate_tool_call_id_detected);
     TEST(compact_scans_tool_results);
     TEST(compact_ignores_false_timed_out);
+    TEST(compact_keeps_tool_call_pairs);
+    TEST(build_request_skips_orphan_tools);
+    TEST(estimate_text_tokens);
+    TEST(estimate_conversation_tokens);
+    TEST(conversation_grows_dynamically);
+    TEST(conversation_hard_cap);
     TEST(agent_context_isolation);
     TEST(parallel_subagents_dispatch);
     TEST(load_rejects_strict_schema_and_is_transactional);
