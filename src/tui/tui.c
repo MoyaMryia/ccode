@@ -168,7 +168,8 @@ static void tui_draw(struct tui_term *term, struct tui_messages *messages,
             fputs(TUI_DIM "<" TUI_RESET, stdout);
             input_cols--;
         }
-        tui_render_text(input->text + view_start, input_cols);
+        /* Single-line clip: a long input must never wrap into the hint row. */
+        (void)tui_render_text_clip(input->text + view_start, input_cols);
         tui_render_cursor(1);
     }
     tui_render_move(term->rows - 1, 0); tui_render_clear_line();
