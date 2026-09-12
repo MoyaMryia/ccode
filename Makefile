@@ -138,6 +138,7 @@ TEST_TARGETS += test-markdown
 ifneq ($(TTY_TEST),)
 TEST_TARGETS += test-tty
 TEST_TARGETS += test-e2e
+TEST_TARGETS += test-e2e-real
 TEST_TARGETS += test-streaming
 endif
 
@@ -459,6 +460,12 @@ stress: stress-random stress-json stress-real
 
 test-e2e: ccode-cli
 	python3 ./tests/test_e2e_fixture.py
+
+# Battle test: a scripted mock-provider plan drives the real ccode-cli over
+# a throwaway copy of this repo to finish one coding task (fix -> real
+# rebuild -> run the built binary), exercising all 12 tools.
+test-e2e-real: ccode-cli
+	python3 ./tests/test_e2e_real_project.py
 
 test-streaming: ccode-cli
 	python3 ./tests/test_streaming.py

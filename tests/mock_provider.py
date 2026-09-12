@@ -76,6 +76,46 @@ def build_chunked_response(events, chunk_size=1, chunk_ext=None):
 
 
 class MockHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        """Local web_fetch / web_search targets (loopback only; callers set
+        CCODE_WEB_FETCH_ALLOW_PRIVATE=1). Purely additive: every existing
+        test talks POST to /v1/chat/completions."""
+        if self.path.startswith("/page"):
+            body = ("<!doctype html><html><head><title>Mock Page</title>"
+                    "</head><body>"
+                    "<h1>Mock &amp; Page</h1>"
+                    "<p>MOCKPAGE-CONTENT alpha</p>"
+                    "<p>MOCKPAGE-CONTENT &quot;beta&quot;</p>"
+                    "</body></html>")
+            self._send_get(200, "text/html; charset=utf-8", body)
+        elif self.path.startswith("/search"):
+            body = (
+                "<!doctype html><html><body><ol id=\"b_results\">"
+                "<li class=\"b_algo\"><h2><a class=\"tilk\" "
+                "href=\"https://docs.example.com/ccode\" h=\"ID=SERP,1\">"
+                "ccode first &amp; result</a></h2>"
+                "<div class=\"b_caption\"><p>snippet one with "
+                "&quot;quotes&quot; inside</p></div></li>"
+                "<li class=\"b_algo\"><h2><a class=\"tilk\" "
+                "href=\"https://example.com/second\" h=\"ID=SERP,2\">"
+                "second result</a></h2>"
+                "<div class=\"b_caption\"><p>snippet &#39;two&#39; here</p>"
+                "</div></li>"
+                "</ol></body></html>")
+            self._send_get(200, "text/html; charset=utf-8", body)
+        else:
+            self.send_error(404, "Not found")
+
+    def _send_get(self, status, ctype, body):
+        payload = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(payload)
+        self.close_connection = True
+
     def do_POST(self):
         if self.path == "/reset/chat/completions":
             self.connection.setsockopt(
