@@ -713,58 +713,17 @@ static void inproc_list_models(struct tui_inproc_ctx *ctx, const char *cmd) {
 }
 
 static void inproc_list_sessions(struct tui_inproc_ctx *ctx) {
-    char *sessions = ccode_session_list();
-    ccode_jsmntok_t tokens[2048];
-    ccode_jsmntok_t *arr;
-    int num_tokens;
-    int i;
-    int n = 0;
-
-    if (!sessions) {
+    /* Shared renderer: same text the JSON backend ships to the fork TUI. */
+    char *text = ccode_session_list_text();
+    if (!text) {
         inproc_msg(ctx, "Could not list sessions.");
         return;
     }
-    num_tokens = ccode_json_parse(sessions, strlen(sessions), tokens, 2048);
-    /* ccode_session_list() returns {"sessions":[...]} (empty dir -> []). */
-    arr = (num_tokens > 0 && tokens[0].type == CCODE_JSMN_OBJECT)
-              ? ccode_json_find_key(tokens, num_tokens, 0, sessions,
-                                    "sessions")
-              : (num_tokens > 0 && tokens[0].type == CCODE_JSMN_ARRAY)
-                    ? tokens
-                    : NULL;
-    if (!arr || arr->type != CCODE_JSMN_ARRAY) {
-        inproc_msg(ctx, "Could not list sessions.");
-        free(sessions);
-        return;
-    }
-    for (i = 0; i < arr->size && n < INPROC_LIST_MAX; i++) {
-        ccode_jsmntok_t *entry = ccode_json_find_index(
-            tokens, num_tokens, (int)(arr - tokens), i);
-        ccode_jsmntok_t *tok;
-        char name_buf[CCODE_SESSION_NAME_MAX];
-        char line[512];
-        long size = 0;
-        long msgs = 0;
-        if (!entry || entry->type != CCODE_JSMN_OBJECT) continue;
-        tok = ccode_json_find_key(tokens, num_tokens,
-                                  (int)(entry - tokens), sessions, "name");
-        if (!tok || tok->type != CCODE_JSMN_STRING ||
-            ccode_json_token_to_string(sessions, tok, name_buf,
-                                       sizeof(name_buf)) != 0)
-            continue;
-        tok = ccode_json_find_key(tokens, num_tokens,
-                                  (int)(entry - tokens), sessions, "size");
-        if (tok) ccode_json_token_to_int(sessions, tok, &size);
-        tok = ccode_json_find_key(tokens, num_tokens,
-                                  (int)(entry - tokens), sessions, "messages");
-        if (tok) ccode_json_token_to_int(sessions, tok, &msgs);
-        snprintf(line, sizeof(line), "  %d. %s (%ld bytes, %ld msgs)",
-                 i + 1, name_buf, size, msgs);
-        inproc_msg(ctx, line);
-        n++;
-    }
-    if (n == 0) inproc_msg(ctx, "No saved sessions.");
-    free(sessions);
+    if (text[0] == '\0')
+        inproc_msg(ctx, "No saved sessions.");
+    else
+        inproc_msg(ctx, text);
+    free(text);
 }
 
 static void inproc_export_session(struct tui_inproc_ctx *ctx,
