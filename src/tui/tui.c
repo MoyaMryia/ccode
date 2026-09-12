@@ -612,7 +612,6 @@ static void inproc_run_agent(struct ccode_agent_config *cfg, const char *prompt,
 }
 
 #define INPROC_HISTORY_MAX 64
-#define INPROC_LIST_MAX 256
 
 static void inproc_msg(struct tui_inproc_ctx *ctx, const char *text) {
     tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, text);
@@ -629,87 +628,34 @@ static void inproc_history_add(struct tui_inproc_ctx *ctx, const char *text) {
     if (ctx->history[ctx->history_count]) ctx->history_count++;
 }
 
-/* /models [search K | info NAME]: list, keyword-filter, or describe the
- * upstream model list. Falls back to the raw response body when the JSON
- * shape is unrecognized (same as the CLI backend). */
+/* /models [search K | info NAME]: the shared renderer in models.c keeps
+ * the output identical to the CLI REPL. */
 static void inproc_list_models(struct tui_inproc_ctx *ctx, const char *cmd) {
-    char *models;
-    ccode_jsmntok_t tokens[2048];
-    ccode_jsmntok_t *data;
-    int num_tokens;
-    int i;
-    int n = 0;
     const char *keyword = NULL;
     const char *info = NULL;
-
-    if (strncmp(cmd, "/models search ", 15) == 0) keyword = cmd + 15;
-    else if (strncmp(cmd, "/models info ", 13) == 0) info = cmd + 13;
-
-    models = ccode_models_fetch(ctx->config->api_base, ctx->config->api_key);
-    if (!models) {
-        inproc_msg(ctx, "Could not fetch model list.");
-        return;
-    }
-    num_tokens = ccode_json_parse(models, strlen(models), tokens, 2048);
-    if (num_tokens > 0 && tokens[0].type == CCODE_JSMN_OBJECT &&
-        ccode_json_find_key(tokens, num_tokens, 0, models, "error")) {
-        /* Upstream failed (webfetch reports failures as {"error":...}). */
-        inproc_msg(ctx, "Could not fetch model list.");
-        free(models);
-        return;
-    }
-    data = (num_tokens > 0 && tokens[0].type == CCODE_JSMN_OBJECT)
-               ? ccode_json_find_key(tokens, num_tokens, 0, models, "data")
-               : NULL;
-    if (!data || data->type != CCODE_JSMN_ARRAY) {
-        inproc_msg(ctx, "Could not fetch model list.");
-        free(models);
-        return;
-    }
-    for (i = 0; i < data->size && n < INPROC_LIST_MAX; i++) {
-        ccode_jsmntok_t *entry = ccode_json_find_index(
-            tokens, num_tokens, (int)(data - tokens), i);
-        ccode_jsmntok_t *id_tok;
-        char id_buf[256];
-        char line[320];
-        if (!entry || entry->type != CCODE_JSMN_OBJECT) continue;
-        id_tok = ccode_json_find_key(tokens, num_tokens,
-                                     (int)(entry - tokens), models, "id");
-        if (!id_tok || id_tok->type != CCODE_JSMN_STRING ||
-            ccode_json_token_to_string(models, id_tok, id_buf,
-                                       sizeof(id_buf)) != 0)
-            continue;
-        if (info) {
-            if (strcmp(id_buf, info) == 0) {
-                ccode_jsmntok_t *ow = ccode_json_find_key(
-                    tokens, num_tokens, (int)(entry - tokens), models,
-                    "owned_by");
-                char ow_buf[128];
-                snprintf(line, sizeof(line), "Model: %s", id_buf);
-                inproc_msg(ctx, line);
-                if (ow && ow->type == CCODE_JSMN_STRING &&
-                    ccode_json_token_to_string(models, ow, ow_buf,
-                                               sizeof(ow_buf)) == 0) {
-                    snprintf(line, sizeof(line), "Provider: %s", ow_buf);
-                    inproc_msg(ctx, line);
-                }
-                break;
-            }
-            continue;
+    char *text;
+    if (strncmp(cmd, "/models search ", 15) == 0) {
+        keyword = cmd + 15;
+        if (keyword[0] == '\0') {
+            inproc_msg(ctx, "Usage: /models search <keyword>");
+            return;
         }
-        if (keyword && !strstr(id_buf, keyword)) continue;
-        if (ctx->config->model && strcmp(id_buf, ctx->config->model) == 0)
-            snprintf(line, sizeof(line), "  * %s", id_buf);
-        else
-            snprintf(line, sizeof(line), "    %s", id_buf);
-        inproc_msg(ctx, line);
-        n++;
+    } else if (strncmp(cmd, "/models info ", 13) == 0) {
+        info = cmd + 13;
+        if (info[0] == '\0') {
+            inproc_msg(ctx, "Usage: /models info <name>");
+            return;
+        }
     }
-    if (info)
-        inproc_msg(ctx, "Model not found.");
-    else if (n == 0)
-        inproc_msg(ctx, "No matching models.");
-    free(models);
+    text = ccode_models_render(ctx->config->api_base, ctx->config->api_key,
+                               keyword, info,
+                               ctx->config->model ? ctx->config->model : "");
+    if (!text) {
+        inproc_msg(ctx, "Could not fetch model list.");
+        return;
+    }
+    inproc_msg(ctx, text);
+    free(text);
 }
 
 static void inproc_list_sessions(struct tui_inproc_ctx *ctx) {

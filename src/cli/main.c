@@ -408,11 +408,29 @@ static void backend_command(struct json_session_state *state,
                                     "\n  [%d] %s", i + 1, state->history[i]);
         json_print("message", output);
     } else if (strncmp(command, "/models", 7) == 0) {
-        char *models = ccode_models_fetch(state->options.api_base, state->options.api_key);
-        if (!models) json_print("error", "Could not fetch model list.");
+        const char *keyword = NULL;
+        const char *info = NULL;
+        char *text;
+        if (strncmp(command, "/models search ", 15) == 0) {
+            keyword = command + 15;
+            if (!keyword[0]) {
+                json_print("error", "Usage: /models search <keyword>");
+                return;
+            }
+        } else if (strncmp(command, "/models info ", 13) == 0) {
+            info = command + 13;
+            if (!info[0]) {
+                json_print("error", "Usage: /models info <name>");
+                return;
+            }
+        }
+        text = ccode_models_render(state->options.api_base,
+                                   state->options.api_key, keyword, info,
+                                   state->options.model_name);
+        if (!text) json_print("error", "Could not fetch model list.");
         else {
-            json_print("message", models);
-            free(models);
+            json_print("message", text);
+            free(text);
         }
     } else if (strcmp(command, "/sessions") == 0) {
         backend_print_sessions();

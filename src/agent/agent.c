@@ -1701,173 +1701,32 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                 ccode_agent_summary_cache_reset();
                 fprintf(stderr, "  Conversation compacted.\n");
                 continue;
-            } else if (strcmp(line, "/models") == 0) {
-                char *models = ccode_models_fetch(cfg->api_base, cfg->api_key);
-                if (!models) {
+            } else if (strcmp(line, "/models") == 0 ||
+                       strncmp(line, "/models search ", 15) == 0 ||
+                       strncmp(line, "/models info ", 13) == 0) {
+                const char *keyword = NULL;
+                const char *info = NULL;
+                char *text;
+                if (strncmp(line, "/models search ", 15) == 0) {
+                    keyword = line + 15;
+                    if (keyword[0] == '\0') {
+                        fputs("  Usage: /models search <keyword>\n", stderr);
+                        continue;
+                    }
+                } else if (strncmp(line, "/models info ", 13) == 0) {
+                    info = line + 13;
+                    if (info[0] == '\0') {
+                        fputs("  Usage: /models info <name>\n", stderr);
+                        continue;
+                    }
+                }
+                text = ccode_models_render(cfg->api_base, cfg->api_key,
+                                           keyword, info, current_model);
+                if (!text)
                     fputs("  Could not fetch model list.\n", stderr);
-                } else {
-                    ccode_jsmntok_t tokens[2048];
-                    ccode_jsmntok_t *data;
-                    int num_tokens;
-                    int n = 0;
-                    int i;
-                    num_tokens = ccode_json_parse(models, strlen(models),
-                                                  tokens, 2048);
-                    if (num_tokens > 0 &&
-                        tokens[0].type == CCODE_JSMN_OBJECT &&
-                        ccode_json_find_key(tokens, num_tokens, 0, models,
-                                            "error")) {
-                        fprintf(stderr, "  API error: %s\n", models);
-                    } else {
-                        fprintf(stderr, "  Available models:\n");
-                        data = (num_tokens > 0 &&
-                                tokens[0].type == CCODE_JSMN_OBJECT)
-                                   ? ccode_json_find_key(tokens, num_tokens, 0,
-                                                         models, "data")
-                                   : NULL;
-                        if (data && data->type == CCODE_JSMN_ARRAY) {
-                            for (i = 0; i < data->size; i++) {
-                                ccode_jsmntok_t *entry =
-                                    ccode_json_find_index(
-                                        tokens, num_tokens,
-                                        (int)(data - tokens), i);
-                                ccode_jsmntok_t *id_tok;
-                                char id_buf[256];
-                                char cur;
-                                if (!entry ||
-                                    entry->type != CCODE_JSMN_OBJECT) continue;
-                                id_tok = ccode_json_find_key(
-                                    tokens, num_tokens, (int)(entry - tokens),
-                                    models, "id");
-                                if (!id_tok ||
-                                    id_tok->type != CCODE_JSMN_STRING ||
-                                    ccode_json_token_to_string(
-                                        models, id_tok, id_buf,
-                                        sizeof(id_buf)) != 0) continue;
-                                cur = ' ';
-                                if (strcmp(id_buf, current_model) == 0)
-                                    cur = '*';
-                                fprintf(stderr, "    %c %s\n", cur, id_buf);
-                                n++;
-                            }
-                        }
-                        if (n == 0)
-                            fprintf(stderr, "    %s\n", models);
-                    }
-                    free(models);
-                }
-                continue;
-            } else if (strncmp(line, "/models search ", 15) == 0) {
-                const char *kw = line + 15;
-                if (kw[0] == '\0') {
-                    fputs("  Usage: /models search <keyword>\n", stderr);
-                } else {
-                    char *m = ccode_models_fetch(cfg->api_base, cfg->api_key);
-                    if (!m) { fputs("  Could not fetch model list.\n", stderr); }
-                    else {
-                        ccode_jsmntok_t tokens[2048];
-                        ccode_jsmntok_t *data;
-                        int num_tokens;
-                        int n = 0;
-                        int i;
-                        fprintf(stderr, "  Models matching \"%s\":\n", kw);
-                        num_tokens = ccode_json_parse(m, strlen(m),
-                                                      tokens, 2048);
-                        data = (num_tokens > 0 &&
-                                tokens[0].type == CCODE_JSMN_OBJECT)
-                                   ? ccode_json_find_key(tokens, num_tokens, 0,
-                                                         m, "data")
-                                   : NULL;
-                        if (data && data->type == CCODE_JSMN_ARRAY) {
-                            for (i = 0; i < data->size; i++) {
-                                ccode_jsmntok_t *entry =
-                                    ccode_json_find_index(
-                                        tokens, num_tokens,
-                                        (int)(data - tokens), i);
-                                ccode_jsmntok_t *id_tok;
-                                char id_buf[256];
-                                if (!entry ||
-                                    entry->type != CCODE_JSMN_OBJECT) continue;
-                                id_tok = ccode_json_find_key(
-                                    tokens, num_tokens, (int)(entry - tokens),
-                                    m, "id");
-                                if (!id_tok ||
-                                    id_tok->type != CCODE_JSMN_STRING ||
-                                    ccode_json_token_to_string(
-                                        m, id_tok, id_buf,
-                                        sizeof(id_buf)) != 0) continue;
-                                if (strstr(id_buf, kw)) {
-                                    n++;
-                                    fprintf(stderr, "    %d. %s\n",
-                                            n, id_buf);
-                                }
-                            }
-                        }
-                        if (n == 0) fputs("    (no matches)\n", stderr);
-                        free(m);
-                    }
-                }
-                continue;
-            } else if (strncmp(line, "/models info ", 13) == 0) {
-                const char *name = line + 13;
-                if (name[0] == '\0') {
-                    fputs("  Usage: /models info <name>\n", stderr);
-                } else {
-                    char *m = ccode_models_fetch(cfg->api_base, cfg->api_key);
-                    if (!m) { fputs("  Could not fetch model list.\n", stderr); }
-                    else {
-                        ccode_jsmntok_t tokens[2048];
-                        ccode_jsmntok_t *data;
-                        int num_tokens;
-                        int found = 0;
-                        int i;
-                        num_tokens = ccode_json_parse(m, strlen(m),
-                                                      tokens, 2048);
-                        data = (num_tokens > 0 &&
-                                tokens[0].type == CCODE_JSMN_OBJECT)
-                                   ? ccode_json_find_key(tokens, num_tokens, 0,
-                                                         m, "data")
-                                   : NULL;
-                        if (data && data->type == CCODE_JSMN_ARRAY) {
-                            for (i = 0; i < data->size && !found; i++) {
-                                ccode_jsmntok_t *entry =
-                                    ccode_json_find_index(
-                                        tokens, num_tokens,
-                                        (int)(data - tokens), i);
-                                ccode_jsmntok_t *id_tok;
-                                char id_buf[256];
-                                if (!entry ||
-                                    entry->type != CCODE_JSMN_OBJECT) continue;
-                                id_tok = ccode_json_find_key(
-                                    tokens, num_tokens, (int)(entry - tokens),
-                                    m, "id");
-                                if (!id_tok ||
-                                    id_tok->type != CCODE_JSMN_STRING ||
-                                    ccode_json_token_to_string(
-                                        m, id_tok, id_buf,
-                                        sizeof(id_buf)) != 0) continue;
-                                if (strcmp(id_buf, name) == 0) {
-                                    ccode_jsmntok_t *ow_tok;
-                                    char ow_buf[128];
-                                    fprintf(stderr, "  Model: %s\n", id_buf);
-                                    found = 1;
-                                    ow_tok = ccode_json_find_key(
-                                        tokens, num_tokens,
-                                        (int)(entry - tokens), m, "owned_by");
-                                    if (ow_tok &&
-                                        ow_tok->type == CCODE_JSMN_STRING &&
-                                        ccode_json_token_to_string(
-                                            m, ow_tok, ow_buf,
-                                            sizeof(ow_buf)) == 0)
-                                        fprintf(stderr,
-                                                "  Provider: %s\n", ow_buf);
-                                }
-                            }
-                        }
-                        if (!found) fprintf(stderr, "  Model not found: %s\n", name);
-                        free(m);
-                    }
-                }
+                else
+                    fputs(text, stderr);
+                free(text);
                 continue;
             } else if (strncmp(line, "/model", 6) == 0) {
                 if (strcmp(line, "/model") == 0) {
