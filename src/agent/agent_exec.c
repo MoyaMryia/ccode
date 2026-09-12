@@ -38,9 +38,6 @@
 #include "agent_internal.h"
 
 
-/* GIT_CEILING_DIRECTORIES environment entry, set by exec_git_command. */
-static char git_ceiling_environment[4096 + 32];
-
 static char *command_reject_json(const char *error, const char *reason) {
     return format_tool_error_reason(error, reason);
 }
@@ -215,8 +212,6 @@ static char *win32_build_env_block(void) {
         n = snprintf(line, sizeof(line), "TMP=%s", temp);
         if (n > 0 && (size_t)n < sizeof(line)) ENV_ADD(line);
         ENV_ADD("PATHEXT=.COM;.EXE;.BAT;.CMD");
-        if (git_ceiling_environment[0] != '\0')
-            ENV_ADD(git_ceiling_environment);
     }
 #undef ENV_ADD
     block[pos] = '\0';
@@ -634,6 +629,31 @@ static const char *detect_lang_env(void) {
     return cached;
 }
 
+/* Build the GIT_CEILING_DIRECTORIES entry for every command child: git run
+ * inside the workspace must not discover repositories above it (the parent
+ * of the workspace root stops the upward walk). This used to be set only by
+ * the dedicated git tools; now that git runs through bash it guards every
+ * command. Returns 0 on success; on failure the entry is left empty and git
+ * keeps default discovery behavior. */
+static int build_git_ceiling_env(const char *workspace_root, char *out,
+                                 size_t out_size) {
+    char ceiling[4096];
+    char *slash;
+    int n;
+
+    out[0] = '\0';
+    if (!workspace_root || workspace_root[0] == '\0') return -1;
+    n = snprintf(ceiling, sizeof(ceiling), "%s", workspace_root);
+    if (n <= 0 || (size_t)n >= sizeof(ceiling)) return -1;
+    slash = strrchr(ceiling, '/');
+    if (!slash) return -1;
+    if (slash == ceiling) ceiling[1] = '\0';
+    else *slash = '\0';
+    n = snprintf(out, out_size, "GIT_CEILING_DIRECTORIES=%s", ceiling);
+    if (n <= 0 || (size_t)n >= out_size) { out[0] = '\0'; return -1; }
+    return 0;
+}
+
 static char *exec_run_command_ex(struct agent_context *ctx, const char *workspace,
                                char * const *argv, size_t argc,
                                int timeout_ms, int allow_shell) {
@@ -656,6 +676,7 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     char *result;
     size_t result_cap, result_pos;
     const char *lang_env;
+    char ceiling_env[4096 + 32];
     struct ccode_result_tail stdout_tail;
     struct ccode_result_tail stderr_tail;
 
@@ -675,6 +696,8 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
      * patterns can be tolerated for paths inside the workspace. */
     if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
+    (void)build_git_ceiling_env(ctx->workspace_root, ceiling_env,
+                                sizeof(ceiling_env));
     {
         char why[256];
         for (i = 0; i < argc; i++) {
@@ -729,8 +752,8 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
         exec_env[env_count++] = "PAGER=cat";
         exec_env[env_count++] = "GIT_PAGER=cat";
         exec_env[env_count++] = "GIT_OPTIONAL_LOCKS=0";
-        if (git_ceiling_environment[0] != '\0')
-            exec_env[env_count++] = git_ceiling_environment;
+        if (ceiling_env[0] != '\0')
+            exec_env[env_count++] = ceiling_env;
         exec_env[env_count] = NULL;
         close(stdout_pipe[0]);
         close(stderr_pipe[0]);
@@ -1027,130 +1050,6 @@ char *exec_web_fetch(const struct prepared_tool *prepared) {
     opts.timeout_sec = prepared->web_timeout_sec;
     opts.max_size = prepared->web_max_size;
     return ccode_web_fetch(&opts);
-}
-
-static char *exec_git_command(struct agent_context *ctx, const char *workspace,
-                              char * const *argv, size_t argc,
-                              int timeout_ms) {
-    char ceiling[4096];
-    char *slash;
-    char *result;
-    int n;
-
-    if (init_workspace(ctx, workspace) != 0)
-        return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
-    n = snprintf(ceiling, sizeof(ceiling), "%s", ctx->workspace_root);
-    if (n <= 0 || (size_t)n >= sizeof(ceiling))
-        return ccode_strdup("{\"error\":\"Could not constrain git repository\"}");
-    slash = strrchr(ceiling, '/');
-    if (!slash)
-        return ccode_strdup("{\"error\":\"Could not constrain git repository\"}");
-    if (slash == ceiling) ceiling[1] = '\0';
-    else *slash = '\0';
-    n = snprintf(git_ceiling_environment, sizeof(git_ceiling_environment),
-                 "GIT_CEILING_DIRECTORIES=%s", ceiling);
-    if (n <= 0 || (size_t)n >= sizeof(git_ceiling_environment)) {
-        git_ceiling_environment[0] = '\0';
-        return ccode_strdup("{\"error\":\"Could not constrain git repository\"}");
-    }
-    result = exec_run_command(ctx, workspace, argv, argc, timeout_ms);
-    git_ceiling_environment[0] = '\0';
-    return result;
-}
-
-/* Git uses the same scrubbed child environment as exec_run_command, including
- * GIT_CONFIG_NOSYSTEM, GIT_TERMINAL_PROMPT, PAGER, GIT_PAGER, and
- * GIT_OPTIONAL_LOCKS. Git wrappers additionally pass --no-pager and, for diff,
- * --no-ext-diff plus --no-textconv. This avoids prompts, pagers, optional
- * locks, and repository-controlled diff commands without claiming to sandbox
- * all Git configuration behavior.
- * After execution, this wrapper checks whether the command failed because the
- * working directory is not a git repository, and returns a structured
- * {"error":"Not a git repository"} when that is the case. The detection is
- * case-insensitive because `git status` reports "not a git repository" in
- * lowercase while `git diff`/`git diff --stat` report "Not a git repository"
- * with a capital N. */
-static int contains_ci(const char *haystack, const char *needle) {
-    size_t hl = strlen(haystack);
-    size_t nl = strlen(needle);
-    size_t i, j;
-    if (nl == 0 || nl > hl) return 0;
-    for (i = 0; i + nl <= hl; i++) {
-        for (j = 0; j < nl; j++) {
-            if (tolower((unsigned char)haystack[i + j]) !=
-                tolower((unsigned char)needle[j]))
-                break;
-        }
-        if (j == nl) return 1;
-    }
-    return 0;
-}
-
-static char *exec_git_command_wrapper(struct agent_context *ctx, const char *workspace,
-                                       char * const *argv, size_t argc,
-                                       int timeout_ms) {
-    char *result = exec_git_command(ctx, workspace, argv, argc, timeout_ms);
-    if (result && contains_ci(result, "not a git repository")) {
-        free(result);
-        return ccode_strdup("{\"error\":\"Not a git repository\"}");
-    }
-    return result;
-}
-
-char *exec_git_status(struct agent_context *ctx, const char *workspace, const char *path) {
-    char *argv[16];
-    size_t argc = 0;
-    argv[argc++] = "git";
-    argv[argc++] = "--no-pager";
-    argv[argc++] = "status";
-    argv[argc++] = "--porcelain";
-    if (path && path[0] != '\0') {
-        argv[argc++] = "--";
-        argv[argc++] = (char *)path;
-    }
-    argv[argc] = NULL;
-    return exec_git_command_wrapper(ctx, workspace, argv, argc, 30000);
-}
-
-char *exec_git_diff(struct agent_context *ctx, const char *workspace, const char *path,
-                           const char *cached) {
-    char *argv[16];
-    size_t argc = 0;
-    argv[argc++] = "git";
-    argv[argc++] = "--no-pager";
-    argv[argc++] = "diff";
-    argv[argc++] = "--no-ext-diff";
-    argv[argc++] = "--no-textconv";
-    if (cached && cached[0] != '\0' &&
-        (strcmp(cached, "true") == 0 || strcmp(cached, "1") == 0))
-        argv[argc++] = "--cached";
-    if (path && path[0] != '\0') {
-        argv[argc++] = "--";
-        argv[argc++] = (char *)path;
-    }
-    argv[argc] = NULL;
-    return exec_git_command_wrapper(ctx, workspace, argv, argc, 30000);
-}
-
-char *exec_git_stat(struct agent_context *ctx, const char *workspace, const char *path,
-                           const char *cached) {
-    char *argv[16];
-    size_t argc = 0;
-    argv[argc++] = "git";
-    argv[argc++] = "--no-pager";
-    argv[argc++] = "diff";
-    argv[argc++] = "--no-ext-diff";
-    argv[argc++] = "--no-textconv";
-    argv[argc++] = "--stat";
-    if (cached && cached[0] != '\0' &&
-        (strcmp(cached, "true") == 0 || strcmp(cached, "1") == 0))
-        argv[argc++] = "--cached";
-    if (path && path[0] != '\0') {
-        argv[argc++] = "--";
-        argv[argc++] = (char *)path;
-    }
-    argv[argc] = NULL;
-    return exec_git_command_wrapper(ctx, workspace, argv, argc, 30000);
 }
 
 /* ── Sub-agent (agent_tool) ── */

@@ -141,9 +141,6 @@ enum prepared_tool_kind {
     PREPARED_GLOB,
     PREPARED_GREP,
     PREPARED_RUN_COMMAND,
-    PREPARED_GIT_STATUS,
-    PREPARED_GIT_DIFF,
-    PREPARED_GIT_STAT,
     PREPARED_TASK_CREATE,
     PREPARED_TASK_UPDATE,
     PREPARED_TASK_LIST,
@@ -266,12 +263,6 @@ char *exec_run_command(struct agent_context *ctx, const char *workspace,
 char *exec_bash_command(struct agent_context *ctx, const char *workspace,
                              const char *command);
 char *exec_web_fetch(const struct prepared_tool *prepared);
-char *exec_git_status(struct agent_context *ctx, const char *workspace,
-                            const char *path);
-char *exec_git_diff(struct agent_context *ctx, const char *workspace,
-                          const char *path, const char *cached);
-char *exec_git_stat(struct agent_context *ctx, const char *workspace,
-                          const char *path, const char *cached);
 void default_stream_reasoning(const char *content, void *context);
 
 #ifdef CCODE_UNIT_TEST

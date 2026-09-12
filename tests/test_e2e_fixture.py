@@ -41,7 +41,7 @@ def setup_fixture():
 def setup_repair_fixture():
     """Create a fixture with two defects and a git baseline so the repair
     loop fixture (read -> edit -> failing test -> inspect -> second edit ->
-    passing test -> git_diff) can be exercised end-to-end."""
+    passing test -> git diff via bash) can be exercised end-to-end."""
     global REPAIR_FIXTURE_DIR
     REPAIR_FIXTURE_DIR = os.path.join(
         os.path.dirname(__file__), "fixtures", "e2e_repair_%d" % os.getpid())
@@ -258,10 +258,10 @@ def main():
         tests_failed += 1
 
     # Test 2: Repair loop -- inspect -> edit -> failing test -> inspect
-    # -> second edit -> passing test -> git_diff -> report
+    # -> second edit -> passing test -> git diff (bash) -> report
     tests_run += 1
     print("--- workflow: repair loop (inspect -> edit -> fail -> "
-          "inspect -> repair -> pass -> git_diff -> report) ---")
+          "inspect -> repair -> pass -> git diff (bash) -> report) ---")
     try:
         repair_dir, git_ok = setup_repair_fixture()
         stdout, stderr, rc, approved = run_ccode_workflow(
@@ -286,19 +286,19 @@ def main():
             tests_failed += 1
 
         if output.count("(exit=0)") >= 2:
-            print("  PASS: second focused test and git_diff reported success")
+            print("  PASS: second focused test and git diff reported success")
         else:
             print("  FAIL: expected >=2 (exit=0) markers, saw %d" %
                   output.count("(exit=0)"))
             tests_failed += 1
 
         if git_ok and "git --no-pager diff" in output:
-            print("  PASS: git_diff surfaced repository changes")
+            print("  PASS: git diff surfaced repository changes")
         elif git_ok:
-            print("  FAIL: git_diff produced no git diff summary")
+            print("  FAIL: git diff produced no git diff summary")
             tests_failed += 1
         else:
-            print("  SKIP: git_diff assertion (git baseline unavailable)")
+            print("  SKIP: git diff assertion (git baseline unavailable)")
 
         if approved >= 6:
             print("  PASS: %d tool approvals handled" % approved)

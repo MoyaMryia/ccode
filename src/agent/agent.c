@@ -608,14 +608,6 @@ static char *execute_prepared_tool(struct agent_context *ctx,
         return exec_run_command(ctx, workspace, argv_ptrs, prepared->argc,
                                 prepared->timeout_ms);
     }
-    if (prepared->kind == PREPARED_GIT_STATUS)
-        return exec_git_status(ctx, workspace, prepared->value);
-    if (prepared->kind == PREPARED_GIT_DIFF)
-        return exec_git_diff(ctx, workspace, prepared->value,
-                             prepared->content);
-    if (prepared->kind == PREPARED_GIT_STAT)
-        return exec_git_stat(ctx, workspace, prepared->value,
-                             prepared->content);
     if (prepared->kind == PREPARED_TASK_CREATE)
         return exec_task_create(ctx, prepared->value);
     if (prepared->kind == PREPARED_TASK_UPDATE)
@@ -669,9 +661,6 @@ static int is_readonly_tool(const char *name) {
     return name && (strcmp(name, "read_file") == 0 ||
                     strcmp(name, "glob") == 0 ||
                     strcmp(name, "grep") == 0 ||
-                    strcmp(name, "git_status") == 0 ||
-                    strcmp(name, "git_diff") == 0 ||
-                    strcmp(name, "git_stat") == 0 ||
                     strcmp(name, "read_tool_output") == 0);
 }
 

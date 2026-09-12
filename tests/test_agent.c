@@ -2733,337 +2733,6 @@ static int test_command_approval_display_overflow_rejected(void) {
     return 1;
 }
 
-/* ---- Real Git repository tests ---- */
-
-static char *git_repo_path = NULL;
-
-static int setup_git_repo(void) {
-    char path[512];
-    char *argv[16];
-    char *r;
-    size_t plen;
-
-    snprintf(path, sizeof(path), "fixtures/git_repo_%ld", (long)getpid());
-    plen = strlen(path);
-    git_repo_path = malloc(plen + 1);
-    if (!git_repo_path) return 0;
-    memcpy(git_repo_path, path, plen + 1);
-
-    test_mkdir_p(git_repo_path);
-
-    /* git init */
-    test_reset_workspace();
-    argv[0] = "git"; argv[1] = "init"; argv[2] = NULL;
-    r = test_exec_run_command(git_repo_path, argv, 2, 10000);
-    if (!r) { free(git_repo_path); git_repo_path = NULL; return 0; }
-    free(r);
-
-    /* set user name/email so git doesn't complain */
-    argv[0] = "git"; argv[1] = "config"; argv[2] = "user.email";
-    argv[3] = "test@test"; argv[4] = NULL;
-    r = test_exec_run_command(git_repo_path, argv, 4, 10000);
-    free(r);
-    argv[0] = "git"; argv[1] = "config"; argv[2] = "user.name";
-    argv[3] = "test"; argv[4] = NULL;
-    r = test_exec_run_command(git_repo_path, argv, 4, 10000);
-    free(r);
-
-    return 1;
-}
-
-static void teardown_git_repo(void) {
-    char *argv[16];
-    char *r;
-    if (!git_repo_path) return;
-    argv[0] = "rm"; argv[1] = "-rf"; argv[2] = git_repo_path; argv[3] = NULL;
-    r = test_exec_run_command(".", argv, 3, 10000);
-    free(r);
-    free(git_repo_path);
-    git_repo_path = NULL;
-}
-
-static int test_git_status_empty_repo(void) {
-    char *r;
-
-    test_reset_workspace();
-    r = test_exec_tool(git_repo_path, "git_status", "{}");
-    ASSERT(r != NULL);
-    ASSERT(strstr(r, "\"exit_code\":0") != NULL);
-    free(r);
-    return 1;
-}
-
-static int test_git_status_modified(void) {
-    char *r;
-
-    write_file_in(git_repo_path, "file1.txt", "hello\n", 6);
-    test_reset_workspace();
-    r = test_exec_tool(git_repo_path, "git_status", "{}");
-    ASSERT(r != NULL);
-    ASSERT(strstr(r, "\"exit_code\":0") != NULL);
-    /* stdout should contain the workspace-relative path in porcelain format */
-    ASSERT(strstr(r, "file1.txt") != NULL);
-    free(r);
-    return 1;
-}
-
-static int test_git_status_staged(void) {
-    char *r;
-    char *argv[16];
-
-    write_file_in(git_repo_path, "staged.txt", "content\n", 8);
-    argv[0] = "git"; argv[1] = "add"; argv[2] = "staged.txt"; argv[3] = NULL;
-    test_reset_workspace();
-    r = test_exec_run_command(git_repo_path, argv, 3, 10000);
-    free(r);
-
-    test_reset_workspace();
-    r = test_exec_tool(git_repo_path, "git_status", "{}");
-    ASSERT(r != NULL);
-    ASSERT(strstr(r, "\"exit_code\":0") != NULL);
-    ASSERT(strstr(r, "staged.txt") != NULL);
-    free(r);
-    return 1;
-}
-
-static int test_git_diff_modified(void) {
-    char *r;
-
-    write_file_in(git_repo_path, "diff_test.txt", "old content\n", 12);
-    {
-        char *argv[16];
-        argv[0] = "git"; argv[1] = "add"; argv[2] = "diff_test.txt"; argv[3] = NULL;
-        r = test_exec_run_command(git_repo_path, argv, 3, 10000);
-        free(r);
-        argv[0] = "git"; argv[1] = "commit"; argv[2] = "-m";
-        argv[3] = "initial"; argv[4] = NULL;
-        r = test_exec_run_command(git_repo_path, argv, 4, 10000);
-        free(r);
-    }
-
-    write_file_in(git_repo_path, "diff_test.txt", "new content\n", 12);
-    test_reset_workspace();
-    r = test_exec_tool(git_repo_path, "git_diff", "{}");
-    ASSERT(r != NULL);
-    ASSERT(strstr(r, "\"exit_code\":0") != NULL);
-    ASSERT(strstr(r, "old content") != NULL);
-    ASSERT(strstr(r, "new content") != NULL);
-    free(r);
-    return 1;
-}
-
-static int test_git_diff_cached(void) {
-    char *r;
-
-    write_file_in(git_repo_path, "cached_test.txt", "staged change\n", 14);
-    {
-        char *argv[16];
-        argv[0] = "git"; argv[1] = "add"; argv[2] = "cached_test.txt";
-        argv[3] = NULL;
-        r = test_exec_run_command(git_repo_path, argv, 3, 10000);
-        free(r);
-    }
-
-    test_reset_workspace();
-    r = test_exec_tool(git_repo_path, "git_diff",
-                       "{\"cached\":\"true\"}");
-    ASSERT(r != NULL);
-    ASSERT(strstr(r, "\"exit_code\":0") != NULL);
-    ASSERT(strstr(r, "staged change") != NULL);
-    free(r);
-    return 1;
-}
-
-/* ---- git tool tests ---- */
-
-static int test_git_status_parsing(void) {
-    char *r;
-    test_reset_workspace();
-    r = test_exec_tool("fixtures", "git_status", "{}");
-    ASSERT(r != NULL);
-    ASSERT(strstr(r, "\"error\":\"Not a git repository\"") != NULL);
-    ASSERT(strstr(r, "\"exit_code\":") == NULL);
-    free(r);
-    return 1;
-}
-
-static int test_git_diff_parsing(void) {
-    char *r;
-    test_reset_workspace();
-    r = test_exec_tool("fixtures", "git_diff", "{}");
-    ASSERT(r != NULL);
-    ASSERT(strstr(r, "\"error\":\"Not a git repository\"") != NULL);
-    ASSERT(strstr(r, "\"exit_code\":") == NULL);
-    free(r);
-    return 1;
-}
-
-static int test_git_diff_with_args(void) {
-    char *r;
-    test_reset_workspace();
-    r = test_exec_tool("fixtures", "git_diff",
-                       "{\"path\":\".\",\"cached\":\"true\"}");
-    ASSERT(r != NULL);
-    ASSERT(strstr(r, "\"exit_code\":") != NULL);
-    free(r);
-    return 1;
-}
-
-static int test_git_paths_reject_options_and_traversal(void) {
-    char *r;
-    test_reset_workspace();
-    r = test_exec_tool("fixtures", "git_status", "{\"path\":\"--show-stash\"}");
-    ASSERT(r != NULL && strstr(r, "Invalid git_status path") != NULL);
-    free(r);
-    r = test_exec_tool("fixtures", "git_diff", "{\"path\":\"../outside\"}");
-    ASSERT(r != NULL && strstr(r, "Invalid git_diff path") != NULL);
-    free(r);
-    return 1;
-}
-
-static int test_git_status_non_repository(void) {
-    char dir[300];
-    char *r;
-
-    snprintf(dir, sizeof(dir), "/tmp/ccode_notarepo_%ld", (long)getpid());
-    test_mkdir_p(dir);
-    test_reset_workspace();
-    r = test_exec_tool(dir, "git_status", "{}");
-    ASSERT(r != NULL);
-    ASSERT(strstr(r, "Not a git repository") != NULL);
-    free(r);
-    rmdir(dir);
-    return 1;
-}
-
-static int test_git_diff_option_like_path_rejected(void) {
-    char *r;
-    test_reset_workspace();
-    r = test_exec_tool("fixtures", "git_diff", "{\"path\":\"--name-only\"}");
-    ASSERT(r != NULL && strstr(r, "Invalid git_diff path") != NULL);
-    free(r);
-    return 1;
-}
-
-static int test_git_status_path_filter(void) {
-    char *r;
-
-    write_file_in(git_repo_path, "filter_match.txt", "match\n", 6);
-    write_file_in(git_repo_path, "filter_skip.txt", "skip\n", 5);
-    test_reset_workspace();
-    r = test_exec_tool(git_repo_path, "git_status",
-                       "{\"path\":\"filter_match.txt\"}");
-    ASSERT(r != NULL);
-    ASSERT(strstr(r, "\"exit_code\":0") != NULL);
-    ASSERT(strstr(r, "filter_match.txt") != NULL);
-    ASSERT(strstr(r, "filter_skip.txt") == NULL);
-    free(r);
-    return 1;
-}
-
-static int test_git_hostile_config_no_pager_side_effect(void) {
-    char marker[256];
-    char pager_cmd[300];
-    char *argv[16];
-    char *r;
-    struct stat st;
-
-    snprintf(marker, sizeof(marker), "/tmp/ccode_pager_hostile_%ld",
-             (long)getpid());
-    unlink(marker);
-    snprintf(pager_cmd, sizeof(pager_cmd), "touch %s", marker);
-
-    argv[0] = "git"; argv[1] = "config"; argv[2] = "core.pager";
-    argv[3] = pager_cmd; argv[4] = NULL;
-    r = test_exec_run_command(git_repo_path, argv, 4, 10000);
-    free(r);
-
-    test_reset_workspace();
-    r = test_exec_tool(git_repo_path, "git_status", "{}");
-    ASSERT(r != NULL);
-    free(r);
-
-    ASSERT(stat(marker, &st) != 0);
-
-    argv[0] = "git"; argv[1] = "config"; argv[2] = "--unset";
-    argv[3] = "core.pager"; argv[4] = NULL;
-    r = test_exec_run_command(git_repo_path, argv, 4, 10000);
-    free(r);
-    unlink(marker);
-    return 1;
-}
-
-static int test_git_diff_disables_textconv(void) {
-    char marker[512];
-    char script[512];
-    char attributes[512];
-    char target[512];
-    char *argv[8];
-    char *r;
-
-    snprintf(marker, sizeof(marker), "%s/textconv-marker", git_repo_path);
-    snprintf(script, sizeof(script), "%s/textconv-test", git_repo_path);
-    snprintf(attributes, sizeof(attributes), "%s/.gitattributes", git_repo_path);
-    snprintf(target, sizeof(target), "%s/sample.conv", git_repo_path);
-    unlink(marker);
-    {
-        const char *script_body =
-            "#!/bin/sh\ntouch textconv-marker\ncat \"$1\"\n";
-        write_file(script, script_body, strlen(script_body));
-    }
-    ASSERT(chmod(script, 0700) == 0);
-    write_file(attributes, "*.conv diff=evil\n", 17);
-    write_file(target, "old\n", 4);
-
-    test_reset_workspace();
-    argv[0] = "git"; argv[1] = "config"; argv[2] = "diff.evil.textconv";
-    argv[3] = "./textconv-test"; argv[4] = NULL;
-    r = test_exec_run_command(git_repo_path, argv, 4, 10000); free(r);
-    argv[0] = "git"; argv[1] = "add"; argv[2] = ".gitattributes";
-    argv[3] = "sample.conv"; argv[4] = NULL;
-    r = test_exec_run_command(git_repo_path, argv, 4, 10000); free(r);
-    argv[0] = "git"; argv[1] = "commit"; argv[2] = "-m";
-    argv[3] = "textconv fixture"; argv[4] = NULL;
-    r = test_exec_run_command(git_repo_path, argv, 4, 10000); free(r);
-    write_file(target, "new\n", 4);
-
-    test_reset_workspace();
-    r = test_exec_tool(git_repo_path, "git_diff", "{}");
-    ASSERT(r != NULL && strstr(r, "\"exit_code\":0") != NULL);
-    ASSERT(access(marker, F_OK) != 0);
-    free(r);
-    unlink(script); unlink(attributes); unlink(target); unlink(marker);
-    return 1;
-}
-
-static int test_git_does_not_discover_parent_repository(void) {
-    char root[256];
-    char nested[320];
-    char sibling[320];
-    char *argv[4];
-    char *r;
-
-    snprintf(root, sizeof(root), "fixtures/parent_repo_%ld", (long)getpid());
-    snprintf(nested, sizeof(nested), "%s/workspace", root);
-    snprintf(sibling, sizeof(sibling), "%s/outside.txt", root);
-    test_mkdir_p(nested);
-    test_reset_workspace();
-    argv[0] = "git"; argv[1] = "init"; argv[2] = NULL;
-    r = test_exec_run_command(root, argv, 2, 10000); free(r);
-    write_file(sibling, "outside\n", 8);
-
-    test_reset_workspace();
-    r = test_exec_tool(nested, "git_status", "{}");
-    ASSERT(r != NULL && strstr(r, "Not a git repository") != NULL);
-    ASSERT(strstr(r, "outside.txt") == NULL);
-    free(r);
-
-    test_reset_workspace();
-    argv[0] = "rm"; argv[1] = "-rf"; argv[2] = root; argv[3] = NULL;
-    r = test_exec_run_command(".", argv, 3, 10000); free(r);
-    return 1;
-}
-
 static int test_gitignore_fifo_is_not_opened_blocking(void) {
     char *r;
     unlink("fixtures/.gitignore");
@@ -3078,12 +2747,36 @@ static int test_gitignore_fifo_is_not_opened_blocking(void) {
     return 1;
 }
 
-static int test_git_cached_value_is_strict(void) {
-    char *r = test_exec_tool("fixtures", "git_diff", "{\"cached\":\"false\"}");
-    ASSERT(r != NULL && strstr(r, "Invalid git_diff cached value") != NULL);
+/* Git run through bash must not discover repositories above the workspace:
+ * the ceiling guard moved from the removed git_* tools into the common
+ * command environment. */
+static int test_bash_git_does_not_discover_parent_repository(void) {
+    char root[256];
+    char nested[320];
+    char sibling[320];
+    char *argv[16];
+    char *r;
+
+    snprintf(root, sizeof(root), "fixtures/parent_repo_%ld", (long)getpid());
+    snprintf(nested, sizeof(nested), "%s/workspace", root);
+    snprintf(sibling, sizeof(sibling), "%s/outside.txt", root);
+    test_mkdir_p(nested);
+    test_reset_workspace();
+    argv[0] = "git"; argv[1] = "init"; argv[2] = NULL;
+    r = test_exec_run_command(root, argv, 2, 10000);
+    ASSERT(r != NULL);
     free(r);
-    r = test_exec_tool("fixtures", "git_stat", "{\"cached\":\"yes\"}");
-    ASSERT(r != NULL && strstr(r, "Invalid git_stat cached value") != NULL);
+    write_file(sibling, "outside\n", 8);
+
+    test_reset_workspace();
+    r = test_exec_tool(nested, "bash", "{\"command\":\"git status\"}");
+    ASSERT(r != NULL && strstr(r, "not a git repo") != NULL);
+    ASSERT(strstr(r, "outside.txt") == NULL);
+    free(r);
+
+    test_reset_workspace();
+    argv[0] = "rm"; argv[1] = "-rf"; argv[2] = root; argv[3] = NULL;
+    r = test_exec_run_command(".", argv, 3, 10000);
     free(r);
     return 1;
 }
@@ -3589,63 +3282,6 @@ static int test_gitignore_nested_directory_wins(void) {
     unlink("fixtures/gi_nested/inner/skip.c");
     rmdir("fixtures/gi_nested/inner");
     rmdir("fixtures/gi_nested");
-    return 1;
-}
-
-static int test_git_stat_parsing(void) {
-    char *r;
-    test_reset_workspace();
-    r = test_exec_tool("fixtures", "git_stat", "{}");
-    ASSERT(r != NULL);
-    ASSERT(strstr(r, "\"error\":\"Not a git repository\"") != NULL);
-    ASSERT(strstr(r, "\"exit_code\":") == NULL);
-    free(r);
-    return 1;
-}
-
-static int test_git_stat_non_repository(void) {
-    char dir[300];
-    char *r;
-    snprintf(dir, sizeof(dir), "/tmp/ccode_notarepo_stat_%ld", (long)getpid());
-    test_mkdir_p(dir);
-    test_reset_workspace();
-    r = test_exec_tool(dir, "git_stat", "{}");
-    ASSERT(r != NULL);
-    ASSERT(strstr(r, "Not a git repository") != NULL);
-    free(r);
-    rmdir(dir);
-    return 1;
-}
-
-static int test_git_stat_in_repository(void) {
-    char *argv[16];
-    char *r;
-
-    write_file_in(git_repo_path, "stat_test.txt", "line one\n", 9);
-    argv[0] = "git"; argv[1] = "add"; argv[2] = "stat_test.txt"; argv[3] = NULL;
-    r = test_exec_run_command(git_repo_path, argv, 3, 10000);
-    free(r);
-    argv[0] = "git"; argv[1] = "commit"; argv[2] = "-m"; argv[3] = "init";
-    argv[4] = "stat"; argv[5] = NULL;
-    r = test_exec_run_command(git_repo_path, argv, 5, 10000);
-    free(r);
-
-    write_file_in(git_repo_path, "stat_test.txt", "line two\n", 9);
-    test_reset_workspace();
-    r = test_exec_tool(git_repo_path, "git_stat", "{}");
-    ASSERT(r != NULL);
-    ASSERT(strstr(r, "\"exit_code\":0") != NULL);
-    ASSERT(strstr(r, "stat_test.txt") != NULL);
-    free(r);
-    return 1;
-}
-
-static int test_git_stat_option_like_path_rejected(void) {
-    char *r;
-    test_reset_workspace();
-    r = test_exec_tool("fixtures", "git_stat", "{\"path\":\"--unified=0\"}");
-    ASSERT(r != NULL && strstr(r, "Invalid git_stat path") != NULL);
-    free(r);
     return 1;
 }
 
@@ -5120,7 +4756,6 @@ static int test_render_tool_result_parses_json(void) {
 }
 
 int main(int argc, char **argv) {
-    int repo_ok;
 
     if (argc == 2 && strcmp(argv[1], "--fuzz-probe") == 0) {
         /* Framed probe for tests/fuzz_tool_args.py: read <len><tool><len><args>
@@ -5311,37 +4946,6 @@ int main(int argc, char **argv) {
     TEST(run_command_large_stdout_clean_exit);
     TEST(run_command_large_stderr_clean_exit);
 
-    /* Phase 3: real git repository tests */
-    repo_ok = setup_git_repo();
-    if (repo_ok) {
-        fprintf(stderr, "  (real git repo: %s)\n", git_repo_path);
-        TEST(git_status_empty_repo);
-        TEST(git_status_modified);
-        TEST(git_status_staged);
-        TEST(git_diff_modified);
-        TEST(git_diff_cached);
-        TEST(git_status_path_filter);
-        TEST(git_hostile_config_no_pager_side_effect);
-        TEST(git_diff_disables_textconv);
-        TEST(git_stat_in_repository);
-        teardown_git_repo();
-    } else {
-        fprintf(stderr, "  SKIP: real git repo tests (git init failed)\n");
-    }
-
-    /* Phase 3: git tool tests */
-    TEST(git_status_parsing);
-    TEST(git_diff_parsing);
-    TEST(git_diff_with_args);
-    TEST(git_paths_reject_options_and_traversal);
-    TEST(git_status_non_repository);
-    TEST(git_diff_option_like_path_rejected);
-    TEST(git_stat_parsing);
-    TEST(git_stat_non_repository);
-    TEST(git_stat_option_like_path_rejected);
-    TEST(git_does_not_discover_parent_repository);
-    TEST(git_cached_value_is_strict);
-
     /* Phase 4: .gitignore visibility and override */
     TEST(temp_cleanup);
     TEST(cancel_kills_child);
@@ -5355,6 +4959,7 @@ int main(int argc, char **argv) {
     TEST(new_tool_arguments_are_strict);
     TEST(task_results_escape_model_content);
     TEST(change_log_retains_truncation_and_denials);
+    TEST(bash_git_does_not_discover_parent_repository);
     TEST(duplicate_tool_call_id_detected);
     TEST(compact_scans_tool_results);
     TEST(compact_ignores_false_timed_out);

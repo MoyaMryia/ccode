@@ -512,7 +512,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                 events = [{"data": json.dumps({
                     "choices": [{"index": 0, "delta": {"content": "Showing diff..."}, "finish_reason": None}]
                 })}, {"data": json.dumps({
-                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_diff", "type": "function", "function": {"name": "git_diff", "arguments": "{}"}}]}, "finish_reason": None}]
+                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_diff", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":\"git --no-pager diff\"}"}}]}, "finish_reason": None}]
                 })}, {"data": json.dumps({
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
                 })}]
@@ -552,11 +552,11 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
                 })}]
             elif tool_count == 3:
-                # Turn 4: emit git_diff to show changes
+                # Turn 4: emit bash git diff to show changes
                 events = [{"data": json.dumps({
                     "choices": [{"index": 0, "delta": {"content": "Changes made. Showing diff..."}, "finish_reason": None}]
                 })}, {"data": json.dumps({
-                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_diff", "type": "function", "function": {"name": "git_diff", "arguments": "{}"}}]}, "finish_reason": None}]
+                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_diff", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":\"git --no-pager diff\"}"}}]}, "finish_reason": None}]
                 })}, {"data": json.dumps({
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
                 })}]

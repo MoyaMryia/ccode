@@ -383,28 +383,6 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         return NULL;
     }
 
-    if (strcmp(name, "git_status") == 0) {
-        prepared->kind = PREPARED_GIT_STATUS;
-        if (num_tokens == 1) {
-            prepared->value[0] = '\0';
-            snprintf(prepared->display, sizeof(prepared->display),
-                     "git_status");
-            return NULL;
-        }
-        if (num_tokens != 3 || tokens[0].size != 2 ||
-            tokens[1].type != CCODE_JSMN_STRING ||
-            tokens[2].type != CCODE_JSMN_STRING ||
-            !ccode_jsmn_token_streq(arguments, &tokens[1], "path") ||
-            copy_string_token_dyn(arguments, &tokens[2], &prepared->value) != 0)
-            return "{\"error\":\"Invalid git_status arguments\"}";
-        if (!is_workspace_relative_path(prepared->value, 1))
-            return refuse_path("Invalid git_status path", prepared->value,
-                               REFUSE_RULE_WS);
-        snprintf(prepared->display, sizeof(prepared->display),
-                 "git_status path=%s", prepared->value);
-        return NULL;
-    }
-
     if (strcmp(name, "read_tool_output") == 0) {
         int have_id = 0;
         int have_offset = 0;
@@ -469,101 +447,6 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                  (unsigned long)prepared->result_limit,
                  have_stream ? " stream=" : "",
                  have_stream ? prepared->content : "");
-        return NULL;
-    }
-
-    if (strcmp(name, "git_diff") == 0) {
-        prepared->kind = PREPARED_GIT_DIFF;
-        if (num_tokens == 1) {
-            prepared->value[0] = '\0';
-            prepared->content[0] = '\0';
-            snprintf(prepared->display, sizeof(prepared->display),
-                     "git_diff");
-            return NULL;
-        }
-        {
-            int have_path = 0;
-            int have_cached = 0;
-            int i;
-            if (num_tokens > 5)
-                return "{\"error\":\"Invalid git_diff arguments\"}";
-            for (i = 1; i < num_tokens; i += 2) {
-                if (tokens[i].type != CCODE_JSMN_STRING ||
-                    tokens[i + 1].type != CCODE_JSMN_STRING)
-                    return "{\"error\":\"Invalid git_diff arguments\"}";
-                if (ccode_jsmn_token_streq(arguments, &tokens[i], "path")) {
-                    if (have_path || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
-                        return "{\"error\":\"Invalid git_diff arguments\"}";
-                    have_path = 1;
-                } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "cached")) {
-                    if (have_cached || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->content) != 0)
-                        return "{\"error\":\"Invalid git_diff arguments\"}";
-                    if (strcmp(prepared->content, "true") != 0 &&
-                        strcmp(prepared->content, "1") != 0)
-                        return "{\"error\":\"Invalid git_diff cached value\"}";
-                    have_cached = 1;
-                } else {
-                    return "{\"error\":\"Invalid git_diff arguments\"}";
-                }
-            }
-            snprintf(prepared->display, sizeof(prepared->display),
-                     "git_diff%s%s%s",
-                     prepared->value[0] ? " path=" : "",
-                     prepared->value[0] ? prepared->value : "",
-                      prepared->content[0] ? " --cached" : "");
-            if (prepared->value[0] != '\0' &&
-                !is_workspace_relative_path(prepared->value, 1))
-                return refuse_path("Invalid git_diff path", prepared->value,
-                                   REFUSE_RULE_WS);
-        }
-        return NULL;
-    }
-
-    if (strcmp(name, "git_stat") == 0) {
-        prepared->kind = PREPARED_GIT_STAT;
-        if (num_tokens == 1) {
-            prepared->value[0] = '\0';
-            prepared->content[0] = '\0';
-            snprintf(prepared->display, sizeof(prepared->display),
-                     "git_stat");
-            return NULL;
-        }
-        {
-            int have_path = 0;
-            int have_cached = 0;
-            int i;
-            if (num_tokens > 5)
-                return "{\"error\":\"Invalid git_stat arguments\"}";
-            for (i = 1; i < num_tokens; i += 2) {
-                if (tokens[i].type != CCODE_JSMN_STRING ||
-                    tokens[i + 1].type != CCODE_JSMN_STRING)
-                    return "{\"error\":\"Invalid git_stat arguments\"}";
-                if (ccode_jsmn_token_streq(arguments, &tokens[i], "path")) {
-                    if (have_path || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
-                        return "{\"error\":\"Invalid git_stat arguments\"}";
-                    have_path = 1;
-                } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
-                                                    "cached")) {
-                    if (have_cached || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->content) != 0)
-                        return "{\"error\":\"Invalid git_stat arguments\"}";
-                    if (strcmp(prepared->content, "true") != 0 &&
-                        strcmp(prepared->content, "1") != 0)
-                        return "{\"error\":\"Invalid git_stat cached value\"}";
-                    have_cached = 1;
-                } else {
-                    return "{\"error\":\"Invalid git_stat arguments\"}";
-                }
-            }
-            snprintf(prepared->display, sizeof(prepared->display),
-                     "git_stat%s%s%s",
-                     prepared->value[0] ? " path=" : "",
-                     prepared->value[0] ? prepared->value : "",
-                     prepared->content[0] ? " --cached" : "");
-            if (prepared->value[0] != '\0' &&
-                !is_workspace_relative_path(prepared->value, 1))
-                return refuse_path("Invalid git_stat path", prepared->value,
-                                   REFUSE_RULE_WS);
-        }
         return NULL;
     }
 

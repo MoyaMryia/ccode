@@ -63,9 +63,6 @@ BASE = {
                     {"task": "x", "read_only": "false"}],
     "run_command": [{"argv": ["echo", "hi"]},
                     {"argv": ["ls", "-l"], "timeout_ms": 1000}],
-    "git_status":  [{}, {"path": "src"}],
-    "git_diff":    [{}, {"path": "src"}, {"cached": "true"}],
-    "git_stat":    [{}, {"path": "src", "cached": "1"}],
 }
 
 # Required keys per tool; mutate these for reliably-invalid cases. task_list
@@ -78,7 +75,7 @@ REQUIRED = {
     "grep": ["pattern"], "task_create": ["content"],
     "task_update": ["id", "status"], "task_list": [],
     "web_search": ["query"], "web_fetch": ["url"], "agent_tool": ["task"],
-    "run_command": ["argv"], "git_status": [], "git_diff": [], "git_stat": [],
+    "run_command": ["argv"],
 }
 
 

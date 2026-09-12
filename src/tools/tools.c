@@ -54,27 +54,6 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "\"timeout_ms\":{\"type\":\"number\",\"description\":\"Timeout in milliseconds (optional)\"}"
      "},\"required\":[\"argv\"]}"},
 
-    {"git_status",
-     "Show git status (read-only)",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"path\":{\"type\":\"string\",\"description\":\"Optional path to restrict status to\"}"
-     "},\"required\":[]}"},
-
-    {"git_diff",
-     "Show git diff (read-only)",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"path\":{\"type\":\"string\",\"description\":\"Optional path to restrict diff to\"},"
-     "\"cached\":{\"type\":\"string\",\"description\":\"Show staged changes when set to 'true'\"}"
-     "},\"required\":[]}"},
-
-    {"git_stat",
-     "Show a per-changed-file diff-stat summary suitable for agent review "
-     "(read-only)",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"path\":{\"type\":\"string\",\"description\":\"Optional path to restrict the stat to\"},"
-     "\"cached\":{\"type\":\"string\",\"description\":\"Show staged changes when set to 'true'\"}"
-     "},\"required\":[]}"},
-
     {"task_create",
      "Create a new task",
      "{\"type\":\"object\",\"properties\":{"
@@ -226,7 +205,6 @@ char *ccode_build_readonly_tools_json(void) {
     size_t pos = 0;
     char *buf = malloc(cap);
     const char *readonly_names[] = {"read_file", "glob", "grep",
-                                    "git_status", "git_diff", "git_stat",
                                     "read_tool_output"};
     first = 1;
 
@@ -269,7 +247,6 @@ char *ccode_build_write_tools_json(void) {
                                    "run_command", "bash",
                                    "delete_file", "move_file",
                                    "glob", "grep",
-                                   "git_status", "git_diff", "git_stat",
                                    "task_create", "task_update", "task_list",
                                    "web_fetch", "web_search", "agent_tool",
                                    "read_tool_output"};
