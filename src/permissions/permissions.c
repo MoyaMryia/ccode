@@ -13,11 +13,7 @@
 static ccode_permission_handler permission_handler;
 static void *permission_context;
 
-static int is_bidi_control(unsigned int cp) {
-    return cp == 0x061cU || cp == 0x200eU || cp == 0x200fU ||
-           (cp >= 0x202aU && cp <= 0x202eU) ||
-           (cp >= 0x2066U && cp <= 0x2069U);
-}
+#define is_bidi_control(cp) ccode_cp_is_bidi_control(cp)
 
 static void fprint_safe_limit(FILE *stream, const char *value,
                               const char *null_value, size_t limit,

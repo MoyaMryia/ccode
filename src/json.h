@@ -33,6 +33,10 @@ int ccode_valid_utf8(const char *s);
 size_t ccode_utf8_decode(const unsigned char *s, size_t remaining,
                          unsigned int *codepoint);
 
+/* Bidirectional control code points (overrides/embeddings/marks).
+ * Text-emitting and auditing paths escape these; do not re-derive. */
+int ccode_cp_is_bidi_control(unsigned int cp);
+
 /* Terminal display width of a decoded codepoint: 2 for East Asian
  * Wide/Fullwidth ranges, 1 otherwise. The canonical width source for
  * wrapping/rendering; do not re-derive. */

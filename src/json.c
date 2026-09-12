@@ -162,6 +162,15 @@ size_t ccode_utf8_decode(const unsigned char *s, size_t remaining,
 /* Terminal display width of a decoded codepoint: 2 for East Asian
  * Wide/Fullwidth ranges (CJK, Hangul, fullwidth forms), 1 otherwise.
  * The canonical width source for wrapping/rendering; do not re-derive. */
+/* Bidirectional control code points (ALA/RLM/LRM, embeddings, isolates):
+ * they reorder display without printing, so text paths escape them. The
+ * single authority for markdown emission and permission auditing. */
+int ccode_cp_is_bidi_control(unsigned int cp) {
+    return cp == 0x061cU || cp == 0x200eU || cp == 0x200fU ||
+           (cp >= 0x202aU && cp <= 0x202eU) ||
+           (cp >= 0x2066U && cp <= 0x2069U);
+}
+
 int ccode_utf8_cp_width(unsigned int cp) {
     if (cp >= 0x1100U &&
         (cp <= 0x115fU || cp == 0x2329U || cp == 0x232aU ||

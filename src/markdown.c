@@ -18,16 +18,11 @@
 /* UTF-8 / bidi sanitisation                                          */
 /* ------------------------------------------------------------------ */
 
-/* Mirrors the auditing of permissions.c so that model-derived text is
- * never emitted raw: control characters, C1 bytes and bidirectional
- * override code points are escaped rather than passed to the terminal.
- * Decoding goes through the shared ccode_utf8_decode in json.h. */
+/* Model-derived text is never emitted raw: control characters, C1 bytes
+ * and bidirectional override code points are escaped rather than passed
+ * to the terminal. Decoding and the bidi set come from json.h. */
 
-static int md_is_bidi_control(unsigned int cp) {
-    return cp == 0x061cU || cp == 0x200eU || cp == 0x200fU ||
-           (cp >= 0x202aU && cp <= 0x202eU) ||
-           (cp >= 0x2066U && cp <= 0x2069U);
-}
+#define md_is_bidi_control(cp) ccode_cp_is_bidi_control(cp)
 
 /* Emit a bounded text run with control/bidi characters escaped. ANSI
  * sequences are emitted by callers directly and therefore never reach this
