@@ -1,6 +1,7 @@
 #include "protocol.h"
 
 #include "../json.h"
+#include "../fdio.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -11,17 +12,6 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
-
-static int write_all(int fd, const char *data, size_t length) {
-    while (length > 0) {
-        ssize_t written = write(fd, data, length);
-        if (written < 0 && errno == EINTR) continue;
-        if (written <= 0) return -1;
-        data += written;
-        length -= (size_t)written;
-    }
-    return 0;
-}
 
 /* Emit one JSON Lines event. The payload is escaped with the shared
  * ccode_json_escape; an over-long payload fails explicitly (fail-closed)
@@ -38,7 +28,7 @@ static int send_string_event(struct tui_protocol *protocol, const char *type,
     if (need <= 8190) {
         snprintf(line, sizeof(line), "{\"type\":\"%s\",\"text\":\"%s\"}\n",
                  type, escaped);
-        rc = write_all(protocol->input_fd, line, strlen(line));
+        rc = ccode_fd_write_all(protocol->input_fd, line, strlen(line));
     }
     free(escaped);
     return rc;
@@ -65,7 +55,7 @@ int tui_protocol_send_hello(struct tui_protocol *protocol, const char *model,
                  "\"thinking\":%s,\"thinking_effort\":\"%s\"}\n",
                  escaped_model, escaped_workspace,
                  thinking_enabled ? "true" : "false", escaped_effort);
-        rc = write_all(protocol->input_fd, line, strlen(line));
+        rc = ccode_fd_write_all(protocol->input_fd, line, strlen(line));
     }
     free(escaped_model);
     free(escaped_workspace);
@@ -135,18 +125,18 @@ int tui_protocol_send_permission_response(struct tui_protocol *protocol, int all
     const char *line = allow
         ? "{\"type\":\"permission_response\",\"allow\":true}\n"
         : "{\"type\":\"permission_response\",\"allow\":false}\n";
-    return write_all(protocol->input_fd, line, strlen(line));
+    return ccode_fd_write_all(protocol->input_fd, line, strlen(line));
 }
 
 int tui_protocol_send_clear(struct tui_protocol *protocol) {
     const char line[] = "{\"type\":\"clear\"}\n";
-    return write_all(protocol->input_fd, line, sizeof(line) - 1);
+    return ccode_fd_write_all(protocol->input_fd, line, sizeof(line) - 1);
 }
 
 int tui_protocol_send_resize(struct tui_protocol *protocol, int cols, int rows) {
     char line[128];
     snprintf(line, sizeof(line), "{\"type\":\"resize\",\"cols\":%d,\"rows\":%d}\n", cols, rows);
-    return write_all(protocol->input_fd, line, strlen(line));
+    return ccode_fd_write_all(protocol->input_fd, line, strlen(line));
 }
 
 int tui_protocol_read_line(struct tui_protocol *protocol, char *line, size_t cap) {

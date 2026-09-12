@@ -14,6 +14,7 @@
 #endif
 
 #include "agent_internal.h"
+#include "../fdio.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -100,20 +101,6 @@ static void result_id_hex(unsigned long long h, char out[17]) {
     out[16] = '\0';
 }
 
-static int write_all(int fd, const char *data, size_t len) {
-    size_t off = 0;
-    while (off < len) {
-        ssize_t n = write(fd, data + off, len - off);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            return -1;
-        }
-        if (n == 0) return -1;
-        off += (size_t)n;
-    }
-    return 0;
-}
-
 int ccode_results_archive(struct agent_context *ctx,
                           const char *preview, size_t preview_len,
                           const char *tail, size_t tail_len,
@@ -144,8 +131,8 @@ int ccode_results_archive(struct agent_context *ctx,
         /* Same content is already archived (content-addressed): reuse it. */
         if (errno != EEXIST) return -1;
     } else {
-        int ok = write_all(fd, preview, preview_len) == 0 &&
-                 write_all(fd, tail, tail_len) == 0;
+        int ok = ccode_fd_write_all(fd, preview, preview_len) == 0 &&
+                 ccode_fd_write_all(fd, tail, tail_len) == 0;
         if (ok && fsync(fd) == 0) {
             /* fine */
         } else {

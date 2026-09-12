@@ -8,6 +8,7 @@
 
 #include "../agent/agent.h"
 #include "../config.h"
+#include "../fdio.h"
 #include "../json.h"
 #include "../permissions/permissions.h"
 #include "../models.h"
@@ -93,17 +94,6 @@ static const char *normalize_thinking_effort(const char *effort) {
     return NULL;
 }
 
-static int json_write_all(int fd, const char *data, size_t length) {
-    while (length > 0) {
-        ssize_t written = write(fd, data, length);
-        if (written < 0 && errno == EINTR) continue;
-        if (written <= 0) return -1;
-        data += written;
-        length -= (size_t)written;
-    }
-    return 0;
-}
-
 static int json_build_event(const char *type, const char *text,
                             char **event_out, size_t *event_length_out) {
     size_t i;
@@ -162,7 +152,7 @@ static void json_print(const char *type, const char *text) {
     char *event;
     size_t event_length;
     if (json_build_event(type, text, &event, &event_length) == 0) {
-        (void)json_write_all(STDOUT_FILENO, event, event_length);
+        (void)ccode_fd_write_all(STDOUT_FILENO, event, event_length);
         free(event);
     }
 }
@@ -171,7 +161,7 @@ static void json_print_fd(int fd, const char *type, const char *text) {
     char *event;
     size_t event_length;
     if (json_build_event(type, text, &event, &event_length) != 0) return;
-    (void)json_write_all(fd, event, event_length);
+    (void)ccode_fd_write_all(fd, event, event_length);
     free(event);
 }
 
