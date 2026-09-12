@@ -4213,6 +4213,47 @@ static int test_web_fetch_crlf_rejected(void) {
     return 1;
 }
 
+/* Files that pass the binary heuristic but hold invalid UTF-8 (lone
+ * continuation bytes) must still produce valid UTF-8 tool results: the
+ * escape layer substitutes U+FFFD instead of shipping broken bytes. */
+static int test_read_file_sanitizes_invalid_utf8(void) {
+    char path[256];
+    char *r;
+
+    snprintf(path, sizeof(path), "fixtures/bad_utf8_%ld.txt", (long)getpid());
+    {
+        FILE *f = fopen(path, "wb");
+        size_t pad;
+        ASSERT(f != NULL);
+        for (pad = 0; pad < 2048; pad++) fputs("valid text line\n", f);
+        /* Invalid sequences: bare continuation byte, overlong C0 AF,
+         * truncated 3-byte lead, then valid multibyte (中文). */
+        fwrite("ok\xc2\xa6\xc0\xaf\xe6\x96 text\xe4\xb8\xad\xe6\x96\x87", 1, 30, f);
+        for (pad = 0; pad < 2048; pad++) fputs("more valid text\n", f);
+        fclose(f);
+    }
+
+    test_reset_workspace();
+    r = test_exec_tool("fixtures", "read_file",
+                       "{\"file_path\":\"x\"}");
+    free(r);
+    {
+        char args[128];
+        char *rr;
+        snprintf(args, sizeof(args),
+                 "{\"file_path\":\"%s\"}", path + strlen("fixtures/"));
+        test_reset_workspace();
+        rr = test_exec_tool("fixtures", "read_file", args);
+        ASSERT(rr != NULL);
+        /* The escaped form of U+FFFD appears where the broken bytes were;
+         * the valid multibyte sequence survives intact. */
+        ASSERT(strstr(rr, "\\ufffd") != NULL);
+        free(rr);
+    }
+    unlink(path);
+    return 1;
+}
+
 static int test_web_fetch_tool_prepare(void) {
     char display[2048];
 
@@ -5241,6 +5282,7 @@ int main(int argc, char **argv) {
     TEST(web_fetch_ipv6_host);
     TEST(web_fetch_blacklist_and_rate_limit);
     TEST(web_fetch_tool_prepare);
+    TEST(read_file_sanitizes_invalid_utf8);
     TEST(web_fetch_ssrf_denied);
     TEST(web_fetch_method_restricted);
     TEST(web_fetch_crlf_rejected);

@@ -78,10 +78,23 @@ old_string 创建）。工具名单同步点从 5 处收缩；`is_shell_string_i
 3. 只读模式（含只读子代理）不再有 git 工具；探索型子代理看不了 git 历史，
    由父代理代查。
 
-**遗留观察（本轮审查发现、未处理）：** webfetch 请求行未消毒 + method 未限
-GET/HEAD；webfetch 无私网/链路本地 SSRF 默认拒绝；glob/grep 不跳过 `.git`；
-单目录超 512 项中止整轮扫描；move_file 静默覆盖目标；FNV-1a 基数
-agent_results.c 与 agent_fs.c 不一致（改常数会让旧会话 blob 失联）。
+**遗留观察（已全部修复，2026-09-12 同日）：** webfetch 请求行消毒 +
+method 白名单 + 私网/环回/链路本地 SSRF 默认拒绝（0335039）；扫描遍历
+跳过 .git/.hg/.svn/.bzr、超 512 项目录不再中止整轮扫描（8817fa0）；
+move_file 拒绝覆盖已有目标、FNV-1a 偏移基数统一（7cf07a5）。
+
+**压测新增修复：** 工具结果可携带非法 UTF-8（read_file/grep/bash 输出里
+ lone continuation byte 等会穿过二进制启发式），原样进入上游请求体，
+真实 API 会拒绝。在 ccode_json_escape / append_json_string_n /
+append_json_escaped_fixed / read_file 内联转义四处 choke point 加严格
+UTF-8 校验，非法序列替换 U+FFFD（ccode_utf8_seq_len）。由随机数据压测
+（stress-random）抓出：mock provider 请求体解码崩溃即此因。
+
+**压测套件（make stress）：** stress_random_workspace.py（种子化随机
+工作区 800 步工具链）、stress_jsonlines_protocol.py（4000 行协议模糊：
+超长行/随机字节/NUL/深度嵌套，断言全程合法 JSON Lines 事件）、
+stress_real_project.py（本仓库源码树，glob/grep/分页/bash/md5/edit
+结果逐一与会话内原始 JSON 对账）。
 
 ## 2026-09-12 已收敛的重复
 

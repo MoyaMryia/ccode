@@ -39,6 +39,40 @@ int ccode_append_cstr(char **buf, size_t *pos, size_t *cap, const char *s) {
     return 0;
 }
 
+int ccode_utf8_seq_len(const unsigned char *s, size_t n) {
+    unsigned char c;
+    size_t need, i;
+
+    if (!s || n == 0) return 0;
+    c = s[0];
+    if (c < 0x80) return 1;
+    if ((c & 0xE0) == 0xC0) need = 2;
+    else if ((c & 0xF0) == 0xE0) need = 3;
+    else if ((c & 0xF8) == 0xF0) need = 4;
+    else return 0;
+    if (n < need) return 0;
+    /* Overlong check: the smallest lead byte for `need` is implied by the
+     * continuation-bit masks below (a 2-byte sequence must be >= 0x80,
+     * 3-byte >= 0x800, 4-byte >= 0x10000). */
+    if (need == 2 && s[0] < 0xC2) return 0;
+    if (need == 3 && s[0] == 0xE0 && s[1] < 0xA0) return 0;
+    if (need == 4 && s[0] == 0xF0 && s[1] < 0x90) return 0;
+    for (i = 1; i < need; i++) {
+        if ((s[i] & 0xC0) != 0x80) return 0;
+    }
+    if (need == 3) {
+        unsigned cp = ((s[0] & 0x0F) << 12) | ((s[1] & 0x3F) << 6) |
+                      (s[2] & 0x3F);
+        if (cp >= 0xD800 && cp <= 0xDFFF) return 0;
+    }
+    if (need == 4) {
+        unsigned cp = ((s[0] & 0x07) << 18) | ((s[1] & 0x3F) << 12) |
+                      ((s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+        if (cp > 0x10FFFF) return 0;
+    }
+    return (int)need;
+}
+
 char *ccode_json_escape(const char *input) {
     size_t i;
     size_t length = 0;
@@ -46,16 +80,40 @@ char *ccode_json_escape(const char *input) {
     char *cursor;
 
     if (!input) return NULL;
-    for (i = 0; input[i] != '\0'; i++) {
+    for (i = 0; input[i] != '\0'; ) {
         unsigned char c = (unsigned char)input[i];
+        if (c >= 0x80) {
+            int seq = ccode_utf8_seq_len(
+                (const unsigned char *)input + i, strlen(input + i));
+            if (seq > 0) { length += (size_t)seq; i += (size_t)seq; }
+            else { length += 3; i++; }
+            continue;
+        }
         length += (c == '"' || c == '\\' || c == '\b' || c == '\f' || c == '\n' || c == '\r' || c == '\t') ? 2 : (c < 0x20 ? 6 : 1);
+        i++;
     }
     output = malloc(length + 1);
     if (!output) return NULL;
 
     cursor = output;
-    for (i = 0; input[i] != '\0'; i++) {
+    for (i = 0; input[i] != '\0'; ) {
         unsigned char c = (unsigned char)input[i];
+        if (c >= 0x80) {
+            int seq = ccode_utf8_seq_len(
+                (const unsigned char *)input + i, strlen(input + i));
+            if (seq > 0) {
+                memcpy(cursor, input + i, (size_t)seq);
+                cursor += seq;
+                i += (size_t)seq;
+            } else {
+                /* Invalid byte: substitute U+FFFD so the request body is
+                 * always valid UTF-8, whatever a tool result contained. */
+                memcpy(cursor, "\ufffd", 3);
+                cursor += 3;
+                i++;
+            }
+            continue;
+        }
         switch (c) {
         case '"': *cursor++ = '\\'; *cursor++ = '"'; break;
         case '\\': *cursor++ = '\\'; *cursor++ = '\\'; break;
@@ -72,6 +130,7 @@ char *ccode_json_escape(const char *input) {
                 *cursor++ = (char)c;
             }
         }
+        i++;
     }
     *cursor = '\0';
     return output;

@@ -519,7 +519,6 @@ static char *exec_read_tool_output(struct agent_context *ctx,
     }
     if (!found)
         return ccode_strdup("{\"error\":\"Unknown tool_call_id\"}");
-
     if (stream && strcmp(stream, "stderr") == 0) {
         blob_id = found->result_blob_err;
         stream_name = "stderr";

@@ -24,6 +24,12 @@ int ccode_append_cstr(char **buf, size_t *pos, size_t *cap, const char *s);
  * (caller frees). Returns NULL on allocation failure or NULL input. */
 char *ccode_json_escape(const char *input);
 
+/* Length of the strict UTF-8 sequence starting at s (at most n bytes):
+ * 1-4 for a valid sequence, 0 when invalid (bad lead, bad continuation,
+ * overlong, surrogate, or > U+10FFFF). Callers use it to keep model- and
+ * tool-derived strings valid UTF-8 before they reach the wire. */
+int ccode_utf8_seq_len(const unsigned char *s, size_t n);
+
 /* Build one JSON Lines event {"type":"..","text":".."}\n with ANSI escape
  * sequences stripped from text. Returns 0 and a malloc'd event (caller
  * frees), or -1 on overflow/OOM. The single wire-format authority for the

@@ -978,6 +978,20 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
     return ccode_strdup("{\"ok\":true}");
 }
 
+/* Grow a dynamic JSON buffer to at least `need` bytes. Returns -1 on
+ * allocation failure. */
+static int grow_json_buf(char **buf, size_t *pos, size_t *cap, size_t need) {
+    char *tmp;
+    size_t new_cap = *cap * 2;
+    (void)pos;
+    if (new_cap < need) new_cap = need;
+    tmp = realloc(*buf, new_cap);
+    if (!tmp) return -1;
+    *buf = tmp;
+    *cap = new_cap;
+    return 0;
+}
+
 /* Append the JSON-escaped form of `s` to a dynamic buffer. Used to safely
  * serialize path entries rather than dropping control bytes or trusting
  * quotes. Returns -1 on allocation failure. */
@@ -1005,6 +1019,22 @@ int append_json_string_n(char **buf, size_t *pos, size_t *cap,
                 int n2 = snprintf(hex, sizeof(hex), "\\u%04x", (unsigned int)c);
                 if (n2 <= 0 || (size_t)n2 >= sizeof(hex)) return -1;
                 seq = hex; seqlen = (size_t)n2;
+            } else if (c >= 0x80) {
+                /* Keep tool-derived strings valid UTF-8: an invalid
+                 * sequence becomes a U+FFFD escape. */
+                int seq2 = ccode_utf8_seq_len(
+                    (const unsigned char *)s + i, n - i);
+                if (seq2 > 0) {
+                    if (*pos + (size_t)seq2 + 1 > *cap &&
+                        grow_json_buf(buf, pos, cap,
+                                      *pos + (size_t)seq2 + 1) != 0)
+                        return -1;
+                    memcpy(*buf + *pos, s + i, (size_t)seq2);
+                    *pos += (size_t)seq2;
+                    i += (size_t)seq2 - 1;
+                    continue;
+                }
+                seq = "\\ufffd"; seqlen = 6;
             } else {
                 if (*pos + 2 > *cap) {
                     char * tmp;
@@ -1160,6 +1190,19 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
                                        "\\u%04x", (unsigned int)c);
                 if (written <= 0 || (size_t)written >= output_cap - output_pos) break;
                 output_pos += (size_t)written;
+            } else if (c >= 0x80) {
+                /* Validate UTF-8 sequences: files that pass the binary
+                 * heuristic can still hold lone continuation bytes, and the
+                 * result must stay valid UTF-8 on the wire. */
+                int seq = ccode_utf8_seq_len(source + i, read_size - i);
+                if (seq > 0) {
+                    memcpy(output + output_pos, source + i, (size_t)seq);
+                    output_pos += (size_t)seq;
+                    i += (size_t)seq - 1;
+                } else if (output_pos + 8 < output_cap) {
+                    memcpy(output + output_pos, "\\ufffd", 6);
+                    output_pos += 6;
+                }
             } else {
                 output[output_pos++] = (char)c;
             }

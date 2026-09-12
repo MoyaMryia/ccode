@@ -446,6 +446,17 @@ tests/test_markdown: $(TEST_MD_SRC)
 test-tty: ccode-cli
 	python3 ./tests/test_tty_agent.py
 
+# ── Stress suites: drive the real ccode-cli against the mock provider ──
+# Random-data workspace tool-chain fuzz, JSON Lines protocol fuzz, and
+# correctness checks over the repository's own source tree.
+stress-random: ccode-cli
+	python3 tests/stress_random_workspace.py
+stress-json: ccode-cli
+	python3 tests/stress_jsonlines_protocol.py
+stress-real: ccode-cli
+	python3 tests/stress_real_project.py
+stress: stress-random stress-json stress-real
+
 test-e2e: ccode-cli
 	python3 ./tests/test_e2e_fixture.py
 

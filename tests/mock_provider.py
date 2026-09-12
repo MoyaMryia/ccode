@@ -114,6 +114,14 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                         isinstance(msg.get("content"), str) and
                         msg["content"].startswith("__ccode_test_")):
                     test_mode = msg["content"][len("__ccode_test_"):].split(" ")[0]
+        if (test_mode == "normal" and os.environ.get("CCODE_MOCK_STRESS_PLAN")
+                and any(m.get("role") == "system" and
+                        "delegate sub-agent" in (m.get("content") or "")
+                        for m in req.get("messages", []))):
+            # A stress-suite sub-agent request: it carries no fixture prefix
+            # of its own, route it to the stress handler which answers
+            # delegates directly.
+            test_mode = "stress-fixture"
         test_chunked = self.headers.get("X-Test-Chunked", "").lower() == "true"
         test_chunk_size = int(self.headers.get("X-Test-Chunk-Size", "1"))
         test_chunk_ext = self.headers.get("X-Test-Chunk-Ext", "")
@@ -520,6 +528,55 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                 events = [{"data": json.dumps({
                     "choices": [{"index": 0, "delta": {"content": "Both defects repaired. Final report: add() now returns a + b and sub() returns a - b."}, "finish_reason": "stop"}]
                 })}]
+
+        elif test_mode == "stress-fixture":
+            # Scripted tool-call plan for the stress suites. The plan file
+            # (env CCODE_MOCK_STRESS_PLAN) is a JSON list of steps:
+            #   {"id": "call_1", "name": "glob", "arguments": {...}}
+            # Step i is emitted when i tool results are visible in the
+            # conversation. Sub-agent requests carry the delegate system
+            # prompt and are answered directly so the parent sequence is
+            # untouched.
+            msgs = req.get("messages", [])
+            is_subagent = any(
+                m.get("role") == "system" and
+                "delegate sub-agent" in (m.get("content") or "")
+                for m in msgs)
+            tool_results = sum(1 for m in msgs if m.get("role") == "tool")
+            if is_subagent:
+                events = [{"data": json.dumps({
+                    "choices": [{"index": 0,
+                                 "delta": {"content": "SUBAGENT-DONE"},
+                                 "finish_reason": "stop"}]
+                })}]
+            else:
+                plan_path = os.environ.get("CCODE_MOCK_STRESS_PLAN", "")
+                plan = []
+                if plan_path:
+                    with open(plan_path) as f:
+                        plan = json.load(f)
+                if tool_results >= len(plan):
+                    events = [{"data": json.dumps({
+                        "choices": [{"index": 0,
+                                     "delta": {"content": "STRESS-PLAN-COMPLETE n=%d" % len(plan)},
+                                     "finish_reason": "stop"}]
+                    })}]
+                else:
+                    step = plan[tool_results]
+                    events = [{"data": json.dumps({
+                        "choices": [{"index": 0,
+                                     "delta": {"content": "step %d" % tool_results},
+                                     "finish_reason": None}]},)},{"data": json.dumps({
+                        "choices": [{"index": 0,
+                                     "delta": {"tool_calls": [{"index": 0,
+                                                               "id": step["id"],
+                                                               "type": "function",
+                                                               "function": {"name": step["name"],
+                                                                            "arguments": json.dumps(step["arguments"])}}]},
+                                     "finish_reason": None}]})},{"data": json.dumps({
+                        "choices": [{"index": 0,
+                                     "delta": {},
+                                     "finish_reason": "tool_calls"}]})}]
 
         elif test_mode == "workflow-fixture":
             msgs = req.get("messages", [])
