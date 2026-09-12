@@ -160,6 +160,8 @@ struct prepared_tool {
      * prepared_tool_free(). */
     char *value;
     char *content;
+    /* task tool: routed action (create/update/list). */
+    char *action;
     char *tool_path;
     char *destination;
     char *include;

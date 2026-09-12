@@ -46,23 +46,16 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "\"regex\":{\"type\":\"boolean\",\"description\":\"Treat pattern as regex instead of literal (optional)\"}"
      "},\"required\":[\"pattern\"]}"},
 
-    {"task_create",
-     "Create a new task",
+    {"task",
+     "Manage the task list. action=create records a task (content); "
+     "action=update changes a task status (id, status: pending, "
+     "in_progress, completed, blocked); action=list shows all tasks.",
      "{\"type\":\"object\",\"properties\":{"
-     "\"content\":{\"type\":\"string\",\"description\":\"Task description\"}"
-     "},\"required\":[\"content\"]}"},
-
-    {"task_update",
-     "Update task status",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"id\":{\"type\":\"string\",\"description\":\"Task ID\"},"
-     "\"status\":{\"type\":\"string\",\"description\":\"New status: pending, in_progress, completed, blocked\"}"
-     "},\"required\":[\"id\",\"status\"]}"},
-
-    {"task_list",
-     "List all tasks and their statuses",
-     "{\"type\":\"object\",\"properties\":{},"
-     "\"required\":[]}"},
+     "\"action\":{\"type\":\"string\",\"description\":\"Action to perform: create, update, or list\"},"
+     "\"content\":{\"type\":\"string\",\"description\":\"Task description (action=create)\"},"
+     "\"id\":{\"type\":\"string\",\"description\":\"Task ID (action=update)\"},"
+     "\"status\":{\"type\":\"string\",\"description\":\"New status: pending, in_progress, completed, blocked (action=update)\"}"
+     "},\"required\":[\"action\"]}"},
 
     {"bash",
      "Execute a shell command (supports pipes, redirects, and shell syntax)",
@@ -240,7 +233,7 @@ char *ccode_build_write_tools_json(void) {
                                    "bash",
                                    "delete_file", "move_file",
                                    "glob", "grep",
-                                   "task_create", "task_update", "task_list",
+                                   "task",
                                    "web_fetch", "web_search", "agent_tool",
                                    "read_tool_output"};
     first = 1;

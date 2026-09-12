@@ -129,7 +129,7 @@ SSE 按行解析 `data:` 事件，支持重定向、超时控制。
 | 类别 | 工具 |
 |------|------|
 | 只读 | `read_file`（带大小上限和截断标记）、`glob`、`grep`、`read_tool_output`（按 `tool_call_id` 取回被存档的超长工具输出窗口） |
-| 读写 | `write_file`（原子写入）、`edit_file`、`bash`（支持 `timeout_ms`）、`delete_file` / `move_file`、`web_fetch` / `web_search`、`agent_tool`（子代理）、`task_create` / `task_update` / `task_list` |
+| 读写 | `write_file`（原子写入）、`edit_file`、`bash`（支持 `timeout_ms`）、`delete_file` / `move_file`、`web_fetch` / `web_search`、`agent_tool`（子代理）、`task`（action=create/update/list） |
 
 ### permissions/ — 审批
 

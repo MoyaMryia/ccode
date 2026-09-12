@@ -189,13 +189,14 @@ static int copy_string_token_dyn(const char *json, const ccode_jsmntok_t *token,
 static int prepared_tool_defaults(struct prepared_tool *p) {
     p->value = ccode_strdup("");
     p->content = ccode_strdup("");
+    p->action = ccode_strdup("");
     p->tool_path = ccode_strdup("");
     p->destination = ccode_strdup("");
     p->include = ccode_strdup("");
     p->old_string = ccode_strdup("");
     p->new_string = ccode_strdup("");
-    if (!p->value || !p->content || !p->tool_path || !p->destination ||
-        !p->include || !p->old_string || !p->new_string)
+    if (!p->value || !p->content || !p->action || !p->tool_path ||
+        !p->destination || !p->include || !p->old_string || !p->new_string)
         return -1;
     return 0;
 }
@@ -204,6 +205,7 @@ void prepared_tool_free(struct prepared_tool *prepared) {
     if (!prepared) return;
     free(prepared->value);
     free(prepared->content);
+    free(prepared->action);
     free(prepared->tool_path);
     free(prepared->destination);
     free(prepared->include);
@@ -211,6 +213,7 @@ void prepared_tool_free(struct prepared_tool *prepared) {
     free(prepared->new_string);
     prepared->value = NULL;
     prepared->content = NULL;
+    prepared->action = NULL;
     prepared->tool_path = NULL;
     prepared->destination = NULL;
     prepared->include = NULL;
@@ -542,51 +545,75 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         return NULL;
     }
 
-    if (strcmp(name, "task_create") == 0) {
-        if (num_tokens != 3 || tokens[0].size != 2 ||
-            tokens[1].type != CCODE_JSMN_STRING ||
-            !ccode_jsmn_token_streq(arguments, &tokens[1], "content") ||
-            copy_string_token_dyn(arguments, &tokens[2], &prepared->value) != 0)
-            return "{\"error\":\"Invalid task_create arguments\"}";
-        prepared->kind = PREPARED_TASK_CREATE;
-        snprintf(prepared->display, sizeof(prepared->display),
-                 "content=%s", prepared->value);
-        return NULL;
-    }
-
-    if (strcmp(name, "task_update") == 0) {
-        int have_id = 0, have_status = 0;
+    if (strcmp(name, "task") == 0) {
+        int have_action = 0, have_id = 0, have_status = 0, have_content = 0;
         int i;
-        if (num_tokens != 5 || tokens[0].size != 4)
-            return "{\"error\":\"Invalid task_update arguments\"}";
+        prepared->kind = PREPARED_TASK_LIST;
+        if (num_tokens < 3 || num_tokens > 9 || (num_tokens % 2) == 0)
+            return "{\"error\":\"Invalid task arguments\"}";
         for (i = 1; i < num_tokens; i += 2) {
             if (tokens[i].type != CCODE_JSMN_STRING ||
                 tokens[i + 1].type != CCODE_JSMN_STRING)
-                return "{\"error\":\"Invalid task_update arguments\"}";
-            if (ccode_jsmn_token_streq(arguments, &tokens[i], "id")) {
-                if (have_id || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
-                    return "{\"error\":\"Invalid task_update arguments\"}";
+                return "{\"error\":\"Invalid task arguments\"}";
+            if (ccode_jsmn_token_streq(arguments, &tokens[i], "action")) {
+                if (have_action ||
+                    copy_string_token_dyn(arguments, &tokens[i + 1],
+                                          &prepared->action) != 0)
+                    return "{\"error\":\"Invalid task arguments\"}";
+                have_action = 1;
+            } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "id")) {
+                if (have_id ||
+                    copy_string_token_dyn(arguments, &tokens[i + 1],
+                                          &prepared->value) != 0)
+                    return "{\"error\":\"Invalid task arguments\"}";
                 have_id = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "status")) {
-                if (have_status || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->content) != 0)
-                    return "{\"error\":\"Invalid task_update arguments\"}";
+                if (have_status ||
+                    copy_string_token_dyn(arguments, &tokens[i + 1],
+                                          &prepared->content) != 0)
+                    return "{\"error\":\"Invalid task arguments\"}";
                 have_status = 1;
+            } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "content")) {
+                if (have_content ||
+                    copy_string_token_dyn(arguments, &tokens[i + 1],
+                                          &prepared->value) != 0)
+                    return "{\"error\":\"Invalid task arguments\"}";
+                have_content = 1;
             } else {
-                return "{\"error\":\"Invalid task_update arguments\"}";
+                return "{\"error\":\"Invalid task arguments\"}";
             }
         }
-        if (!have_id || !have_status)
-            return "{\"error\":\"Invalid task_update arguments\"}";
-        prepared->kind = PREPARED_TASK_UPDATE;
-        snprintf(prepared->display, sizeof(prepared->display),
-                 "id=%s status=%s", prepared->value, prepared->content);
-        return NULL;
-    }
-
-    if (strcmp(name, "task_list") == 0) {
-        prepared->kind = PREPARED_TASK_LIST;
-        snprintf(prepared->display, sizeof(prepared->display), "task_list");
-        return NULL;
+        if (!have_action)
+            return "{\"error\":\"Invalid task arguments\"}";
+        if (strcmp(prepared->action, "create") == 0) {
+            if (have_id || have_status || !have_content)
+                return "{\"error\":\"task action=create requires content "
+                       "(no id/status)\"}";
+            prepared->kind = PREPARED_TASK_CREATE;
+            snprintf(prepared->display, sizeof(prepared->display),
+                     "task create content=%s", prepared->value);
+            return NULL;
+        }
+        if (strcmp(prepared->action, "update") == 0) {
+            if (!have_id || !have_status || have_content)
+                return "{\"error\":\"task action=update requires id and "
+                       "status (no content)\"}";
+            prepared->kind = PREPARED_TASK_UPDATE;
+            snprintf(prepared->display, sizeof(prepared->display),
+                     "task update id=%s status=%s", prepared->value,
+                     prepared->content);
+            return NULL;
+        }
+        if (strcmp(prepared->action, "list") == 0) {
+            if (have_id || have_status || have_content)
+                return "{\"error\":\"task action=list takes no other "
+                       "arguments\"}";
+            prepared->kind = PREPARED_TASK_LIST;
+            snprintf(prepared->display, sizeof(prepared->display),
+                     "task list");
+            return NULL;
+        }
+        return "{\"error\":\"Invalid task action (create, update, or list)\"}";
     }
 
     if (strcmp(name, "bash") == 0) {

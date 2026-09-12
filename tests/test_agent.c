@@ -3259,11 +3259,11 @@ static int test_task_results_escape_model_content(void) {
     char *r;
 
     test_reset_workspace();
-    r = test_exec_tool("fixtures", "task_create",
-                       "{\"content\":\"quote: \\\" slash: \\\\ line\\nnext\"}");
+    r = test_exec_tool("fixtures", "task",
+                       "{\"action\":\"create\",\"content\":\"quote: \\\" slash: \\\\ line\\nnext\"}");
     ASSERT(r != NULL && strstr(r, "\"ok\":true") != NULL);
     free(r);
-    r = test_exec_tool("fixtures", "task_list", "{}");
+    r = test_exec_tool("fixtures", "task", "{\"action\":\"list\"}");
     ASSERT(r != NULL);
     ASSERT(strstr(r, "quote: \\\"") != NULL);
     ASSERT(strstr(r, "line\\nnext") != NULL);
@@ -4353,7 +4353,7 @@ static int test_coding_agent_prompt_contract(void) {
     ASSERT(strstr(prompt, "edit_file") != NULL);
     ASSERT(strstr(prompt, "Ask for approval before side effects") != NULL);
     ASSERT(strstr(prompt, "GitHub-flavored Markdown") != NULL);
-    ASSERT(strstr(prompt, "task_create") != NULL);
+    ASSERT(strstr(prompt, "task tool (action create)") != NULL);
     ASSERT(strstr(prompt, "agent_tool") != NULL);
     ASSERT(strstr(prompt, "Never commit") != NULL);
     ASSERT(strstr(prompt, "file_path:line_number") != NULL);

@@ -668,9 +668,7 @@ static int is_enabled_tool(const char *name, int write_enabled) {
               strcmp(name, "web_fetch") == 0 ||
               strcmp(name, "web_search") == 0 ||
               strcmp(name, "agent_tool") == 0 ||
-              strcmp(name, "task_create") == 0 ||
-              strcmp(name, "task_update") == 0 ||
-              strcmp(name, "task_list") == 0 ||
+              strcmp(name, "task") == 0 ||
               strcmp(name, "read_tool_output") == 0));
 }
 

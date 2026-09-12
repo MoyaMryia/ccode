@@ -52,9 +52,9 @@ BASE = {
     "grep":        [{"pattern": "needle"}, {"pattern": "n", "include": "*.c"},
                     {"pattern": "n", "path": "src", "context": 3},
                     {"pattern": "n", "regex": 1}],
-    "task_create": [{"content": "do a thing"}],
-    "task_update": [{"id": "1", "status": "done"}],
-    "task_list":   [{}],
+    "task": [{"action": "create", "content": "do a thing"},
+             {"action": "update", "id": "1", "status": "in_progress"},
+             {"action": "list"}],
     "web_search":  [{"query": "openai"}],
     "web_fetch":   [{"url": "http://127.0.0.1/"},
                     {"url": "https://example.com/x", "method": "GET",
@@ -72,8 +72,7 @@ REQUIRED = {
     "edit_file": ["file_path", "old_string", "new_string"],
     "bash": ["command"], "delete_file": ["file_path"],
     "move_file": ["source", "destination"], "glob": ["pattern"],
-    "grep": ["pattern"], "task_create": ["content"],
-    "task_update": ["id", "status"], "task_list": [],
+    "grep": ["pattern"], "task": ["action"],
     "web_search": ["query"], "web_fetch": ["url"], "agent_tool": ["task"],
     "bash": ["command"],
 }
@@ -216,7 +215,7 @@ def gen_invalid(rnd):
             d[escaped_key(req)] = d.pop(req)
             add(tool, json.dumps(d), "escaped-key-" + req)
 
-        if tool != "task_list":
+        if tool != "task":
             d = copy.deepcopy(base)
             d["__extra__"] = 1
             add(tool, json.dumps(d), "extra-key")
