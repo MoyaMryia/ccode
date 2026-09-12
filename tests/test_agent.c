@@ -3956,6 +3956,111 @@ static int test_web_fetch_ipv6_host(void) {
     return 1;
 }
 
+/* The private-network gate must deny loopback/private/link-local IP
+ * literals and localhost names by default, and must not deny public
+ * addresses. */
+static int test_web_fetch_ssrf_denied(void) {
+    struct ccode_web_fetch_opts opts;
+    static const char *denied[] = {
+        "http://127.0.0.1:9/x",
+        "http://10.1.2.3/x",
+        "http://172.16.0.1/x",
+        "http://172.31.255.255/x",
+        "http://192.168.1.1/x",
+        "http://169.254.169.254/latest/meta-data",
+        "http://0.0.0.0/x",
+        "http://[::1]/x",
+        "http://[fe80::1]/x",
+        "http://[fc00::1]/x",
+        "http://[::ffff:127.0.0.1]/x",
+        "http://localhost/x",
+        "http://api.localhost/x",
+    };
+    size_t i;
+    char *result;
+
+    unsetenv("CCODE_WEB_FETCH_ALLOW_PRIVATE");
+    for (i = 0; i < sizeof(denied) / sizeof(denied[0]); i++) {
+        memset(&opts, 0, sizeof(opts));
+        opts.url = denied[i];
+        opts.timeout_sec = 1;
+        result = ccode_web_fetch(&opts);
+        ASSERT(result != NULL);
+        ASSERT(strstr(result, "private network") != NULL);
+        free(result);
+    }
+    /* A public IP literal passes the gate (it fails later at connect,
+     * with a different error). */
+    memset(&opts, 0, sizeof(opts));
+    opts.url = "http://93.184.216.34/";
+    opts.timeout_sec = 1;
+    result = ccode_web_fetch(&opts);
+    ASSERT(result != NULL);
+    ASSERT(strstr(result, "private network") == NULL);
+    free(result);
+    setenv("CCODE_WEB_FETCH_ALLOW_PRIVATE", "1", 1);
+    return 1;
+}
+
+/* The model can only ask for GET or HEAD; other verbs are refused before
+ * any I/O, and lowercase is accepted. */
+static int test_web_fetch_method_restricted(void) {
+    struct ccode_web_fetch_opts opts;
+    int port = 0;
+    pid_t pid = 0;
+    char url[128];
+    char *res;
+
+    memset(&opts, 0, sizeof(opts));
+    opts.url = "http://example.com/x";
+    opts.method = "POST";
+    res = ccode_web_fetch(&opts);
+    ASSERT(res != NULL && strstr(res, "Unsupported method") != NULL);
+    free(res);
+
+    opts.method = "DELETE";
+    res = ccode_web_fetch(&opts);
+    ASSERT(res != NULL && strstr(res, "Unsupported method") != NULL);
+    free(res);
+
+    opts.method = "PROFIND";
+    res = ccode_web_fetch(&opts);
+    ASSERT(res != NULL && strstr(res, "Unsupported method") != NULL);
+    free(res);
+
+    /* Lowercase GET is accepted and reaches the server. */
+    ASSERT(wf_spawn_server(16, "text/plain", &port, &pid) == 0);
+    snprintf(url, sizeof(url), "http://127.0.0.1:%d/", port);
+    memset(&opts, 0, sizeof(opts));
+    opts.url = url;
+    opts.method = "get";
+    opts.timeout_sec = 5;
+    res = ccode_web_fetch(&opts);
+    waitpid(pid, NULL, 0);
+    ASSERT(res != NULL && strstr(res, "\"status\":200") != NULL);
+    free(res);
+    return 1;
+}
+
+/* CRLF or other control bytes in host/path must be rejected at parse time:
+ * they would otherwise inject request headers. */
+static int test_web_fetch_crlf_rejected(void) {
+    struct ccode_web_fetch_opts opts;
+    char *res;
+
+    memset(&opts, 0, sizeof(opts));
+    opts.url = "http://127.0.0.1:9/a\r\nX-Evil: 1";
+    res = ccode_web_fetch(&opts);
+    ASSERT(res != NULL && strstr(res, "Invalid URL") != NULL);
+    free(res);
+
+    opts.url = "http://127.0.0.1\r\n.evil:9/x";
+    res = ccode_web_fetch(&opts);
+    ASSERT(res != NULL && strstr(res, "Invalid URL") != NULL);
+    free(res);
+    return 1;
+}
+
 static int test_web_fetch_tool_prepare(void) {
     char display[2048];
 
@@ -4722,6 +4827,10 @@ static int test_render_tool_result_parses_json(void) {
 
 int main(int argc, char **argv) {
 
+    /* Loopback HTTP mock servers (webfetch tests) need the private-network
+     * gate opened; the SSRF test closes it again around its own asserts. */
+    setenv("CCODE_WEB_FETCH_ALLOW_PRIVATE", "1", 1);
+
     if (argc == 2 && strcmp(argv[1], "--fuzz-probe") == 0) {
         /* Framed probe for tests/fuzz_tool_args.py: read <len><tool><len><args>
          * records from stdin, print OK or the prepare_tool() error per case. */
@@ -4977,6 +5086,9 @@ int main(int argc, char **argv) {
     TEST(web_fetch_ipv6_host);
     TEST(web_fetch_blacklist_and_rate_limit);
     TEST(web_fetch_tool_prepare);
+    TEST(web_fetch_ssrf_denied);
+    TEST(web_fetch_method_restricted);
+    TEST(web_fetch_crlf_rejected);
     TEST(agent_tool_prepare);
     TEST(web_search_parse_html);
     TEST(web_search_prepare);

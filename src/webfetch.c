@@ -202,6 +202,78 @@ static int wf_parse_url(const char *url, struct wf_url *out) {
         out->host[name_len] = '\0';
     }
 
+    /* Reject bytes that would break HTTP/1.1 request-line and header
+     * framing (CR/LF, NUL, other C0 controls, DEL): a model-supplied URL
+     * path or Host must never be able to inject request headers. */
+    {
+        const char *framing_parts[3];
+        size_t fi;
+        framing_parts[0] = out->host;
+        framing_parts[1] = out->port;
+        framing_parts[2] = out->path;
+        for (fi = 0; fi < 3; fi++) {
+            const unsigned char *p = (const unsigned char *)framing_parts[fi];
+            for (; *p != '\0'; p++) {
+                if (*p < 0x20 || *p == 0x7f) return -1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+/* Default-deny fetch targets that reach private networks. Parse-level
+ * best-effort: hostnames that DNS-resolve to private space are not caught
+ * here (no resolver in the gate), but IP-literal and localhost targets --
+ * the SSRF shapes a model actually writes -- are.
+ * CCODE_WEB_FETCH_ALLOW_PRIVATE=1 disables the gate (tests, local mock
+ * servers). */
+static int wf_host_is_private(const char *host) {
+    const char *allow = getenv("CCODE_WEB_FETCH_ALLOW_PRIVATE");
+    unsigned a, b, c, d;
+    char tail;
+    size_t len;
+
+    if (allow && allow[0] == '1') return 0;
+    if (!host || host[0] == '\0') return 0;
+
+    /* localhost and *.localhost */
+    len = strlen(host);
+    if (strcmp(host, "localhost") == 0 ||
+        (len > 10 && strcmp(host + len - 10, ".localhost") == 0))
+        return 1;
+
+    /* IPv4 literal: loopback 127/8, private 10/8 + 172.16/12 + 192.168/16,
+     * link-local 169.254/16, this-network 0/8. */
+    if (sscanf(host, "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) == 4 &&
+        a <= 255 && b <= 255 && c <= 255 && d <= 255) {
+        if (a == 127 || a == 10 || a == 0 || a == 169 ||
+            (a == 172 && b >= 16 && b <= 31) ||
+            (a == 192 && b == 168))
+            return 1;
+        return 0;
+    }
+
+    /* IPv6 literal (brackets already stripped): loopback, unspecified,
+     * link-local fe80::/10, ULA fc00::/7, v4-mapped ::ffff:a.b.c.d. */
+    if (strchr(host, ':') != NULL) {
+        if (strcmp(host, "::1") == 0 || strcmp(host, "::") == 0)
+            return 1;
+        if (strncmp(host, "fe8", 3) == 0 || strncmp(host, "fe9", 3) == 0 ||
+            strncmp(host, "fea", 3) == 0 || strncmp(host, "feb", 3) == 0)
+            return 1;
+        if (host[0] == 'f' && (host[1] == 'c' || host[1] == 'd'))
+            return 1;
+        if (strncmp(host, "::ffff:", 7) == 0 &&
+            sscanf(host + 7, "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) == 4 &&
+            a <= 255 && b <= 255 && c <= 255 && d <= 255) {
+            if (a == 127 || a == 10 || a == 0 || a == 169 ||
+                (a == 172 && b >= 16 && b <= 31) ||
+                (a == 192 && b == 168))
+                return 1;
+        }
+        return 0;
+    }
     return 0;
 }
 
@@ -878,7 +950,29 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
     io_timeout = opts->timeout_sec > 0 ? opts->timeout_sec * 1000
                                        : CCODE_WF_DEFAULT_TIMEOUT * 1000;
     max_size = opts->max_size > 0 ? opts->max_size : CCODE_WF_DEFAULT_MAX_SIZE;
-    method = opts->method && opts->method[0] ? opts->method : "GET";
+    /* Only idempotent, body-less-in-practice methods are exposed to the
+     * model; anything else would let a caller smuggle verbs (POST/DELETE)
+     * or CRLF through the request line. Case-insensitive, normalized. */
+    if (opts->method && opts->method[0] != '\0') {
+        char upper[8];
+        size_t mi;
+        for (mi = 0; opts->method[mi] != '\0'; mi++) {
+            if (mi >= sizeof(upper) - 1) {
+                result = ccode_strdup("{\"error\":\"Unsupported method\"}");
+                goto done;
+            }
+            upper[mi] = (char)((opts->method[mi] >= 'a' && opts->method[mi] <= 'z')
+                               ? opts->method[mi] - 32 : opts->method[mi]);
+        }
+        upper[mi] = '\0';
+        if (strcmp(upper, "GET") != 0 && strcmp(upper, "HEAD") != 0) {
+            result = ccode_strdup("{\"error\":\"Unsupported method (GET or HEAD only)\"}");
+            goto done;
+        }
+        method = upper[0] == 'H' ? "HEAD" : "GET";
+    } else {
+        method = "GET";
+    }
 
     current_url = opts->url;
 
@@ -912,6 +1006,18 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             result = malloc(64);
             if (result)
                 snprintf(result, 64, "{\"error\":\"Web fetch rate limit exceeded\"}");
+            goto done;
+        }
+        if (wf_host_is_private(url.host)) {
+            size_t host_len = strlen(url.host);
+            result = malloc(160 + host_len);
+            if (result)
+                snprintf(result, 160 + host_len,
+                         "{\"error\":\"Fetch to private network addresses "
+                         "is denied\",\"reason\":\"host '%s' is loopback, "
+                         "private, or link-local; set "
+                         "CCODE_WEB_FETCH_ALLOW_PRIVATE=1 to allow\"}",
+                         url.host);
             goto done;
         }
 
