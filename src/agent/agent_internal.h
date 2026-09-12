@@ -136,7 +136,6 @@ int mkdir_p(const char *path);
 
 enum prepared_tool_kind {
     PREPARED_READ_FILE,
-    PREPARED_WRITE_FILE,
     PREPARED_EDIT_FILE,
     PREPARED_GLOB,
     PREPARED_GREP,
@@ -218,8 +217,6 @@ int open_regular_at_workspace(struct agent_context *ctx,
                               const char *file_path);
 int is_workspace_relative_path(const char *path, int allow_dot);
 int is_home_relative_path(const char *path);
-char *exec_write_file(struct agent_context *ctx, const char *workspace,
-                            const char *file_path, const char *content);
 char *exec_edit_file(struct agent_context *ctx, const char *workspace,
                            const char *file_path, const char *old_string,
                            const char *new_string);

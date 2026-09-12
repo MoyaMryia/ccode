@@ -13,15 +13,9 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file to read\"}"
      "},\"required\":[\"file_path\"]}"},
 
-    {"write_file",
-     "Write content to a file",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file to write\"},"
-     "\"content\":{\"type\":\"string\",\"description\":\"Content to write\"}"
-     "},\"required\":[\"file_path\",\"content\"]}"},
-
     {"edit_file",
-     "Edit a file by replacing text",
+     "Edit a file by replacing text. An empty old_string creates a new "
+     "file whose content is new_string (refuses to overwrite).",
      "{\"type\":\"object\",\"properties\":{"
      "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file to edit\"},"
      "\"old_string\":{\"type\":\"string\",\"description\":\"Text to replace\"},"
@@ -229,7 +223,7 @@ char *ccode_build_write_tools_json(void) {
     size_t cap = 8192;
     size_t pos = 0;
     char *buf = malloc(cap);
-    const char *enabled_names[] = {"read_file", "write_file", "edit_file",
+    const char *enabled_names[] = {"read_file", "edit_file",
                                    "bash",
                                    "delete_file", "move_file",
                                    "glob", "grep",

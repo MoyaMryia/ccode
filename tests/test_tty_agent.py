@@ -205,7 +205,7 @@ def test_approve_write_tool_via_tty():
 
 
 def test_deny_write_and_command_no_side_effects():
-    """Deny both a write_file and a run_command; assert no side effects."""
+    """Deny both an edit_file creation and a bash command; assert no side effects."""
     workspace = os.path.join(
         os.path.dirname(__file__), "fixtures", "tty_deny_%d" % os.getpid())
     os.makedirs(workspace, exist_ok=True)

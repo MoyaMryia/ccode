@@ -584,9 +584,6 @@ static char *execute_prepared_tool(struct agent_context *ctx,
                                    const struct prepared_tool *prepared) {
     if (prepared->kind == PREPARED_READ_FILE)
         return exec_read_file(ctx, workspace, prepared->value);
-    if (prepared->kind == PREPARED_WRITE_FILE)
-        return exec_write_file(ctx, workspace, prepared->value,
-                               prepared->content);
     if (prepared->kind == PREPARED_EDIT_FILE)
         return exec_edit_file(ctx, workspace, prepared->value,
                               prepared->old_string, prepared->new_string);
@@ -660,8 +657,7 @@ static int is_readonly_tool(const char *name) {
 static int is_enabled_tool(const char *name, int write_enabled) {
     return is_readonly_tool(name) ||
            (write_enabled && name &&
-             (strcmp(name, "write_file") == 0 ||
-              strcmp(name, "edit_file") == 0 ||
+             (strcmp(name, "edit_file") == 0 ||
               strcmp(name, "bash") == 0 ||
               strcmp(name, "delete_file") == 0 ||
               strcmp(name, "move_file") == 0 ||
@@ -1054,8 +1050,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         preq.tool_name = acc.tool_calls[i].name;
                         preq.target = prepared.display;
                         preq.workspace_root = ctx->workspace_root;
-                        preq.read_only = prepared.kind != PREPARED_WRITE_FILE &&
-                                         prepared.kind != PREPARED_EDIT_FILE &&
+                        preq.read_only = prepared.kind != PREPARED_EDIT_FILE &&
                                          prepared.kind != PREPARED_BASH &&
                                          prepared.kind != PREPARED_DELETE_FILE &&
                                          prepared.kind != PREPARED_MOVE_FILE;
@@ -2212,10 +2207,6 @@ char *test_exec_glob(const char *workspace, const char *pattern) {
 char *test_exec_grep(const char *workspace, const char *pattern,
                      const char *include) {
     return exec_grep(&agent_ctx, workspace, pattern, include, 0, 0, NULL);
-}
-char *test_exec_write_file(const char *workspace, const char *file_path,
-                           const char *content) {
-    return exec_write_file(&agent_ctx, workspace, file_path, content);
 }
 char *test_exec_edit_file(const char *workspace, const char *file_path,
                           const char *old_string, const char *new_string) {

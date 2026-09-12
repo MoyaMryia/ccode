@@ -795,109 +795,6 @@ static char *atomic_write_at_parent(int parent_fd, const char *leaf,
     return (char *)"ok";
 }
 
-char *exec_write_file(struct agent_context *ctx, const char *workspace, const char *file_path,
-                             const char *content) {
-    char leaf[256];
-    int parent_fd;
-    struct stat st;
-    struct file_identity file_id;
-    int file_id_valid = 0;
-
-    if (!file_path || !content)
-        return ccode_strdup("{\"error\":\"Missing write_file argument\"}");
-    if (init_workspace(ctx, workspace) != 0)
-        return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
-    parent_fd = open_parent_at_workspace(ctx, file_path, leaf, sizeof(leaf));
-    if (parent_fd < 0)
-        return ccode_strdup("{\"error\":\"Path outside workspace or parent not found\"}");
-
-    if (fstatat(parent_fd, leaf, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-        if (!S_ISREG(st.st_mode)) {
-            close(parent_fd);
-            return ccode_strdup("{\"error\":\"Refusing to replace a non-regular file\"}");
-        }
-        if (st.st_nlink > 1) {
-            close(parent_fd);
-            return ccode_strdup("{\"error\":\"Refusing to replace a hard-linked file\"}");
-        }
-        memset(&file_id, 0, sizeof(file_id));
-        file_id.st_dev = st.st_dev;
-        file_id.st_ino = st.st_ino;
-        file_id.st_size = st.st_size;
-        file_id.file_mtime = st.st_mtime;
-        {
-            int old_fd = openat(parent_fd, leaf, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-            if (old_fd < 0 || compute_content_digest(old_fd,
-                                                     &file_id.content_digest) != 0) {
-                if (old_fd >= 0) close(old_fd);
-                close(parent_fd);
-                return ccode_strdup("{\"error\":\"Could not read target for change check\"}");
-            }
-            close(old_fd);
-        }
-        file_id_valid = 1;
-    } else if (errno != ENOENT) {
-        close(parent_fd);
-        return ccode_strdup("{\"error\":\"Could not inspect target file\"}");
-    } else {
-        st.st_mode = 0644;
-        st.st_uid = geteuid();
-        st.st_gid = getegid();
-    }
-
-    if (file_id_valid) {
-        struct stat recheck_st;
-        if (fstatat(parent_fd, leaf, &recheck_st, AT_SYMLINK_NOFOLLOW) != 0 ||
-            recheck_st.st_dev != file_id.st_dev ||
-            recheck_st.st_ino != file_id.st_ino ||
-            recheck_st.st_size != file_id.st_size ||
-            recheck_st.st_mtime != file_id.file_mtime) {
-            close(parent_fd);
-            return ccode_strdup("{\"error\":\"File changed since preview; write aborted\"}");
-        }
-        {
-            int old_fd = openat(parent_fd, leaf, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-            uint64_t digest = 0;
-            if (old_fd < 0 || compute_content_digest(old_fd, &digest) != 0) {
-                if (old_fd >= 0) close(old_fd);
-                close(parent_fd);
-                return ccode_strdup("{\"error\":\"Could not recheck target content\"}");
-            }
-            close(old_fd);
-            if (digest != file_id.content_digest) {
-                close(parent_fd);
-                return ccode_strdup("{\"error\":\"File content changed since preview; write aborted\"}");
-            }
-        }
-    } else {
-        struct stat recheck_st;
-        if (fstatat(parent_fd, leaf, &recheck_st, AT_SYMLINK_NOFOLLOW) == 0) {
-            close(parent_fd);
-            return ccode_strdup("{\"error\":\"Target appeared during write; write aborted\"}");
-        }
-        if (errno != ENOENT) {
-            close(parent_fd);
-            return ccode_strdup("{\"error\":\"Could not recheck target path\"}");
-        }
-    }
-
-    {
-        char *wr = atomic_write_at_parent(parent_fd, leaf, content, st.st_mode,
-                                          st.st_uid, st.st_gid,
-                                          file_id_valid ? &file_id : NULL);
-        close(parent_fd);
-        if (!wr)
-            return ccode_strdup("{\"error\":\"Could not atomically replace file\"}");
-        if (strcmp(wr, "committed_not_durable") == 0) {
-            change_log_add(ctx, "write", file_path, 0, 0);
-            return ccode_strdup("{\"ok\":true,\"committed_not_durable\":true}");
-        }
-    }
-    change_log_add(ctx, "write", file_path, 0, 0);
-    return ccode_strdup("{\"ok\":true}");
-}
-
-
 char *exec_edit_file(struct agent_context *ctx, const char *workspace, const char *file_path,
                             const char *old_string, const char *new_string) {
     int fd;
@@ -923,6 +820,31 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
         return ccode_strdup("{\"error\":\"Missing edit_file argument\"}");
     if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
+
+    /* Empty old_string means create a new file: the atomic write runs with
+     * no expected identity, and its pre-rename verify refuses to proceed
+     * when the leaf exists (regular file, symlink, or directory), so an
+     * existing file can never be clobbered by a create. */
+    if (old_string[0] == '\0') {
+        char create_leaf[256];
+        int create_parent_fd;
+        char *wr;
+
+        create_parent_fd = open_parent_at_workspace(ctx, file_path,
+                                                    create_leaf,
+                                                    sizeof(create_leaf));
+        if (create_parent_fd < 0)
+            return ccode_strdup("{\"error\":\"Path outside workspace or parent not found\"}");
+        wr = atomic_write_at_parent(create_parent_fd, create_leaf, new_string,
+                                    0644, geteuid(), getegid(), NULL);
+        close(create_parent_fd);
+        if (!wr)
+            return ccode_strdup("{\"error\":\"Could not create file (target exists?)\"}");
+        change_log_add(ctx, "write", file_path, 0, 0);
+        if (strcmp(wr, "committed_not_durable") == 0)
+            return ccode_strdup("{\"ok\":true,\"committed_not_durable\":true}");
+        return ccode_strdup("{\"ok\":true}");
+    }
 
     fd = open_regular_at_workspace(ctx, file_path);
     if (fd < 0)

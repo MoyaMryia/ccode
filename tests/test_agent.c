@@ -43,8 +43,6 @@ const char *test_last_result_blob_err(void);
 char *test_exec_glob(const char *workspace, const char *pattern);
 char *test_exec_grep(const char *workspace, const char *pattern,
                      const char *include);
-char *test_exec_write_file(const char *workspace, const char *file_path,
-                           const char *content);
 char *test_exec_edit_file(const char *workspace, const char *file_path,
                           const char *old_string, const char *new_string);
 char *test_exec_run_command(const char *workspace,
@@ -1511,14 +1509,14 @@ static int test_tool_error_explains_expected_args(void) {
     memset(&prepared, 0, sizeof(prepared));
 
     /* Generic "Invalid arguments" failures must carry the tool's expected
-     * parameters so the model can correct itself. write_file's schema names
-     * file_path/content; the bare message does not. */
-    err = prepare_tool("write_file", "{\"path\":\"x\",\"content\":\"y\"}",
+     * parameters so the model can correct itself. The task tool's schema
+     * names action/content/id/status; the bare message does not. */
+    err = prepare_tool("task", "{\"act\":\"x\",\"content\":\"y\"}",
                        &prepared);
     ASSERT(err != NULL);
-    ASSERT(strstr(err, "Invalid write_file arguments") != NULL);
-    ASSERT(strstr(err, "file_path") != NULL);
-    ASSERT(strstr(err, "content") != NULL);
+    ASSERT(strstr(err, "Invalid task arguments") != NULL);
+    ASSERT(strstr(err, "action") != NULL);
+    ASSERT(strstr(err, "status") != NULL);
     ASSERT(strchr(err, '\n') == NULL);
 
     /* Parse/envelope failures get the same hint. */
@@ -1528,12 +1526,12 @@ static int test_tool_error_explains_expected_args(void) {
     ASSERT(strstr(err, "query") != NULL);
 
     /* Already-specific errors stay intact and are still augmented. */
-    err = prepare_tool("edit_file",
-                       "{\"file_path\":\"a\",\"old_string\":\"\",\"new_string\":\"b\"}",
+    err = prepare_tool("bash",
+                       "{\"command\":\"echo\",\"timeout_ms\":-1}",
                        &prepared);
     ASSERT(err != NULL);
-    ASSERT(strstr(err, "must not be empty") != NULL);
-    ASSERT(strstr(err, "old_string") != NULL);
+    ASSERT(strstr(err, "Invalid timeout_ms") != NULL);
+    ASSERT(strstr(err, "command") != NULL);
 
     prepared_tool_free(&prepared);
     return 1;
@@ -1725,7 +1723,7 @@ static int test_tool_argument_shapes(void) {
           "Home-relative paths are not allowed" },
         { "bash", "{\"arguments\":{\"command\":\"cat ~/secret\"}}",
           "Home-relative paths are not allowed" },
-        { "write_file", "{\"file_path\":\"~/x\",\"content\":\"y\"}",
+        { "edit_file", "{\"file_path\":\"~/x\",\"old_string\":\"a\",\"new_string\":\"b\"}",
           "Home-relative paths are not allowed" },
 
         /* whitespace/formatting around the envelope must not matter */
@@ -1944,7 +1942,7 @@ static int test_tool_argument_shapes(void) {
             { "grep", "{\"pattern\":}", "\"error\"" },
             { "grep", "{\"context\":1}", "\"error\"" },
             { "glob", "{\"pattern\":[\"x\"]}", "\"error\"" },
-            { "write_file", "{\"file_path\":\"x\"}", "\"error\"" },
+            { "edit_file", "{\"file_path\":\"x\"}", "\"error\"" },
             { "bash", "{\"command\":\"echo hi\",}", "\"error\"" },
             { "invalid_tool", "{\"x\":1}", "\"error\"" },
         };
@@ -2101,36 +2099,40 @@ static int test_scan_byte_budget_truncates(void) {
     return 1;
 }
 
-static int test_write_file_creates_and_replaces(void) {
+static int test_edit_file_creates_and_replaces(void) {
     char *r;
     char *read;
 
     unlink("fixtures/written.txt");
     test_reset_workspace();
-    r = test_exec_write_file("fixtures", "written.txt", "first\nvalue");
+    r = test_exec_edit_file("fixtures", "written.txt", "", "first\nvalue");
     ASSERT(r != NULL && strstr(r, "\"ok\":true") != NULL);
     free(r);
     read = test_exec_read_file("fixtures", "written.txt");
     ASSERT(read != NULL && strstr(read, "first\\nvalue") != NULL);
     free(read);
-    r = test_exec_write_file("fixtures", "written.txt", "replacement");
+    /* A create must never clobber an existing file. */
+    r = test_exec_edit_file("fixtures", "written.txt", "", "evil");
+    ASSERT(r != NULL && strstr(r, "Could not create file") != NULL);
+    free(r);
+    r = test_exec_edit_file("fixtures", "written.txt", "first", "second");
     ASSERT(r != NULL && strstr(r, "\"ok\":true") != NULL);
     free(r);
     read = test_exec_read_file("fixtures", "written.txt");
-    ASSERT(read != NULL && strstr(read, "replacement") != NULL);
+    ASSERT(read != NULL && strstr(read, "second\\nvalue") != NULL);
     free(read);
     unlink("fixtures/written.txt");
     return 1;
 }
 
-static int test_write_file_preserves_existing_mode(void) {
+static int test_edit_file_preserves_existing_mode(void) {
     struct stat st;
     char *r;
 
     write_file("fixtures/mode_test.sh", "#!/bin/sh\nexit 0\n", 17);
     ASSERT(chmod("fixtures/mode_test.sh", 0751) == 0);
     test_reset_workspace();
-    r = test_exec_write_file("fixtures", "mode_test.sh", "replacement\n");
+    r = test_exec_edit_file("fixtures", "mode_test.sh", "exit 0", "exit 1");
     ASSERT(r != NULL && strstr(r, "\"ok\":true") != NULL);
     free(r);
     ASSERT(stat("fixtures/mode_test.sh", &st) == 0);
@@ -2139,17 +2141,17 @@ static int test_write_file_preserves_existing_mode(void) {
     return 1;
 }
 
-static int test_write_file_rejects_unsafe_paths(void) {
+static int test_edit_file_creation_rejects_unsafe_paths(void) {
     char *r;
     write_file("fixtures/write_target.txt", "trusted", 7);
     unlink("fixtures/write_link.txt");
     make_symlink("write_target.txt", "fixtures/write_link.txt");
     test_reset_workspace();
-    r = test_exec_write_file("fixtures", "../outside.txt", "no");
+    r = test_exec_edit_file("fixtures", "../outside.txt", "", "no");
     ASSERT(r != NULL && strstr(r, "Path outside workspace") != NULL);
     free(r);
-    r = test_exec_write_file("fixtures", "write_link.txt", "no");
-    ASSERT(r != NULL && strstr(r, "non-regular") != NULL);
+    r = test_exec_edit_file("fixtures", "write_link.txt", "", "no");
+    ASSERT(r != NULL && strstr(r, "Could not create file") != NULL);
     free(r);
     r = test_exec_read_file("fixtures", "write_target.txt");
     ASSERT(r != NULL && strstr(r, "trusted") != NULL);
@@ -2159,23 +2161,30 @@ static int test_write_file_rejects_unsafe_paths(void) {
     return 1;
 }
 
-static int test_write_file_arguments_are_strict(void) {
+static int test_edit_file_creation_arguments_are_strict(void) {
     char *r;
     char *read;
 
     unlink("fixtures/decoded-write.txt");
     test_reset_workspace();
-    r = test_exec_tool("fixtures", "write_file",
+    r = test_exec_tool("fixtures", "edit_file",
                        "{\"file_path\":\"decoded-write.txt\","
-                       "\"content\":\"line\\nvalue\"}");
+                       "\"old_string\":\"\","
+                       "\"new_string\":\"line\\nvalue\"}");
     ASSERT(r != NULL && strstr(r, "\"ok\":true") != NULL);
     free(r);
     read = test_exec_read_file("fixtures", "decoded-write.txt");
     ASSERT(read != NULL && strstr(read, "line\\nvalue") != NULL);
     free(read);
-    r = test_exec_tool("fixtures", "write_file",
-                       "{\"file_path\":\"x\",\"content\":\"y\",\"extra\":\"z\"}");
-    ASSERT(r != NULL && strstr(r, "Invalid write_file arguments") != NULL);
+    r = test_exec_tool("fixtures", "edit_file",
+                       "{\"file_path\":\"x\",\"old_string\":\"\","
+                       "\"new_string\":\"y\",\"extra\":\"z\"}");
+    ASSERT(r != NULL && strstr(r, "Invalid edit_file arguments") != NULL);
+    free(r);
+    r = test_exec_tool("fixtures", "edit_file",
+                       "{\"file_path\":\"decoded-write.txt\","
+                       "\"old_string\":\"\",\"new_string\":\"evil\"}");
+    ASSERT(r != NULL && strstr(r, "Could not create file") != NULL);
     free(r);
     unlink("fixtures/decoded-write.txt");
     return 1;
@@ -2200,7 +2209,6 @@ static int test_atomic_write_failure_injection(void) {
                                   CCODE_FI_FCHOWN,
                                   CCODE_FI_FSYNC_FILE, CCODE_FI_RENAMEAT,
                                   CCODE_FI_FSYNC_DIR };
-    static const char *old_content = "old-content";
     size_t i;
 
     for (i = 0; i < sizeof(stages) / sizeof(stages[0]); i++) {
@@ -2208,28 +2216,28 @@ static int test_atomic_write_failure_injection(void) {
         char *r;
         char *read;
 
-        write_file("fixtures/atomic_target.txt", old_content,
-                   strlen(old_content));
+        unlink("fixtures/atomic_target.txt");
         test_reset_workspace();
         ccode_atomic_fail_inject(stage);
-        r = test_exec_write_file("fixtures", "atomic_target.txt",
-                                 "new-content-x");
+        r = test_exec_edit_file("fixtures", "atomic_target.txt", "",
+                                "new-content-x");
         ccode_atomic_fail_inject_clear();
         ASSERT(r != NULL);
         if (stage == CCODE_FI_FSYNC_DIR) {
             ASSERT(strstr(r, "committed_not_durable") != NULL);
         } else {
-            ASSERT(strstr(r, "Could not atomically replace file") != NULL);
+            ASSERT(strstr(r, "Could not create file") != NULL);
         }
         free(r);
 
         read = test_exec_read_file("fixtures", "atomic_target.txt");
-        ASSERT(read != NULL);
         if (stage == CCODE_FI_FSYNC_DIR) {
+            ASSERT(read != NULL);
             ASSERT(strstr(read, "new-content") != NULL);
         } else {
-            ASSERT(strstr(read, "old-content") != NULL);
-            ASSERT(strstr(read, "new-content") == NULL);
+            /* Every earlier failure happens before the rename: the target
+             * must still be absent. */
+            ASSERT(read != NULL && strstr(read, "not found") != NULL);
         }
         free(read);
 
@@ -2239,7 +2247,7 @@ static int test_atomic_write_failure_injection(void) {
     return 1;
 }
 
-static int test_write_file_preserves_owner_and_group(void) {
+static int test_edit_file_preserves_owner_and_group(void) {
     struct stat before;
     struct stat after;
     char *r;
@@ -2247,7 +2255,8 @@ static int test_write_file_preserves_owner_and_group(void) {
     write_file("fixtures/own_test.txt", "original\n", 9);
     ASSERT(stat("fixtures/own_test.txt", &before) == 0);
     test_reset_workspace();
-    r = test_exec_write_file("fixtures", "own_test.txt", "new\n");
+    r = test_exec_edit_file("fixtures", "own_test.txt",
+                            "original", "modified");
     ASSERT(r != NULL && strstr(r, "\"ok\":true") != NULL);
     free(r);
     ASSERT(stat("fixtures/own_test.txt", &after) == 0);
@@ -2302,13 +2311,13 @@ static int test_edit_file_multiple_match(void) {
     return 1;
 }
 
-static int test_edit_file_rejects_empty_old_string(void) {
+static int test_edit_file_creation_requires_parent(void) {
     char *r;
     test_reset_workspace();
     r = test_exec_tool("fixtures", "edit_file",
-                       "{\"file_path\":\"x.txt\",\"old_string\":\"\","
-                       "\"new_string\":\"y\"}");
-    ASSERT(r != NULL && strstr(r, "must not be empty") != NULL);
+                       "{\"file_path\":\"no_such_dir/x.txt\","
+                       "\"old_string\":\"\",\"new_string\":\"y\"}");
+    ASSERT(r != NULL && strstr(r, "parent not found") != NULL);
     free(r);
     return 1;
 }
@@ -4860,18 +4869,18 @@ int main(int argc, char **argv) {
     TEST(json_string_decoder_all_escapes);
     TEST(decoded_argument_length_limit);
     TEST(scan_byte_budget_truncates);
-    TEST(write_file_creates_and_replaces);
-    TEST(write_file_preserves_existing_mode);
-    TEST(write_file_rejects_unsafe_paths);
-    TEST(write_file_arguments_are_strict);
+    TEST(edit_file_creates_and_replaces);
+    TEST(edit_file_preserves_existing_mode);
+    TEST(edit_file_creation_rejects_unsafe_paths);
+    TEST(edit_file_creation_arguments_are_strict);
     TEST(atomic_write_failure_injection);
-    TEST(write_file_preserves_owner_and_group);
+    TEST(edit_file_preserves_owner_and_group);
 
     /* Phase 1: edit_file tests */
     TEST(edit_file_basic_replacement);
     TEST(edit_file_no_match);
     TEST(edit_file_multiple_match);
-    TEST(edit_file_rejects_empty_old_string);
+    TEST(edit_file_creation_requires_parent);
     TEST(edit_file_rejects_symlink);
     TEST(edit_file_arguments_are_strict);
 

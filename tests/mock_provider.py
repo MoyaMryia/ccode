@@ -347,8 +347,8 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                             "id": "call_write1",
                             "type": "function",
                             "function": {
-                                "name": "write_file",
-                                "arguments": '{"file_path":"test.txt","content":"x"}'
+                                "name": "edit_file",
+                                "arguments": '{"file_path":"test.txt","old_string":"","new_string":"x"}'
                             }
                         }]},
                         "finish_reason": "tool_calls"
@@ -373,8 +373,8 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                             "id": "call_write123",
                             "type": "function",
                             "function": {
-                                "name": "write_file",
-                                "arguments": '{"file_path":"integration-write.txt","content":"written by mock\\n"}'
+                                "name": "edit_file",
+                                "arguments": '{"file_path":"integration-write.txt","old_string":"","new_string":"written by mock\\n"}'
                             }
                         }]},
                         "finish_reason": "tool_calls"
@@ -423,8 +423,8 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                             "id": "call_write1",
                             "type": "function",
                             "function": {
-                                "name": "write_file",
-                                "arguments": '{"file_path":"must_not_exist.txt","content":"evil\\n"}'
+                                "name": "edit_file",
+                                "arguments": '{"file_path":"must_not_exist.txt","old_string":"","new_string":"evil\\n"}'
                             }
                         }]},
                         "finish_reason": "tool_calls"

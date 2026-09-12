@@ -41,7 +41,7 @@ DEFAULT_CAP = 8
 # avoids shell-string form so the "valid" tier stays valid.
 BASE = {
     "read_file":   [{"file_path": "src/main.c"}, {"file_path": "a"}],
-    "write_file":  [{"file_path": "out.txt", "content": "hello"},
+    "edit_file":   [{"file_path": "out.txt", "old_string": "a", "new_string": "b"},
                     {"file_path": "a", "content": ""}],
     "edit_file":   [{"file_path": "f.c", "old_string": "a", "new_string": "b"}],
     "bash":        [{"command": "echo hi"}, {"command": "printf x"}],
@@ -68,7 +68,7 @@ BASE = {
 # Required keys per tool; mutate these for reliably-invalid cases. task_list
 # ignores argument keys entirely, so it is excluded from key mutations.
 REQUIRED = {
-    "read_file": ["file_path"], "write_file": ["file_path", "content"],
+    "read_file": ["file_path"], "edit_file": ["file_path", "old_string", "new_string"],
     "edit_file": ["file_path", "old_string", "new_string"],
     "bash": ["command"], "delete_file": ["file_path"],
     "move_file": ["source", "destination"], "glob": ["pattern"],

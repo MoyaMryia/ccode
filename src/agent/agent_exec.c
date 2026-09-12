@@ -46,7 +46,6 @@ char *command_policy_refuse(struct agent_context *ctx,
                             const struct prepared_tool *prepared) {
     char why[256];
     const char *workspace;
-    size_t i;
 
     if (!prepared) return NULL;
     workspace = ctx && ctx->workspace_initialized ? ctx->workspace_root : NULL;

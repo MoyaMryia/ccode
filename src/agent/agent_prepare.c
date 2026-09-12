@@ -274,9 +274,14 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         if (is_home_relative_path(prepared->value))
             return refuse_path("Home-relative paths are not allowed",
                                prepared->value, REFUSE_RULE_HOME);
-        if (strlen(prepared->old_string) == 0)
-            return "{\"error\":\"old_string must not be empty\"}";
         prepared->kind = PREPARED_EDIT_FILE;
+        if (prepared->old_string[0] == '\0') {
+            /* Creation: new_string is the full file content. */
+            snprintf(prepared->display, sizeof(prepared->display),
+                     "file_path=%s (create) bytes=%lu", prepared->value,
+                     (unsigned long)strlen(prepared->new_string));
+            return NULL;
+        }
         prepared->display[0] = '\0';
         return NULL;
     }
@@ -361,39 +366,6 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         prepared->kind = PREPARED_READ_FILE;
         snprintf(prepared->display, sizeof(prepared->display),
                  "file_path=%s", prepared->value);
-        return NULL;
-    }
-
-    if (strcmp(name, "write_file") == 0) {
-        int have_path = 0;
-        int have_content = 0;
-        int i;
-        if (num_tokens != 5 || tokens[0].size != 4)
-            return "{\"error\":\"Invalid write_file arguments\"}";
-        for (i = 1; i < num_tokens; i += 2) {
-            if (tokens[i].type != CCODE_JSMN_STRING)
-                return "{\"error\":\"Invalid write_file arguments\"}";
-            if (ccode_jsmn_token_streq(arguments, &tokens[i], "file_path")) {
-                if (have_path || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
-                    return "{\"error\":\"Invalid write_file arguments\"}";
-                have_path = 1;
-            } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "content")) {
-                if (have_content || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->content) != 0)
-                    return "{\"error\":\"Invalid write_file arguments\"}";
-                have_content = 1;
-            } else {
-                return "{\"error\":\"Invalid write_file arguments\"}";
-            }
-        }
-        if (!have_path || !have_content)
-            return "{\"error\":\"Invalid write_file arguments\"}";
-        if (is_home_relative_path(prepared->value))
-            return refuse_path("Home-relative paths are not allowed",
-                               prepared->value, REFUSE_RULE_HOME);
-        prepared->kind = PREPARED_WRITE_FILE;
-        snprintf(prepared->display, sizeof(prepared->display),
-                 "file_path=%s bytes=%lu", prepared->value,
-                 (unsigned long)strlen(prepared->content));
         return NULL;
     }
 
@@ -936,6 +908,9 @@ void generate_edit_diff(struct agent_context *ctx, struct prepared_tool *prepare
 
     if (prepared->kind != PREPARED_EDIT_FILE) return;
     if (prepared->value[0] == '\0') return;
+    /* Creation has no original content to diff against; the prepare display
+     * already carries the (create) marker. */
+    if (prepared->old_string[0] == '\0') return;
 
     fd = open_regular_at_workspace(ctx, prepared->value);
     if (fd < 0) { snprintf(display, display_size, "file_path=%s", prepared->value); return; }
