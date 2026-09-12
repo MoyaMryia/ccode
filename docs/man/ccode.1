@@ -159,12 +159,10 @@ Additional editing keys follow common readline conventions (arrows,
 home/end, backspace, etc.).
 .PP
 The in-process TUI accepts the same slash commands as
-.BR ccode-cli (1)
-with one exception:
+.BR ccode-cli (1).
 .B /compact
-is listed but refused here; run it from
-.BR ccode-cli
-instead.
+compacts the session chain file in place (it reports "Nothing to
+compact yet." before the first turn creates one).
 .SH ENVIRONMENT
 See
 .BR ccode-cli (1)

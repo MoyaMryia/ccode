@@ -1,6 +1,6 @@
 # ccode 架构与部署
 
-> 临时状态（2026-09-10起）：只构建 `ccode-cli`，`ccode` 和 `ccode-tui` 暂不构建/发布。下述 TUI 相关章节为保留说明，非当前构建目标。
+> 构建策略：默认构建/安装只产出 `ccode-cli`（项目决策）。TUI（单体 `ccode`、分离 `ccode-tui`）持续维护并有 pty 集成测试覆盖，手动 `make ccode ccode-tui` 构建，`make test-tui-real` / `make test-tui-commands` 验证。
 
 ## 总体结构
 
@@ -8,9 +8,9 @@
 
 **`ccode-cli`** —— agent 循环 + CLI：`stdin → agent 循环 → http.c 发请求 → SSE 流 → JSON 解析 → 工具调用就执行 → markdown 渲染 → stdout`。`--json` 模式下通过 **stdin/stdout 上的一行一个 JSON** 供其他前端复用（IDE 插件、网页、脚本）。
 
-以下为暂停构建的保留说明（暂不构建/发布）：
+以下为非默认构建的形态（手动 `make ccode ccode-tui`）：
 
-**单体 `ccode`**（暂停构建）——TUI 和 CLI 在同一个进程里：
+**单体 `ccode`**（手动构建）——TUI 和 CLI 在同一个进程里：
 
 ```
 ccode 单体二进制
@@ -23,7 +23,7 @@ ccode 单体二进制
 
 TUI 模式下，agent 直接在当前进程里跑（不 fork 子进程），模型的流式输出经回调渲染到终端。带上 `-p` / `-i` / `--json` 参数时，同一个二进制就当纯 CLI 用。
 
-**分离的 `ccode-tui` + `ccode-cli`**（暂停构建，前后端分离）——给需要复用后端的场景：
+**分离的 `ccode-tui` + `ccode-cli`**（手动构建，前后端分离）——给需要复用后端的场景：
 
 ```
 ccode-tui（TUI 前端）           ccode-cli（CLI 后端）
@@ -166,9 +166,9 @@ SSE 按行解析 `data:` 事件，支持重定向、超时控制。
 
 **CLI 模式**：`stdin → agent 循环 → http.c 发请求 → SSE 流 → JSON 解析 → 工具调用就执行 → markdown 渲染 → stdout`。
 
-**单体 TUI 模式**（暂停构建，保留说明）：用户输入直接喂给进程内的 agent 循环，模型的流式输出经 `on_content` 回调逐段追加到消息列表并重绘；权限请求由进程内的 handler 展示对话框并读 y/n。
+**单体 TUI 模式**（手动构建）：用户输入直接喂给进程内的 agent 循环，模型的流式输出经 `on_content` 回调逐段追加到消息列表并重绘；权限请求由进程内的 handler 展示对话框并读 y/n。
 
-**分离 TUI 模式**（暂停构建，保留说明）：前端把输入编成 JSON Line 发给后端，后端把增量、状态、权限请求编成 JSON Line 发回来，前端渲染到终端。
+**分离 TUI 模式**（手动构建）：前端把输入编成 JSON Line 发给后端，后端把增量、状态、权限请求编成 JSON Line 发回来，前端渲染到终端。
 
 ## 构建与部署
 

@@ -2,16 +2,12 @@
 
 终端里的 AI 编码助手。它连上任何 OpenAI 兼容的 Chat Completions API，在本地帮你读代码、改文件、跑命令。零遥测，本地优先。
 
-必须承认：TUI仍然存在不少问题，但是cli工作得很好，尤其是当你安装其他Agent的时候不给npm就罢工的时候（尤其是对于一个riscv的机器来说）
-
-It *WORKS*, that's fine.
-
-2026/09/01更新：在Agent核心功能完成测试前我们将暂时不继续开发TUI，临时不再构建 `ccode` 和 `ccode-tui`，只构建 `ccode-cli`。
+TUI（单体 `ccode` / 分离 `ccode-tui`）与 CLI 共用同一套 agent 核心；默认构建/安装只产出 `ccode-cli`（见下），TUI 手动构建，有 pty 集成测试覆盖（`make test-tui-real`）。
 
 ## 它能做什么
 
 - 交互式对话（REPL）或单条提问，二选一
-- 纯 CLI 命令行（`ccode-cli`）；TUI（单体 `ccode` / 分离 `ccode-tui`）临时暂停构建
+- 纯 CLI 命令行（`ccode-cli`）；TUI（单体 `ccode` / 分离 `ccode-tui`）默认不构建，手动 `make ccode ccode-tui`
 - 读文件、写文件、搜代码（glob/grep）、跑命令、抓网页、搜网页，还能派子代理干活
 - Markdown 渲染成带颜色的终端输出
 - 会话保存、列表、恢复
@@ -25,16 +21,16 @@ It *WORKS*, that's fine.
 ```sh
 make                # 默认，带 HTTPS，只构建 ccode-cli
 make ccode-cli      # 只构建纯 CLI 后端（当前唯一构建目标）
-make ccode          # 临时停用：单体 ccode（含 TUI）不再构建
-make ccode-tui      # 临时停用：分离的 TUI 前端不再构建
+make ccode          # 手动构建：单体 ccode（含 TUI，不进默认构建）
+make ccode-tui      # 手动构建：分离的 TUI 前端
 make HTTP_ONLY=1    # 不要 TLS，纯 HTTP（内网/开发用）
 ```
 
-当前产物只有：
+默认构建产物：
 
-- **`ccode-cli`** —— 纯 CLI 后端，也能被其他前端（IDE 插件、脚本）通过 JSON 协议调用。
+- **`ccode-cli`** —— 纯 CLI 后端（REPL / 单条提问 / JSON Lines 服务），也能被其他前端（IDE 插件、脚本）复用。
 
-暂停构建（代码保留，暂不构建/发布）：
+手动构建（`make ccode ccode-tui`，不进默认构建与安装）：
 
 - **`ccode`** —— 单体二进制，TUI 和 CLI 都在里面。直接 `ccode` 进 TUI（agent 就在当前进程里跑，不 fork 子进程），`ccode -p "..."` 当 CLI 用。
 - **`ccode-tui`** —— 分离的 TUI 前端，会自动拉起同目录下的 `ccode-cli` 当后端。
@@ -82,6 +78,8 @@ make HTTP_ONLY=1 test                                # 纯 HTTP 构建下再跑�
 make RETRO=1 test-json test-agent test-permissions test-markdown   # retro 兼容层冒烟
 bash scripts/make_ghost_disk.sh                      # 重建 BasicLinux 整盘镜像
 make retro-test                                      # QEMU 里构建冒烟（老 gcc）
+make ccode ccode-tui ccode-cli && make test-tui-real  # TUI 真实场景 pty 测试（两前端）
+make test-tui-commands                               # 进程内 TUI slash 命令 pty 测试
 ```
 
 ## 文档

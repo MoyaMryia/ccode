@@ -131,8 +131,8 @@ TEST_MD_SRC = tests/test_markdown.c src/markdown.c src/json.c vendor/jsmn/jsmn.c
 TTY_TEST := $(shell python3 -c "import pty" 2>/dev/null && echo 1)
 TEST_TARGETS = test-json test-agent test-http
 TEST_TARGETS += test-tui
-# NOTE (2026-09-10, temporary): test-tui-commands drives the paused `ccode`
-# single binary; disabled until the TUI builds return.
+# test-tui-commands drives the combined `ccode` binary. Not in the default
+# `test` target: the default build does not produce ccode/ccode-tui.
 # TEST_TARGETS += test-tui-commands
 TEST_TARGETS += test-markdown
 ifneq ($(TTY_TEST),)
@@ -425,15 +425,14 @@ tests/test_tui: $(TEST_TUI_SRC) src/tui/input.c src/tui/messages.c src/tui/rende
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 
 # 单体 ccode 的进程内 TUI slash 命令（pty 驱动，需要 Python3）。
-# NOTE (2026-09-10, temporary): paused with the `ccode` binary; run manually
-# after rebuilding `ccode` explicitly.
+# 手动运行：先 `make ccode`（默认构建不产出该二进制）。
 test-tui-commands: ccode
 	python3 ./tests/test_tui_commands.py
 
 # TUI 真实场景集成测试（pty 驱动两个前端：fork 版 ccode-tui 与单体 ccode；
 # 流式/CJK/思考链/markdown/权限允许与拒绝/错误恢复/resize/Ctrl-C 取消）。
 # 依赖已构建的 ccode-tui/ccode/ccode-cli；与 test-tui-commands 同理不进默认
-# `test` 目标——那些目标不允许顺带构建暂停的 ccode 二进制。手动运行：
+# `test` 目标（默认构建不含 ccode/ccode-tui）。手动运行：
 #   make ccode ccode-tui ccode-cli && make test-tui-real
 test-tui-real: ccode ccode-tui ccode-cli
 	python3 ./tests/test_tui_real.py
@@ -470,8 +469,8 @@ PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 MANDIR ?= $(PREFIX)/share/man/man1
 
-# NOTE (2026-09-10, temporary): ccode/ccode-tui are paused, so install ships
-# ccode-cli only. uninstall still removes all three, to clean old installs.
+# install ships ccode-cli only (project decision: the default install is
+# the CLI backend). uninstall still removes all three, to clean old installs.
 # install never builds: it refuses to run unless ccode-cli already exists, so
 # a stale/unbuilt tree cannot silently ship an old or missing binary.
 install:
