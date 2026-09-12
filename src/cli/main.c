@@ -85,15 +85,6 @@ static int boolean_field(const char *line, const char *name, int *value) {
     return 0;
 }
 
-static const char *normalize_thinking_effort(const char *effort) {
-    if (strcmp(effort, "low") == 0) return "low";
-    if (strcmp(effort, "medium") == 0) return "medium";
-    if (strcmp(effort, "high") == 0) return "high";
-    if (strcmp(effort, "xhigh") == 0) return "xhigh";
-    if (strcmp(effort, "max") == 0) return "max";
-    return NULL;
-}
-
 static int json_build_event(const char *type, const char *text,
                             char **event_out, size_t *event_length_out) {
     size_t i;
@@ -393,8 +384,8 @@ static void backend_command(struct json_session_state *state,
     } else if (strncmp(command, "/reasoning effort ", 18) == 0 ||
                strncmp(command, "/thinking effort ", 17) == 0) {
         const char *eff = strncmp(command, "/reasoning ", 11) == 0
-                              ? normalize_thinking_effort(command + 18)
-                              : normalize_thinking_effort(command + 17);
+                              ? ccode_normalize_thinking_effort(command + 18)
+                              : ccode_normalize_thinking_effort(command + 17);
         if (eff) {
             char msg[64];
             snprintf(state->options.thinking_effort_buf,
@@ -586,7 +577,7 @@ static int run_json_mode(const struct ccode_config *config) {
                                 &state.options.thinking_enabled);
             if (field(line, "thinking_effort",
                       hello_effort, sizeof(hello_effort)) == 0 &&
-                (effort = normalize_thinking_effort(hello_effort)) != NULL) {
+                (effort = ccode_normalize_thinking_effort(hello_effort)) != NULL) {
                 snprintf(state.options.thinking_effort_buf,
                          sizeof(state.options.thinking_effort_buf), "%s",
                          effort);

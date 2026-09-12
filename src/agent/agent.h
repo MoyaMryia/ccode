@@ -53,6 +53,10 @@ struct ccode_agent_config {
     void *on_reasoning_context;
 };
 
+/* Canonical thinking/reasoning effort: returns the validated string
+ * ("low".."max") or NULL when the value is not one of the known levels. */
+const char *ccode_normalize_thinking_effort(const char *effort);
+
 int ccode_agent_run(struct ccode_agent_config *cfg);
 int ccode_agent_run_interactive(struct ccode_agent_config *cfg);
 void ccode_print_content_delta(const char *content);

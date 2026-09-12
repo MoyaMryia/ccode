@@ -1492,6 +1492,15 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
 #define CCODE_HISTORY_MAX 64
 #define CCODE_INPUT_LINE_MAX 8192
 
+const char *ccode_normalize_thinking_effort(const char *effort) {
+    if (strcmp(effort, "low") == 0) return "low";
+    if (strcmp(effort, "medium") == 0) return "medium";
+    if (strcmp(effort, "high") == 0) return "high";
+    if (strcmp(effort, "xhigh") == 0) return "xhigh";
+    if (strcmp(effort, "max") == 0) return "max";
+    return NULL;
+}
+
 static void print_repl_help(void) {
     fprintf(stderr,
         "  Slash commands:\n"
@@ -1909,16 +1918,18 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                     continue;
                 }
                 if (strncmp(line, "/thinking effort ", 17) == 0) {
-                    /* Legacy alias of /reasoning effort. */
-                    size_t el = strlen(line + 17);
-                    const char *eff = line + 17;
-                    if (el >= sizeof(current_effort))
-                        el = sizeof(current_effort) - 1;
-                    memcpy(current_effort, eff, el);
-                    current_effort[el] = '\0';
-                    cfg->thinking_effort = current_effort;
-                    fprintf(stderr, "  Reasoning effort set to: %s.\n",
-                            current_effort);
+                    /* Legacy alias of /reasoning effort: same validation. */
+                    const char *eff = ccode_normalize_thinking_effort(line + 17);
+                    if (eff) {
+                        snprintf(current_effort, sizeof(current_effort),
+                                 "%s", eff);
+                        cfg->thinking_effort = current_effort;
+                        fprintf(stderr, "  Reasoning effort set to: %s.\n",
+                                current_effort);
+                    } else {
+                        fputs("  Usage: /thinking effort low|medium|high|xhigh|max\n",
+                              stderr);
+                    }
                     continue;
                 }
                 fputs("  Usage: /thinking [on|off]\n", stderr);
@@ -1943,17 +1954,10 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                     continue;
                 }
                 if (strncmp(line, "/reasoning effort ", 18) == 0) {
-                    const char *eff = line + 18;
-                    if (strcmp(eff, "low") == 0 ||
-                        strcmp(eff, "medium") == 0 ||
-                        strcmp(eff, "high") == 0 ||
-                        strcmp(eff, "xhigh") == 0 ||
-                        strcmp(eff, "max") == 0) {
-                        size_t el = strlen(eff);
-                        if (el >= sizeof(current_effort))
-                            el = sizeof(current_effort) - 1;
-                        memcpy(current_effort, eff, el);
-                        current_effort[el] = '\0';
+                    const char *eff = ccode_normalize_thinking_effort(line + 18);
+                    if (eff) {
+                        snprintf(current_effort, sizeof(current_effort),
+                                 "%s", eff);
                         cfg->thinking_effort = current_effort;
                         fprintf(stderr,
                             "  Reasoning effort set to: %s.\n",

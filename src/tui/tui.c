@@ -1006,11 +1006,16 @@ static int inproc_handle_command(struct tui_inproc_ctx *ctx, const char *cmd) {
     if (strncmp(cmd, "/reasoning effort ", 18) == 0 ||
         strncmp(cmd, "/thinking effort ", 17) == 0) {
         const char *eff = strncmp(cmd, "/reasoning effort ", 18) == 0
-                              ? cmd + 18 : cmd + 17;
-        snprintf(ctx->thinking_effort, sizeof(ctx->thinking_effort), "%.*s",
-                 (int)sizeof(ctx->thinking_effort) - 1, eff);
-        snprintf(msg, sizeof(msg), "Reasoning effort set to: %.*s",
-                 (int)sizeof(ctx->thinking_effort) - 1, eff);
+                              ? ccode_normalize_thinking_effort(cmd + 18)
+                              : ccode_normalize_thinking_effort(cmd + 17);
+        if (!eff) {
+            inproc_msg(ctx,
+                       "Usage: /reasoning effort low|medium|high|xhigh|max");
+            return 0;
+        }
+        snprintf(ctx->thinking_effort, sizeof(ctx->thinking_effort), "%s",
+                 eff);
+        snprintf(msg, sizeof(msg), "Reasoning effort set to: %s", eff);
         tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, msg);
         return 0;
     }
