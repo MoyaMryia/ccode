@@ -529,20 +529,13 @@ static void backend_command(struct json_session_state *state,
 /* Lazily mint the auto-named session chain path (into a static-ish buffer
  * owned by the state). Returns NULL when the session directory is not
  * usable. */
+/* Memoized wrapper: one auto chain per backend process, re-minted (with a
+ * fresh sequence number) only after /clear empties it. */
 static const char *backend_mint_auto_chain(struct json_session_state *state) {
-    const char *dir;
-    char name[80];
     if (state->auto_chain[0]) return state->auto_chain;
-    dir = ccode_session_dir();
-    if (!dir || ccode_session_ensure_dir() != 0) return NULL;
-    snprintf(name, sizeof(name), "auto-%ld-%d-%d.json",
-             (long)time(NULL), (int)getpid(), state->chain_seq++);
-    if (snprintf(state->auto_chain, sizeof(state->auto_chain), "%s/%s",
-                 dir, name) >= (int)sizeof(state->auto_chain)) {
-        state->auto_chain[0] = '\0';
-        return NULL;
-    }
-    return state->auto_chain;
+    return ccode_session_mint_auto(state->auto_chain,
+                                   sizeof(state->auto_chain),
+                                   state->chain_seq++);
 }
 
 static int run_json_mode(const struct ccode_config *config) {

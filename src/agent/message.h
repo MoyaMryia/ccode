@@ -151,6 +151,11 @@ const char *ccode_session_dir(void);
 /* Ensure the session directory exists. Returns 0 on success. */
 int ccode_session_ensure_dir(void);
 
+/* Build a fresh auto-named session chain path into buf (session dir
+ * created on demand). seq > 0 appends a disambiguating suffix for
+ * re-mints within the same second. Returns buf, or NULL on failure. */
+char *ccode_session_mint_auto(char *buf, size_t cap, int seq);
+
 /* List sessions in the session directory. Returns a newly allocated JSON
  * array string (caller must free), or NULL if the directory cannot be
  * opened. Each element: {"name":"...","size":...,"mtime":...,"messages":...,

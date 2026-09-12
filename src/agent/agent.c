@@ -2297,18 +2297,11 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
          * entirely by CCODE_SESSION_AUTO_SAVE=0, which leaves persistence to
          * the explicit session flags only. */
         if (cfg->session_auto_save && !have_session_path && !cfg->save_session) {
-            const char *dir = ccode_session_dir();
-            if (dir && ccode_session_ensure_dir() == 0) {
-                char name[80];
-                snprintf(name, sizeof(name), "auto-%ld-%d.json",
-                         (long)time(NULL), (int)getpid());
-                if (snprintf(current_session_path,
-                             sizeof(current_session_path), "%s/%s",
-                             dir, name) < (int)sizeof(current_session_path))
-                    have_session_path = 1;
-                else
-                    current_session_path[0] = '\0';
-            }
+            if (ccode_session_mint_auto(current_session_path,
+                                        sizeof(current_session_path), 0))
+                have_session_path = 1;
+            else
+                current_session_path[0] = '\0';
         }
 
         sync_results_dir(ctx, have_session_path ? current_session_path

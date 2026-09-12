@@ -566,11 +566,9 @@ static void inproc_run_agent(struct ccode_agent_config *cfg, const char *prompt,
          * turns share conversation context (same as the line-based REPL).
          * Suppressed by CCODE_SESSION_AUTO_SAVE=0. /clear or /session new
          * starts a fresh chain on the next turn. */
-        char name[80];
-        snprintf(name, sizeof(name), "auto-%ld-%d-%d.json",
-                 (long)time(NULL), (int)getpid(), ctx->chain_seq++);
-        if (inproc_session_path(name, ctx->session_path,
-                                sizeof(ctx->session_path)) != 0)
+        if (!ccode_session_mint_auto(ctx->session_path,
+                                     sizeof(ctx->session_path),
+                                     ctx->chain_seq++))
             ctx->session_path[0] = '\0';
     }
     if (ctx->session_path[0]) {

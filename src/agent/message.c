@@ -1898,6 +1898,28 @@ int ccode_session_prune(void) {
     return 0;
 }
 
+/* Build a fresh auto-named session chain path (full path, session dir
+ * created on demand). seq disambiguates re-mints within the same second:
+ * 0 keeps the historical auto-<time>-<pid>.json shape (single-chain
+ * callers), a positive value appends -<seq>. Returns buf, or NULL when
+ * the session directory is unusable or buf is too small. */
+char *ccode_session_mint_auto(char *buf, size_t cap, int seq) {
+    const char *dir = ccode_session_dir();
+    char name[96];
+    int n;
+    if (!buf || cap == 0) return NULL;
+    if (!dir || ccode_session_ensure_dir() != 0) return NULL;
+    if (seq > 0)
+        n = snprintf(name, sizeof(name), "auto-%ld-%d-%d.json",
+                     (long)time(NULL), (int)getpid(), seq);
+    else
+        n = snprintf(name, sizeof(name), "auto-%ld-%d.json",
+                     (long)time(NULL), (int)getpid());
+    if (n <= 0 || (size_t)n >= sizeof(name)) return NULL;
+    if (snprintf(buf, cap, "%s/%s", dir, name) >= (int)cap) return NULL;
+    return buf;
+}
+
 char *ccode_session_list(void) {
     const char *dir = ccode_session_dir();
     DIR *d;
