@@ -582,6 +582,10 @@ static int run_json_mode(const struct ccode_config *config) {
         snprintf(state.base_save, sizeof(state.base_save), "%s",
                  config->save_session);
         state.options.save_session = state.base_save;
+        /* An explicit --save-session starts a fresh conversation (REPL
+         * parity): the first input must not resume the file's previous
+         * content. An explicit --resume is the documented way to chain. */
+        state.skip_resume_once = config->resume_session ? 0 : 1;
     }
     state.options.resume_session = config->resume_session;
     snprintf(state.options.model_name, sizeof(state.options.model_name), "%s",

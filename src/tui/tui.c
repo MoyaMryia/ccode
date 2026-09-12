@@ -475,6 +475,10 @@ struct tui_inproc_ctx {
      * would collide with the previous (still existing) file within the
      * same second. */
     int chain_seq;
+    /* One-shot resume suppression for the explicit --save-session chain:
+     * set at startup and by /clear so the first turn of a fresh
+     * conversation does not resume the file's old content. */
+    int skip_resume_once;
     char **history;
     int history_count;
 };
@@ -576,8 +580,21 @@ static void inproc_run_agent(struct ccode_agent_config *cfg, const char *prompt,
             access(ctx->session_path, F_OK) == 0 ? ctx->session_path : NULL;
         cfg->save_session = ctx->session_path;
     } else {
-        cfg->resume_session = NULL;
+        /* Explicit --save-session: chain onto the file so consecutive turns
+         * share context. The TUI rebuilds the conversation from the file on
+         * every turn (there is no in-memory conversation between turns), so
+         * without resume every prompt would start from scratch. The first
+         * turn and the turn after /clear start fresh and overwrite the
+         * file, matching the REPL's --save-session semantics. */
         cfg->save_session = ctx->base_save;
+        if (ctx->skip_resume_once) {
+            cfg->resume_session = NULL;
+            ctx->skip_resume_once = 0;
+        } else {
+            cfg->resume_session =
+                ctx->base_save && access(ctx->base_save, F_OK) == 0
+                    ? ctx->base_save : NULL;
+        }
     }
     cfg->thinking_enabled = ctx->thinking_enabled;
     cfg->thinking_effort = ctx->thinking_effort[0] ? ctx->thinking_effort : NULL;
@@ -824,6 +841,7 @@ static int inproc_handle_command(struct tui_inproc_ctx *ctx, const char *cmd) {
          * pointed at with --save-session: deleting it would destroy the
          * conversation transcript the CLI REPL preserves on /clear. */
         ctx->session_path[0] = '\0';
+        ctx->skip_resume_once = 1;
         inproc_msg(ctx, "Conversation cleared.");
         return 0;
     }
@@ -1087,6 +1105,10 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
     ctx.config = config;
     ctx.base_save = config->save_session;
     ctx.session_path[0] = '\0';
+    /* An explicit --save-session starts a fresh conversation (REPL parity):
+     * turn one must not resume the file's previous content. */
+    ctx.skip_resume_once =
+        (config->save_session && !config->resume_session) ? 1 : 0;
     ctx.history_count = 0;
     ctx.history = calloc(INPROC_HISTORY_MAX, sizeof(char *));
     if (!ctx.history) {

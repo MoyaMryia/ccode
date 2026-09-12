@@ -59,7 +59,7 @@ class Tui:
     """One TUI process under a PTY with marker-based expectations."""
 
     def __init__(self, binary, workspace, session_dir, env_extra=None,
-                 rows=24, cols=80):
+                 rows=24, cols=80, argv=None):
         env = dict(os.environ)
         env.update({
             "TERM": "xterm",
@@ -78,7 +78,7 @@ class Tui:
         pid, fd = pty.fork()
         if pid == 0:
             os.chdir(workspace)
-            os.execve(binary, [binary], env)
+            os.execve(binary, [binary] + list(argv or []), env)
         self.pid, self.fd = pid, fd
         self._set_winsize(rows, cols)
         self.buf = ""
@@ -382,13 +382,83 @@ def test_inproc_tui(workspace, session_dir, failures):
             failures.append("inproc: TUI did not exit on /exit")
 
 
+def test_fork_tui_explicit_save(workspace, session_dir, failures):
+    """ccode-tui with an explicit --save-session: the JSON backend must
+    chain onto the file (first turn fresh, later turns resumed)."""
+    if not os.path.exists(TUI_BIN) or not os.path.exists(CLI_BIN):
+        failures.append("ccode-tui/ccode-cli not built")
+        return
+    save_path = os.path.join(workspace, "explicit_fork.json")
+    tui = Tui(TUI_BIN, workspace, session_dir,
+              env_extra={"CCODE_BACKEND": CLI_BIN},
+              argv=["--save-session", save_path])
+    try:
+        if not tui.read_until("test-model"):
+            failures.append("fork --save-session: status bar never rendered")
+        tui.submit("__ccode_test_tui-context my name is Alice")
+        if not tui.read_until("Nice to meet you"):
+            failures.append("fork --save-session: turn 1 failed")
+        tui.submit("what is my name?")
+        if not tui.read_until("Your name is Alice"):
+            failures.append("fork --save-session: context lost between turns")
+        if not os.path.exists(save_path):
+            failures.append("fork --save-session: file never written")
+    finally:
+        if not tui.quit():
+            failures.append("fork --save-session: TUI did not exit")
+
+
+def test_inproc_tui_explicit_save(workspace, session_dir, failures):
+    """ccode with an explicit --save-session: the in-process TUI rebuilds
+    the conversation from the session file every turn, so it must RESUME
+    the explicit save target or every prompt starts from scratch (the
+    REPL never loses context here because its conversation lives in
+    memory). /clear must reset the context and keep saving to the file."""
+    if not os.path.exists(CCODE_BIN):
+        failures.append("ccode not built; make ccode")
+        return
+    save_path = os.path.join(workspace, "explicit_chain.json")
+    tui = Tui(CCODE_BIN, workspace, session_dir,
+              argv=["--save-session", save_path])
+    try:
+        if not tui.read_until("test-model"):
+            failures.append("inproc --save-session: status bar never rendered")
+        tui.submit("__ccode_test_tui-context my name is Alice")
+        if not tui.read_until("Nice to meet you"):
+            failures.append("inproc --save-session: turn 1 failed")
+        tui.submit("what is my name?")
+        if not tui.read_until("Your name is Alice"):
+            failures.append("inproc --save-session: context lost between "
+                            "turns (explicit save path does not resume)")
+        mark = len(tui.buf)
+        tui.submit("/clear")
+        if not tui.read_until("Conversation cleared.", mark=mark):
+            failures.append("inproc --save-session: /clear not confirmed")
+        # After /clear the fresh chain carries no prefixed prompt, so the
+        # mock falls back to the plain echo - which is exactly the proof
+        # that the model no longer knows the name.
+        tui.submit("what is my name?")
+        if not tui.read_until("You said: what is my name?"):
+            failures.append("inproc --save-session: /clear did not reset "
+                            "the context")
+        if not os.path.exists(save_path):
+            failures.append("inproc --save-session: file never written")
+    finally:
+        if not tui.quit():
+            failures.append("inproc --save-session: TUI did not exit")
+
+
 def main():
     mock = start_mock()
     failures = []
     workspaces = []
     try:
         for name, fn in (("fork TUI", test_fork_tui),
-                         ("in-process TUI", test_inproc_tui)):
+                         ("in-process TUI", test_inproc_tui),
+                         ("in-process TUI (--save-session)",
+                          test_inproc_tui_explicit_save),
+                         ("fork TUI (--save-session)",
+                          test_fork_tui_explicit_save)):
             workspace = tempfile.mkdtemp(prefix="ccode_tui_real_ws_")
             session_dir = tempfile.mkdtemp(prefix="ccode_tui_real_sess_")
             workspaces += [workspace, session_dir]
