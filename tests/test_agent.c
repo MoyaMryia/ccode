@@ -2715,6 +2715,115 @@ static int test_gitignore_fifo_is_not_opened_blocking(void) {
 /* Git run through bash must not discover repositories above the workspace:
  * the ceiling guard moved from the removed git_* tools into the common
  * command environment. */
+/* VCS internals (.git etc.) must be invisible to glob/grep traversal: the
+ * scan budget belongs to project files, not loose objects. */
+static int test_scan_skips_vcs_directories(void) {
+    char dir[256];
+    char deep[320];
+    char *r;
+
+    snprintf(dir, sizeof(dir), "fixtures/vcs_scan_%ld", (long)getpid());
+    snprintf(deep, sizeof(deep), "%s/.git/objects/ab", dir);
+    test_mkdir_p(deep);
+    write_file_in(dir, "real_file.txt", "findme-unique\n", 14);
+    {
+        char gitfile[512];
+        snprintf(gitfile, sizeof(gitfile), "%s/.git/objects/ab/thing.txt", dir);
+        write_file(gitfile, "findme-unique\n", 14);
+    }
+
+    test_reset_workspace();
+    r = test_exec_tool(dir, "glob", "{\"pattern\":\"**/*.txt\"}");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "real_file.txt") != NULL);
+    ASSERT(strstr(r, ".git") == NULL);
+    free(r);
+
+    test_reset_workspace();
+    r = test_exec_tool(dir, "grep", "{\"pattern\":\"findme-unique\"}");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "real_file.txt") != NULL);
+    ASSERT(strstr(r, ".git") == NULL);
+    free(r);
+
+    {
+        char cleanup[300];
+        char *argv[16];
+        snprintf(cleanup, sizeof(cleanup), "rm -rf %s", dir);
+        argv[0] = "sh"; argv[1] = "-c"; argv[2] = cleanup; argv[3] = NULL;
+        r = test_exec_run_command(".", argv, 3, 10000);
+        free(r);
+    }
+    return 1;
+}
+
+/* A directory with more than 512 entries must not abort the whole walk:
+ * its first 512 entries are reported with a truncation flag, and sibling
+ * directories that sort later are still scanned. */
+static int test_scan_continues_past_big_directory(void) {
+    char big[256];
+    char inner[256];
+    char late[256];
+    char leaf[300];
+    char name[64];
+    int i;
+    char *r;
+
+    /* a_big sorts before z_late: the pre-fix walker aborted inside a_big
+     * and never reached the marker, regardless of readdir order. */
+    snprintf(big, sizeof(big), "%s/fixtures/bigdir_%ld",
+             test_workspace_root(), (long)getpid());
+    {
+        char pre[300];
+        char *argv[16];
+        char *cr;
+        snprintf(pre, sizeof(pre), "rm -rf %s/fixtures/bigdir_*",
+                 test_workspace_root());
+        argv[0] = "sh"; argv[1] = "-c"; argv[2] = pre; argv[3] = NULL;
+        cr = test_exec_run_command(".", argv, 3, 10000);
+        free(cr);
+    }
+    snprintf(inner, sizeof(inner), "%s/a_big", big);
+    snprintf(late, sizeof(late), "%s/z_late", big);
+    test_mkdir_p(inner);
+    test_mkdir_p(late);
+    for (i = 0; i < 600; i++) {
+        snprintf(leaf, sizeof(leaf), "%s/f%05d.txt", inner, i);
+        write_file(leaf, "x\n", 2);
+    }
+    snprintf(leaf, sizeof(leaf), "%s/marker.txt", late);
+    write_file(leaf, "late-marker-unique\n", 19);
+
+    test_reset_workspace();
+    r = test_exec_tool(big, "grep",
+                       "{\"pattern\":\"late-marker-unique\"}");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "marker.txt") != NULL);
+    ASSERT(strstr(r, "truncated\":true") != NULL);
+    free(r);
+
+    test_reset_workspace();
+    r = test_exec_tool(big, "glob", "{\"pattern\":\"**/marker.txt\"}");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "z_late/marker.txt") != NULL);
+    ASSERT(strstr(r, "a_big") == NULL);
+    free(r);
+
+    for (i = 0; i < 600; i++) {
+        snprintf(name, sizeof(name), "%s/f%05d.txt", big, i);
+        unlink(name);
+    }
+    snprintf(name, sizeof(name), "rm -rf %s", big);
+    {
+        char *argv[16];
+        char *cr;
+        argv[0] = "sh"; argv[1] = "-c"; argv[2] = name; argv[3] = NULL;
+        cr = test_exec_run_command(".", argv, 3, 10000);
+        free(cr);
+    }
+    return 1;
+}
+
 static int test_bash_git_does_not_discover_parent_repository(void) {
     char root[256];
     char nested[320];
@@ -5033,6 +5142,8 @@ int main(int argc, char **argv) {
     TEST(task_results_escape_model_content);
     TEST(change_log_retains_truncation_and_denials);
     TEST(bash_git_does_not_discover_parent_repository);
+    TEST(scan_skips_vcs_directories);
+    TEST(scan_continues_past_big_directory);
     TEST(duplicate_tool_call_id_detected);
     TEST(compact_scans_tool_results);
     TEST(compact_ignores_false_timed_out);

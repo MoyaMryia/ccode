@@ -106,6 +106,14 @@ static int verify_file_identity_at(int parent_fd, const char *leaf,
 
 static unsigned long write_temp_counter = 0;
 
+/* Version-control internals are never project content; descending into
+ * .git burns the scan budget on thousands of loose objects and can truncate
+ * a whole listing. Skipped unconditionally during traversal. */
+static int is_vcs_directory(const char *name) {
+    return strcmp(name, ".git") == 0 || strcmp(name, ".hg") == 0 ||
+           strcmp(name, ".svn") == 0 || strcmp(name, ".bzr") == 0;
+}
+
 #ifdef CCODE_UNIT_TEST
 enum {
     CCODE_FI_OPENAT = 1,
@@ -1248,7 +1256,11 @@ static int glob_match_path(const char *pattern, const char *path) {
 struct scan_budget {
     size_t files;
     size_t bytes;
+    /* Budget exhaustion: aborts the rest of the walk. */
     int truncated;
+    /* A directory was cut at the 512-entry read cap: reported, but the
+     * walk continues with siblings. */
+    int listing_truncated;
 };
 
 #define CCODE_MAX_DIR_ENTS 4096
@@ -1418,10 +1430,10 @@ static void glob_recursive(struct agent_context *ctx, int parent_fd,
     if (!entries) { if (gregex_ok) { regfree(&gregex); } return; }
     nents = read_sorted_dir(parent_fd, entries, 512);
     if (nents == -2) {
-        budget->truncated = 1;
-        free(entries);
-        if (gregex_ok) { regfree(&gregex); }
-        return;
+        /* Directory has more than 512 entries: keep the first 512 (sorted)
+         * and keep scanning siblings instead of aborting the whole walk. */
+        budget->listing_truncated = 1;
+        nents = 512;
     }
     if (nents < 0) { free(entries); if (gregex_ok) { regfree(&gregex); } return; }
 
@@ -1464,6 +1476,11 @@ static void glob_recursive(struct agent_context *ctx, int parent_fd,
                           O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW);
         if (entry_fd < 0) continue;
         if (fstat(entry_fd, &st) != 0) { close(entry_fd); continue; }
+
+        if (S_ISDIR(st.st_mode) && is_vcs_directory(d_name)) {
+            close(entry_fd);
+            continue;
+        }
 
         if (active_gi && is_gitignored(ctx, d_name, S_ISDIR(st.st_mode) ? 1 : 0,
                                         active_gi)) {
@@ -1591,7 +1608,8 @@ char *exec_glob(struct agent_context *ctx, const char *workspace, const char *pa
         int n = snprintf(tail, sizeof(tail),
                          "],\"count\":%d,\"max\":%d%s}",
                          count, CCODE_MAX_GLOB_RESULTS,
-                         budget.truncated ? ",\"truncated\":true" : "");
+                         (budget.truncated || budget.listing_truncated)
+                             ? ",\"truncated\":true" : "");
         if (n <= 0 || (size_t)n >= sizeof(tail) ||
             ccode_append_cstr(&result, &total, &cap, tail) != 0) {
             free(result); return NULL;
@@ -1796,9 +1814,10 @@ static void search_dir_recursive(struct agent_context *ctx, int parent_fd, const
     if (!entries) return;
     nents = read_sorted_dir(parent_fd, entries, 512);
     if (nents == -2) {
-        budget->truncated = 1;
-        free(entries);
-        return;
+        /* Over 512 entries: scan what we have, flag truncation, and let
+         * sibling directories still be searched. */
+        budget->listing_truncated = 1;
+        nents = 512;
     }
     if (nents < 0) { free(entries); return; }
 
@@ -1840,6 +1859,11 @@ static void search_dir_recursive(struct agent_context *ctx, int parent_fd, const
                           O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW);
         if (entry_fd < 0) continue;
         if (fstat(entry_fd, &st) != 0) { close(entry_fd); continue; }
+
+        if (S_ISDIR(st.st_mode) && is_vcs_directory(d_name)) {
+            close(entry_fd);
+            continue;
+        }
 
         if (active_gi && is_gitignored(ctx, d_name, S_ISDIR(st.st_mode) ? 1 : 0,
                                         active_gi)) {
@@ -1930,7 +1954,8 @@ char *exec_grep(struct agent_context *ctx, const char *workspace, const char *pa
     {
                          int n;
         char tail[80];
-        int truncated = (budget.truncated || match_count >= CCODE_MAX_GREP_MATCHES ||
+        int truncated = (budget.truncated || budget.listing_truncated ||
+                         match_count >= CCODE_MAX_GREP_MATCHES ||
                          total >= CCODE_MAX_LISTING_BYTES - 256);
         n = snprintf(tail, sizeof(tail),
                          "],\"count\":%d,\"max\":%d%s}",
