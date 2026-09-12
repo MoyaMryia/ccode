@@ -840,6 +840,198 @@ static int test_command_archives_stderr(void) {
     return 1;
 }
 
+/* Both streams oversized: the escaped-length budget keeps the whole result
+ * JSON under the conversation content cap (it used to be cut mid-JSON,
+ * losing the trailing *_truncated flags and the session's validity), and
+ * both raw streams stay retrievable from the archive. */
+static int test_command_dual_stream_budget(void) {
+    struct agent_context local;
+    char base[512], *r, *data;
+    const char *blob, *blob_err;
+    ccode_jsmntok_t toks[64];
+    size_t returned = 0, total = 0;
+    int truncated = 0;
+
+    test_reset_workspace();
+    snprintf(base, sizeof(base), "/tmp/ccode_dual_stream_%d.json",
+             (int)getpid());
+    unlink(base);
+    ASSERT(test_configure_results(base) == 0);
+
+    r = test_exec_tool(".", "bash",
+        "{\"command\":\"yes S | head -c 200000; "
+        "yes E | head -c 200000 1>&2\"}");
+    ASSERT(r != NULL);
+    ASSERT(strlen(r) <= CCODE_MAX_CONTENT_LEN);
+    ASSERT(ccode_json_parse(r, strlen(r), toks, 64) > 0);
+    ASSERT(strstr(r, "\"stdout_truncated\":true") != NULL);
+    ASSERT(strstr(r, "\"stderr_truncated\":true") != NULL);
+
+    blob = test_last_result_blob();
+    blob_err = test_last_result_blob_err();
+    ASSERT(blob != NULL && blob_err != NULL);
+    memset(&local, 0, sizeof(local));
+    ASSERT(ccode_results_configure(&local, base) == 0);
+    data = ccode_results_read(&local, blob, 199000, 65536, &returned,
+                              &total, &truncated);
+    ASSERT(data != NULL);
+    ASSERT(total == 200000 && returned == 1000);
+    free(data);
+    data = ccode_results_read(&local, blob_err, 199000, 65536, &returned,
+                              &total, &truncated);
+    ASSERT(data != NULL);
+    ASSERT(total == 200000 && returned == 1000);
+    ASSERT(data[0] == 'E');
+    free(data);
+
+    {
+        char p[8192];
+        snprintf(p, sizeof(p), "%s/%s", local.results_dir, blob);
+        unlink(p);
+        snprintf(p, sizeof(p), "%s/%s", local.results_dir, blob_err);
+        unlink(p);
+    }
+    rmdir(local.results_dir);
+    free(r);
+    return 1;
+}
+
+/* Output under the raw 64 KiB cap can still exceed the escaped-length
+ * budget (quote-dense text); the result must stay valid JSON, carry the
+ * truncation flag, and archive the raw bytes for read_tool_output. */
+static int test_command_escaped_budget_archives(void) {
+    struct agent_context local;
+    char base[512], *r, *data;
+    const char *blob;
+    ccode_jsmntok_t toks[64];
+    size_t returned = 0, total = 0;
+    int truncated = 0;
+
+    test_reset_workspace();
+    snprintf(base, sizeof(base), "/tmp/ccode_escape_budget_%d.json",
+             (int)getpid());
+    unlink(base);
+    ASSERT(test_configure_results(base) == 0);
+
+    r = test_exec_tool(".", "bash",
+        "{\"command\":\"yes '\\\"' | head -c 50000\"}");
+    ASSERT(r != NULL);
+    ASSERT(strlen(r) <= CCODE_MAX_CONTENT_LEN);
+    ASSERT(ccode_json_parse(r, strlen(r), toks, 64) > 0);
+    ASSERT(strstr(r, "\"stdout_truncated\":true") != NULL);
+
+    blob = test_last_result_blob();
+    ASSERT(blob != NULL);
+    memset(&local, 0, sizeof(local));
+    ASSERT(ccode_results_configure(&local, base) == 0);
+    data = ccode_results_read(&local, blob, 0, 100000, &returned, &total,
+                              &truncated);
+    ASSERT(data != NULL);
+    ASSERT(total == 50000 && returned == 50000 && truncated == 0);
+    ASSERT(data[0] == '"');
+    free(data);
+
+    {
+        char p[8192];
+        snprintf(p, sizeof(p), "%s/%s", local.results_dir, blob);
+        unlink(p);
+    }
+    rmdir(local.results_dir);
+    free(r);
+    return 1;
+}
+
+/* A quote-dense file under the 50 KiB raw cap still overflows the escaped
+ * budget: read_file must flag truncation AND archive the file (it used to
+ * archive only when the raw cap was hit, leaving the tail unrecoverable). */
+static int test_read_file_escaped_budget_archives(void) {
+    struct agent_context local;
+    char base[512], ws[256], *r, *data;
+    const char *blob;
+    ccode_jsmntok_t toks[64];
+    size_t i, n = 49500, returned = 0, total = 0;
+    int truncated = 0;
+    char *content = malloc(n + 1);
+
+    ASSERT(content != NULL);
+    for (i = 0; i < n; i++) content[i] = '"';
+    content[n] = '\0';
+    snprintf(ws, sizeof(ws), "/tmp/ccode_quote_ws_%d", (int)getpid());
+    mkdir(ws, 0700);
+    write_file_in(ws, "quotes.txt", content, n);
+    free(content);
+
+    test_reset_workspace();
+    snprintf(base, sizeof(base), "/tmp/ccode_quote_archive_%d.json",
+             (int)getpid());
+    unlink(base);
+    ASSERT(test_configure_results(base) == 0);
+
+    r = test_exec_read_file(ws, "quotes.txt");
+    ASSERT(r != NULL);
+    ASSERT(strlen(r) <= CCODE_MAX_CONTENT_LEN);
+    ASSERT(ccode_json_parse(r, strlen(r), toks, 64) > 0);
+    ASSERT(strstr(r, "\"truncated\":true") != NULL);
+
+    blob = test_last_result_blob();
+    ASSERT(blob != NULL);
+    memset(&local, 0, sizeof(local));
+    ASSERT(ccode_results_configure(&local, base) == 0);
+    data = ccode_results_read(&local, blob, 0, n + 10, &returned, &total,
+                              &truncated);
+    ASSERT(data != NULL);
+    ASSERT(total == n && returned == n && truncated == 0);
+    ASSERT(data[0] == '"');
+    free(data);
+
+    {
+        char p[8192];
+        snprintf(p, sizeof(p), "%s/%s", local.results_dir, blob);
+        unlink(p);
+    }
+    rmdir(local.results_dir);
+    {
+        char p[1200];
+        snprintf(p, sizeof(p), "%s/quotes.txt", ws);
+        unlink(p);
+    }
+    rmdir(ws);
+    free(r);
+    return 1;
+}
+
+/* A tool result JSON over the conversation content cap must be stored as a
+ * valid bounded envelope, never as a raw mid-JSON cut. */
+static int test_tool_result_over_cap_envelope(void) {
+    struct ccode_conversation conv;
+    char *oversized;
+    const char *stored;
+    ccode_jsmntok_t toks[16];
+    size_t i;
+
+    oversized = malloc(CCODE_MAX_CONTENT_LEN + 100);
+    ASSERT(oversized != NULL);
+    for (i = 0; i < CCODE_MAX_CONTENT_LEN + 99; i++) oversized[i] = 'x';
+    oversized[CCODE_MAX_CONTENT_LEN + 99] = '\0';
+
+    ASSERT(ccode_conversation_init(&conv, 4) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "go") == 0);
+    ASSERT(ccode_conversation_add_tool_call(&conv, "call_1", "bash",
+                                            "{}") == 0);
+    ASSERT(ccode_conversation_add_tool_result(&conv, "call_1",
+                                              oversized) == 0);
+    stored = conv.messages[2].content;
+    ASSERT(stored != NULL);
+    ASSERT(strlen(stored) < CCODE_MAX_CONTENT_LEN);
+    ASSERT(ccode_json_parse(stored, strlen(stored), toks, 16) > 0);
+    ASSERT(strstr(stored, "\"truncated\":true") != NULL);
+    ASSERT(strstr(stored, "\"original_bytes\":") != NULL);
+
+    ccode_conversation_destroy(&conv);
+    free(oversized);
+    return 1;
+}
+
 /* Configuring the archive for a brand-new nested session path must create the
  * missing parents (the first turn can run before the session is ever saved). */
 static int test_result_configure_creates_parents(void) {
@@ -3920,13 +4112,15 @@ static int wf_spawn_server(int body_len, const char *ctype,
     return *pid_out < 0 ? -1 : 0;
 }
 
-/* A body larger than max_size must yield complete, valid JSON with the full
- * max_size consumed - not a truncated-at-64KiB fragment, and not an overrun
- * of the result buffer when the truncation suffix is appended. */
+/* A body larger than max_size must yield complete, valid JSON - not a
+ * truncated fragment, and not an overrun of the result buffer. When
+ * max_size fits the escaped-length budget the full max_size is consumed;
+ * a max_size beyond the budget yields a bounded content field that still
+ * closes as one whole JSON document with the truncation flag. */
 static int test_web_fetch_truncation_is_valid_json(void) {
     struct ccode_web_fetch_opts opts;
-    int port = 0, status = 0;
-    pid_t pid = 0;
+    int port = 0, port2 = 0, status = 0, status2 = 0;
+    pid_t pid = 0, pid2 = 0;
     char url[128];
     char *res;
 
@@ -3934,7 +4128,7 @@ static int test_web_fetch_truncation_is_valid_json(void) {
     snprintf(url, sizeof(url), "http://127.0.0.1:%d/", port);
     memset(&opts, 0, sizeof(opts));
     opts.url = url;
-    opts.max_size = 100000;
+    opts.max_size = 50000;
     opts.timeout_sec = 10;
 
     res = ccode_web_fetch(&opts);
@@ -3949,10 +4143,37 @@ static int test_web_fetch_truncation_is_valid_json(void) {
         c += strlen("\"content\":\"");
         e = strchr(c, '"');
         ASSERT(e != NULL);
-        ASSERT((size_t)(e - c) == 100000);
+        ASSERT((size_t)(e - c) == 50000);
+    }
+    free(res);
+
+    /* max_size beyond the escaped-length budget: the content field is
+     * bounded, but the result stays one whole valid JSON document and the
+     * truncation flag makes the cut explicit. (A fresh server: the mock
+     * serves a single connection.) */
+    ASSERT(wf_spawn_server(200000, "text/plain", &port2, &pid2) == 0);
+    snprintf(url, sizeof(url), "http://127.0.0.1:%d/", port2);
+    opts.url = url;
+    opts.max_size = 100000;
+    res = ccode_web_fetch(&opts);
+    ASSERT(res != NULL);
+    ASSERT(res[0] == '{');
+    ASSERT(res[strlen(res) - 1] == '}');
+    ASSERT(strstr(res, "\"truncated\":true") != NULL);
+    {
+        const char *c = strstr(res, "\"content\":\"");
+        const char *e;
+        size_t clen;
+        ASSERT(c != NULL);
+        c += strlen("\"content\":\"");
+        e = strchr(c, '"');
+        ASSERT(e != NULL);
+        clen = (size_t)(e - c);
+        ASSERT(clen > 90000 && clen <= 100000);
     }
     free(res);
     waitpid(pid, &status, 0);
+    waitpid(pid2, &status2, 0);
     return 1;
 }
 
@@ -5253,6 +5474,10 @@ int main(int argc, char **argv) {
     TEST(read_tool_output_prepare);
     TEST(read_file_archives_oversized);
     TEST(command_archives_stderr);
+    TEST(command_dual_stream_budget);
+    TEST(command_escaped_budget_archives);
+    TEST(read_file_escaped_budget_archives);
+    TEST(tool_result_over_cap_envelope);
     TEST(result_lifecycle_delete_and_rename);
     TEST(result_stress_windows);
     TEST(result_configure_creates_parents);

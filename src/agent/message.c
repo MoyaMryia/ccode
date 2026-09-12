@@ -214,11 +214,32 @@ int ccode_conversation_add_tool_result(struct ccode_conversation *conv,
 
     if (content) {
         size_t len = strlen(content);
-        if (len > CCODE_MAX_CONTENT_LEN) len = CCODE_MAX_CONTENT_LEN;
-        content_copy = malloc(len + 1);
+        if (len > CCODE_MAX_CONTENT_LEN) {
+            /* A tool result is one whole JSON document produced by our own
+             * tools, and it is stored and replayed verbatim: a raw cut would
+             * leave malformed JSON in the conversation and the session file
+             * and drop the trailing truncation flags. Store a valid bounded
+             * envelope instead; archived blobs stay reachable through
+             * read_tool_output by tool_call_id. */
+            char envelope[160];
+            int n = snprintf(envelope, sizeof(envelope),
+                             "{\"error\":\"Tool result exceeded the inline "
+                             "content budget\",\"truncated\":true,"
+                             "\"original_bytes\":%lu}",
+                             (unsigned long)len);
+            if (n <= 0 || (size_t)n >= sizeof(envelope)) {
+                free(id_copy);
+                return -1;
+            }
+            content_copy = ccode_strdup(envelope);
+        } else {
+            content_copy = malloc(len + 1);
+            if (content_copy) {
+                memcpy(content_copy, content, len);
+                content_copy[len] = '\0';
+            }
+        }
         if (!content_copy) { free(id_copy); return -1; }
-        memcpy(content_copy, content, len);
-        content_copy[len] = '\0';
     }
 
     if (add_message(conv) != 0) {

@@ -54,6 +54,14 @@ struct ccode_change {
 #define CCODE_RESULT_PREVIEW_BYTES (64 * 1024)
 #define CCODE_RESULT_BLOB_MAX (4 * 1024 * 1024)
 
+/* Escaped-length budget for one bulky inline result field (bash stdout and
+ * stderr share it). The complete result JSON must stay under the
+ * conversation content cap CCODE_MAX_CONTENT_LEN (100 KiB), because the
+ * conversation layer can only store or replay whole valid JSON documents:
+ * a raw cut would drop the trailing *_truncated flags and produce malformed
+ * JSON. 96 KiB of field + <1 KiB of fixed scaffolding fits with margin. */
+#define CCODE_RESULT_FIELD_ESCAPED_MAX (96 * 1024)
+
 struct ccode_task {
     char id[16];
     char content[CCODE_MAX_TASK_LEN];
@@ -222,6 +230,9 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace,
                            const char *new_string);
 int append_json_string_n(char **buf, size_t *pos, size_t *cap,
                                 const char *s, size_t n);
+int append_json_string_budget(char **buf, size_t *pos, size_t *cap,
+                              const char *s, size_t n, size_t budget,
+                              size_t *used_out);
 int is_binary_content(const unsigned char *buf, size_t len);
 char *exec_read_file(struct agent_context *ctx, const char *workspace,
                      const char *file_path);

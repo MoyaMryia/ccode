@@ -136,6 +136,83 @@ char *ccode_json_escape(const char *input) {
     return output;
 }
 
+/* Same escaping as ccode_json_escape, bounded: stop before the escaped
+ * output exceeds `budget` bytes and report the truncation, so callers emit
+ * a whole valid JSON document (with its truncation flags) instead of being
+ * forced to cut the finished JSON mid-string downstream. */
+int ccode_json_escape_bounded(const char *input, size_t budget,
+                              char **output_out, size_t *used_out) {
+    size_t i = 0;
+    size_t used = 0;
+    size_t cap = 0;
+    size_t pos = 0;
+    char *output = NULL;
+    int stopped = 0;
+
+    if (output_out) *output_out = NULL;
+    if (used_out) *used_out = 0;
+    if (!input || !output_out) return -1;
+
+    while (input[i] != '\0') {
+        unsigned char c = (unsigned char)input[i];
+        char one[2];
+        char seqbuf[8];
+        char mb[5];
+        const char *seq = NULL;
+        size_t need;
+
+        if (c >= 0x80) {
+            int seqlen = ccode_utf8_seq_len(
+                (const unsigned char *)input + i, strlen(input + i));
+            if (seqlen > 0) {
+                need = (size_t)seqlen;
+                if (used + need > budget) { stopped = 1; break; }
+                memcpy(mb, input + i, need);
+                mb[need] = '\0';
+                if (ccode_append_cstr(&output, &pos, &cap, mb) != 0)
+                    return -1;
+                used += need;
+                i += need;
+                continue;
+            }
+            /* Invalid byte: substitute U+FFFD so the result stays valid
+             * UTF-8 on the wire, whatever the tool result contained. */
+            seq = "\xef\xbf\xbd";
+            need = 3;
+        } else {
+            switch (c) {
+            case '"':  seq = "\\\""; need = 2; break;
+            case '\\': seq = "\\\\"; need = 2; break;
+            case '\b': seq = "\\b";  need = 2; break;
+            case '\f': seq = "\\f";  need = 2; break;
+            case '\n': seq = "\\n";  need = 2; break;
+            case '\r': seq = "\\r";  need = 2; break;
+            case '\t': seq = "\\t";  need = 2; break;
+            default:
+                if (c < 0x20) {
+                    snprintf(seqbuf, sizeof(seqbuf), "\\u%04x", c);
+                    seq = seqbuf;
+                    need = 6;
+                } else {
+                    one[0] = (char)c;
+                    one[1] = '\0';
+                    seq = one;
+                    need = 1;
+                }
+            }
+        }
+
+        if (used + need > budget) { stopped = 1; break; }
+        if (ccode_append_cstr(&output, &pos, &cap, seq) != 0) return -1;
+        used += need;
+        i++;
+    }
+    if (ccode_append_cstr(&output, &pos, &cap, "") != 0) return -1;
+    if (used_out) *used_out = used;
+    *output_out = output;
+    return stopped ? 1 : 0;
+}
+
 /* Build one JSON Lines event: {"type":"<type>","text":"<text>"}\n.
  * ANSI escape sequences in text are stripped (agent output must not leak
  * terminal control bytes through the protocol); control bytes are escaped,

@@ -66,10 +66,14 @@ def build_plan(ws):
                 if biggest_pre is None or os.path.getsize(p) > os.path.getsize(biggest_pre):
                     biggest_pre = p
                 # edit_file refuses files over 50 KiB; probe with the
-                # biggest source file that stays under that ceiling.
+                # biggest source file that stays under that ceiling AND
+                # carries the grep symbol (so a real unique edit anchor
+                # exists), keeping the probe independent of file-size drift.
                 if os.path.getsize(p) <= 40 * 1024 and os.path.getsize(p) > probe_src_size:
-                    probe_src_size = os.path.getsize(p)
-                    probe_origin = p
+                    with open(p, encoding="utf-8", errors="replace") as f:
+                        if SYMBOL in f.read():
+                            probe_src_size = os.path.getsize(p)
+                            probe_origin = p
     shutil.copy2(probe_origin, os.path.join(ws, "edit_probe.c"))
     with open(probe_origin, encoding="utf-8", errors="replace") as f:
         probe_src = f.read()
@@ -251,15 +255,15 @@ def main():
                   % expect["needle_total"])
             return 1
 
-        # oversized read: truncated inline + archived full text. The inline
-        # result itself exceeds the message-content cap, so the session may
-        # store it truncated; match on the raw stored string.
+        # oversized read: the inline preview is bounded by the escaped-length
+        # budget and flagged with a real "truncated" key (the result is whole
+        # valid JSON now); the full file lives in the archive and its byte
+        # accuracy is cross-checked by the md5sum bash step below.
         r = result(6)
-        raw6 = r.get("_raw") or json.dumps(r)
-        if '"truncated":true' not in raw6:
+        if r.get("truncated") is not True:
             print("  FAIL: oversized read not flagged truncated")
             return 1
-        if len(raw6) >= expect["biggest_size"]:
+        if len(r.get("content", "")) >= expect["biggest_size"]:
             print("  FAIL: oversized read not actually truncated")
             return 1
         r = result(7)

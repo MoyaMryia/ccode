@@ -997,8 +997,22 @@ static int grow_json_buf(char **buf, size_t *pos, size_t *cap, size_t need) {
  * quotes. Returns -1 on allocation failure. */
 int append_json_string_n(char **buf, size_t *pos, size_t *cap,
                                 const char *s, size_t n) {
+    return append_json_string_budget(buf, pos, cap, s, n, (size_t)-1, NULL);
+}
+
+/* Same, but stop before the escaped output would exceed `budget` bytes, so
+ * the enclosing result JSON stays under the conversation content cap.
+ * Returns 0 when everything was appended, 1 when the budget stopped it with
+ * raw bytes remaining, -1 on allocation failure. *used_out (when non-NULL)
+ * receives the escaped bytes written. */
+int append_json_string_budget(char **buf, size_t *pos, size_t *cap,
+                              const char *s, size_t n, size_t budget,
+                              size_t *used_out) {
     size_t i;
+    size_t used = 0;
+    int stopped = 0;
     if (!s) s = "";
+    if (used_out) *used_out = 0;
     for (i = 0; i < n; i++) {
         unsigned char c = (unsigned char)s[i];
         const char *seq = NULL;
@@ -1025,17 +1039,20 @@ int append_json_string_n(char **buf, size_t *pos, size_t *cap,
                 int seq2 = ccode_utf8_seq_len(
                     (const unsigned char *)s + i, n - i);
                 if (seq2 > 0) {
+                    if (used + (size_t)seq2 > budget) { stopped = 1; goto done; }
                     if (*pos + (size_t)seq2 + 1 > *cap &&
                         grow_json_buf(buf, pos, cap,
                                       *pos + (size_t)seq2 + 1) != 0)
                         return -1;
                     memcpy(*buf + *pos, s + i, (size_t)seq2);
                     *pos += (size_t)seq2;
+                    used += (size_t)seq2;
                     i += (size_t)seq2 - 1;
                     continue;
                 }
                 seq = "\\ufffd"; seqlen = 6;
             } else {
+                if (used + 1 > budget) { stopped = 1; goto done; }
                 if (*pos + 2 > *cap) {
                     char * tmp;
                     size_t new_cap = *cap * 2;
@@ -1045,10 +1062,12 @@ int append_json_string_n(char **buf, size_t *pos, size_t *cap,
                     *buf = tmp; *cap = new_cap;
                 }
                 (*buf)[(*pos)++] = (char)c;
+                used++;
                 continue;
             }
         }
 
+        if (used + seqlen > budget) { stopped = 1; break; }
         if (*pos + seqlen + 1 > *cap) {
             char * tmp;
             size_t new_cap = *cap * 2;
@@ -1059,9 +1078,12 @@ int append_json_string_n(char **buf, size_t *pos, size_t *cap,
         }
         memcpy(*buf + *pos, seq, seqlen);
         *pos += seqlen;
+        used += seqlen;
     }
+done:
     (*buf)[*pos] = '\0';
-    return 0;
+    if (used_out) *used_out = used;
+    return stopped ? 1 : 0;
 }
 
 static int append_json_string(char **buf, size_t *pos, size_t *cap,
@@ -1117,6 +1139,8 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
     unsigned char *source;
     size_t read_size;
     size_t output_cap, output_pos;
+    size_t content_start;
+    int content_cut;
     size_t file_size;
     size_t read_limit;
 
@@ -1165,10 +1189,19 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
     if (!output) { free(source); return NULL; }
 
     output_pos = snprintf(output, output_cap, "{\"content\":\"");
+    content_start = output_pos;
+    content_cut = 0;
     {
         size_t i;
         for (i = 0; i < read_size && output_pos + 8 < output_cap; i++) {
             unsigned char c = source[i];
+            /* Keep the whole result JSON under the conversation content cap:
+             * an over-cap escape would have to be cut mid-JSON downstream,
+             * which loses the truncation marker and breaks the session. */
+            if (output_pos - content_start >= CCODE_RESULT_FIELD_ESCAPED_MAX) {
+                content_cut = 1;
+                break;
+            }
             if (c == '"' || c == '\\') {
                 output[output_pos++] = '\\';
                 output[output_pos++] = (char)c;
@@ -1209,10 +1242,13 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
         }
     }
 
-    /* When the preview is cut short, keep the untruncated file on disk so the
-     * model can page through it with read_tool_output. Only raw bytes are
-     * archived; binary payloads are skipped (read_file rejects them anyway). */
-    if (file_size > read_limit && ctx->results_dir[0] != '\0') {
+    /* When the preview is cut short (by the raw-byte cap or the escaped
+     * length budget), keep the untruncated file in the archive so the model
+     * can page through it with read_tool_output. Only raw bytes are
+     * archived; binary payloads are skipped (read_file rejects them
+     * anyway). */
+    if ((file_size > read_limit || content_cut) &&
+        ctx->results_dir[0] != '\0') {
         int afd = open_regular_at_workspace(ctx, file_path);
         if (afd >= 0) {
             size_t cap = file_size > CCODE_RESULT_BLOB_MAX
@@ -1243,7 +1279,16 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
 
     free(source);
 
-    if (read_size < file_size) {
+    /* Close the content string BEFORE appending the flag: the marker is a
+     * real JSON key, not a note inside the string (writing it before the
+     * closing quote used to terminate the string mid-key and produce
+     * malformed JSON for every truncated read). */
+    if (output_pos + 4 > output_cap) {
+        free(output);
+        return ccode_strdup("{\"error\":\"Output too large\"}");
+    }
+    output[output_pos++] = '"';
+    if (read_size < file_size || content_cut) {
         static const char marker[] = ",\"truncated\":true";
         if (output_pos + sizeof(marker) + 3 > output_cap) {
             free(output);
@@ -1252,11 +1297,6 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
         memcpy(output + output_pos, marker, sizeof(marker) - 1);
         output_pos += sizeof(marker) - 1;
     }
-    if (output_pos + 4 > output_cap) {
-        free(output);
-        return ccode_strdup("{\"error\":\"Output too large\"}");
-    }
-    output[output_pos++] = '"';
     output[output_pos++] = '}';
     output[output_pos] = '\0';
     return output;

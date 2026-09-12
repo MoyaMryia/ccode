@@ -248,6 +248,12 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     size_t i;
     char *result;
     size_t result_cap, result_pos;
+    int stdout_preview_cut;
+    int stderr_preview_cut;
+    size_t escaped_used;
+    size_t field_used;
+    size_t err_budget;
+    int arc;
     char executable[4096];
     char cmdline[8192];
     size_t cmdlen;
@@ -418,26 +424,45 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
                 timed_out ? "true" : "false") != 0) goto oom;
         if (ccode_append_cstr(&result, &result_pos, &result_cap,
                 ",\"stdout\":\"") != 0) goto oom;
+        stdout_preview_cut = 0;
+        escaped_used = 0;
         if (is_binary_content((const unsigned char *)stdout_buf, stdout_len)) {
             if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     "<binary output omitted>") != 0) goto oom;
             stdout_binary = 1;
-        } else if (append_json_string_n(&result, &result_pos, &result_cap,
-                                      stdout_buf, stdout_len) != 0) goto oom;
+        } else {
+            arc = append_json_string_budget(&result, &result_pos, &result_cap,
+                                            stdout_buf, stdout_len,
+                                            CCODE_RESULT_FIELD_ESCAPED_MAX,
+                                            &field_used);
+            if (arc < 0) goto oom;
+            stdout_preview_cut = (arc == 1);
+            escaped_used = field_used;
+        }
         if (ccode_append_cstr(&result, &result_pos, &result_cap,
                 "\",\"stderr\":\"") != 0) goto oom;
+        stderr_preview_cut = 0;
+        /* stderr shares the field budget with whatever stdout already used,
+         * so the complete result JSON always fits the conversation cap. */
+        err_budget = escaped_used < CCODE_RESULT_FIELD_ESCAPED_MAX
+                     ? CCODE_RESULT_FIELD_ESCAPED_MAX - escaped_used : 0;
         if (is_binary_content((const unsigned char *)stderr_buf, stderr_len)) {
             if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     "<binary output omitted>") != 0) goto oom;
             stderr_binary = 1;
-        } else if (append_json_string_n(&result, &result_pos, &result_cap,
-                                      stderr_buf, stderr_len) != 0) goto oom;
+        } else {
+            arc = append_json_string_budget(&result, &result_pos, &result_cap,
+                                            stderr_buf, stderr_len,
+                                            err_budget, &field_used);
+            if (arc < 0) goto oom;
+            stderr_preview_cut = (arc == 1);
+        }
         if (ccode_append_cstr(&result, &result_pos, &result_cap,
                 "\"") != 0) goto oom;
-        if (truncated_out)
+        if (truncated_out || stdout_preview_cut)
             if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     ",\"stdout_truncated\":true") != 0) goto oom;
-        if (truncated_err)
+        if (truncated_err || stderr_preview_cut)
             if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     ",\"stderr_truncated\":true") != 0) goto oom;
         if (stdout_binary)
@@ -468,7 +493,8 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
         if (argc > 3) strncat(cmd_summary, " ...", sizeof(cmd_summary) - strlen(cmd_summary) - 1);
         change_log_add_ex(ctx, "command", cmd_summary,
                        WIFEXITED(status) ? WEXITSTATUS(status) : -1,
-                       timed_out, 0, truncated_out, truncated_err);
+                       timed_out, 0, truncated_out || stdout_preview_cut,
+                       truncated_err || stderr_preview_cut);
     }
     return result;
 
@@ -659,6 +685,12 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     size_t i;
     char *result;
     size_t result_cap, result_pos;
+    int stdout_preview_cut;
+    int stderr_preview_cut;
+    size_t escaped_used;
+    size_t field_used;
+    size_t err_budget;
+    int arc;
     const char *lang_env;
     char ceiling_env[4096 + 32];
     struct ccode_result_tail stdout_tail;
@@ -907,26 +939,45 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
                 timed_out ? "true" : "false") != 0) goto oom;
         if (ccode_append_cstr(&result, &result_pos, &result_cap,
                 ",\"stdout\":\"") != 0) goto oom;
+        stdout_preview_cut = 0;
+        escaped_used = 0;
         if (is_binary_content((const unsigned char *)stdout_buf, stdout_len)) {
             if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     "<binary output omitted>") != 0) goto oom;
             stdout_binary = 1;
-        } else if (append_json_string_n(&result, &result_pos, &result_cap,
-                                      stdout_buf, stdout_len) != 0) goto oom;
+        } else {
+            arc = append_json_string_budget(&result, &result_pos, &result_cap,
+                                            stdout_buf, stdout_len,
+                                            CCODE_RESULT_FIELD_ESCAPED_MAX,
+                                            &field_used);
+            if (arc < 0) goto oom;
+            stdout_preview_cut = (arc == 1);
+            escaped_used = field_used;
+        }
         if (ccode_append_cstr(&result, &result_pos, &result_cap,
                 "\",\"stderr\":\"") != 0) goto oom;
+        stderr_preview_cut = 0;
+        /* stderr shares the field budget with whatever stdout already used,
+         * so the complete result JSON always fits the conversation cap. */
+        err_budget = escaped_used < CCODE_RESULT_FIELD_ESCAPED_MAX
+                     ? CCODE_RESULT_FIELD_ESCAPED_MAX - escaped_used : 0;
         if (is_binary_content((const unsigned char *)stderr_buf, stderr_len)) {
             if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     "<binary output omitted>") != 0) goto oom;
             stderr_binary = 1;
-        } else if (append_json_string_n(&result, &result_pos, &result_cap,
-                                      stderr_buf, stderr_len) != 0) goto oom;
+        } else {
+            arc = append_json_string_budget(&result, &result_pos, &result_cap,
+                                            stderr_buf, stderr_len,
+                                            err_budget, &field_used);
+            if (arc < 0) goto oom;
+            stderr_preview_cut = (arc == 1);
+        }
         if (ccode_append_cstr(&result, &result_pos, &result_cap,
                 "\"") != 0) goto oom;
-        if (truncated_out)
+        if (truncated_out || stdout_preview_cut)
             if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     ",\"stdout_truncated\":true") != 0) goto oom;
-        if (truncated_err)
+        if (truncated_err || stderr_preview_cut)
             if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     ",\"stderr_truncated\":true") != 0) goto oom;
         if (stdout_binary)
@@ -960,12 +1011,14 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
         if (argc > 3) strncat(cmd_summary, " ...", sizeof(cmd_summary) - strlen(cmd_summary) - 1);
         change_log_add_ex(ctx, "command", cmd_summary,
                        WIFEXITED(status) ? WEXITSTATUS(status) : -1,
-                       timed_out, 0, truncated_out, truncated_err);
+                       timed_out, 0, truncated_out || stdout_preview_cut,
+                       truncated_err || stderr_preview_cut);
     }
-    /* Archive the untruncated stdout when it exceeded the inline preview so
-     * the model can retrieve it with read_tool_output. stderr beyond the
-     * preview stays flagged, not archived. */
-    if (stdout_tail.len > 0 && ctx->results_dir[0] != '\0') {
+    /* Archive the raw stdout whenever the inline preview was cut, by the
+     * byte cap (tail present) or by the escaped-length budget, so the model
+     * can retrieve it with read_tool_output. Same for stderr. */
+    if ((stdout_tail.len > 0 || stdout_preview_cut) &&
+        ctx->results_dir[0] != '\0') {
         char *blob_id = NULL;
         size_t total = 0;
         if (ccode_results_archive(ctx, stdout_buf, stdout_len,
@@ -975,7 +1028,8 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
             ctx->last_result_total = total;
         }
     }
-    if (stderr_tail.len > 0 && ctx->results_dir[0] != '\0') {
+    if ((stderr_tail.len > 0 || stderr_preview_cut) &&
+        ctx->results_dir[0] != '\0') {
         char *blob_id = NULL;
         size_t total = 0;
         if (ccode_results_archive(ctx, stderr_buf, stderr_len,

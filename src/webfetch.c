@@ -46,6 +46,13 @@
 #define CCODE_WF_MAX_HEADERS (64 * 1024)
 #define CCODE_WF_DEFAULT_MAX_SIZE (1024 * 1024)
 #define CCODE_WF_DEFAULT_TIMEOUT 30
+/* Escaped-length budget for the "content" field: the complete result JSON
+ * must stay under the agent layer's conversation content cap
+ * (CCODE_MAX_CONTENT_LEN, 100 KiB) because a tool result is stored and
+ * replayed as one whole JSON document -- a raw cut would lose the trailing
+ * truncation flag and produce malformed JSON. Keep the same value as
+ * CCODE_RESULT_FIELD_ESCAPED_MAX in agent/agent_internal.h. */
+#define CCODE_WF_CONTENT_ESCAPED_MAX (96 * 1024)
 
 /* ── URL parsing ── */
 
@@ -1234,6 +1241,8 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
         const char *content_type = content_type_buf;
         char *esc_url;
         char *esc_ct;
+        size_t content_budget;
+        int content_cut = 0;
 
         esc_url = ccode_json_escape(current_url ? current_url : "");
         esc_ct = ccode_json_escape(content_type[0] ? content_type : "");
@@ -1243,6 +1252,12 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             result = ccode_strdup("{\"error\":\"Out of memory\"}");
             goto done;
         }
+        /* Reserve room for the scaffolding around the content field so the
+         * whole result JSON fits the conversation cap. */
+        content_budget = strlen(esc_url) + strlen(esc_ct) + 256 <
+                         CCODE_WF_CONTENT_ESCAPED_MAX
+                         ? CCODE_WF_CONTENT_ESCAPED_MAX -
+                           (strlen(esc_url) + strlen(esc_ct) + 256) : 0;
 
         if (strstr(method, "HEAD") != NULL) {
             /* HEAD request: return status info. */
@@ -1270,19 +1285,27 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             if (opts->raw_html) {
                 /* Keep the original HTML markup (used by web_search, which
                  * parses result blocks itself). */
-                escaped = ccode_json_escape(body_buf ? body_buf : "");
+                if (ccode_json_escape_bounded(body_buf ? body_buf : "",
+                                              content_budget, &escaped,
+                                              NULL) == 1)
+                    content_cut = 1;
             } else {
                 /* Strip HTML tags. */
                 char *plain = malloc(body_len + 1);
                 if (plain) {
                     wf_strip_html(body_buf ? body_buf : "", plain, body_len + 1);
-                    escaped = ccode_json_escape(plain);
+                    if (ccode_json_escape_bounded(plain, content_budget,
+                                                  &escaped, NULL) == 1)
+                        content_cut = 1;
                     free(plain);
                 }
             }
         } else {
             /* application/json, text/plain or anything else: raw text. */
-            escaped = ccode_json_escape(body_buf ? body_buf : "");
+            if (ccode_json_escape_bounded(body_buf ? body_buf : "",
+                                          content_budget, &escaped,
+                                          NULL) == 1)
+                content_cut = 1;
         }
 
         if (!escaped) {
@@ -1291,6 +1314,7 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             result = ccode_strdup("{\"error\":\"Out of memory\"}");
             goto done;
         }
+        truncated = truncated || content_cut;
 
         /* Build result JSON. One snprintf plus a checked return keeps this
          * overflow-proof: the fixed scaffolding, the status digits and the

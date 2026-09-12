@@ -24,6 +24,15 @@ int ccode_append_cstr(char **buf, size_t *pos, size_t *cap, const char *s);
  * (caller frees). Returns NULL on allocation failure or NULL input. */
 char *ccode_json_escape(const char *input);
 
+/* Same escaping, but stop before the escaped output exceeds `budget` bytes,
+ * so the enclosing result JSON stays under the conversation content cap
+ * instead of being cut mid-JSON downstream. Returns 0 when the whole input
+ * was escaped, 1 when the budget stopped it, -1 on allocation failure or
+ * NULL input. *output_out receives the malloc'd (caller frees) escaped
+ * string; *used_out (when non-NULL) receives its length. */
+int ccode_json_escape_bounded(const char *input, size_t budget,
+                              char **output_out, size_t *used_out);
+
 /* Length of the strict UTF-8 sequence starting at s (at most n bytes):
  * 1-4 for a valid sequence, 0 when invalid (bad lead, bad continuation,
  * overlong, surrogate, or > U+10FFFF). Callers use it to keep model- and
