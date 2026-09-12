@@ -105,7 +105,10 @@ int ccode_results_archive(struct agent_context *ctx,
                           const char *preview, size_t preview_len,
                           const char *tail, size_t tail_len,
                           char **id_out, size_t *total_out) {
-    unsigned long long h = 1469598103934665603ULL;
+    /* Standard FNV-1a 64 offset basis -- same constant as ccode_fnv1a in
+     * agent_fs.c. Blob ids are opaque and persisted in the session file, so
+     * old sessions keep reading their archived results regardless. */
+    unsigned long long h = 14695981039346656037ULL;
     char id[17];
     char path[4096];
     size_t total;

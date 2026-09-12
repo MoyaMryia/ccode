@@ -2824,6 +2824,49 @@ static int test_scan_continues_past_big_directory(void) {
     return 1;
 }
 
+/* move must never silently replace an existing destination: rename(2)
+ * semantics would destroy user data without a trace. */
+static int test_move_file_refuses_existing_destination(void) {
+    char *r;
+    const char *args =
+        "{\"source\":\"mv_src.txt\",\"destination\":\"mv_dst.txt\"}";
+
+    test_reset_workspace();
+    /* Missing source leaf: parent directory exists, so rename fails. */
+    r = test_exec_tool("fixtures", "move_file", args);
+    ASSERT(r != NULL && strstr(r, "Could not move file") != NULL);
+    free(r);
+
+    write_file("fixtures/mv_src.txt", "src-content\n", 12);
+    write_file("fixtures/mv_dst.txt", "dst-content\n", 12);
+    test_reset_workspace();
+    r = test_exec_tool("fixtures", "move_file", args);
+    ASSERT(r != NULL && strstr(r, "Destination already exists") != NULL);
+    free(r);
+    r = test_exec_read_file("fixtures", "mv_dst.txt");
+    ASSERT(r != NULL && strstr(r, "dst-content") != NULL);
+    free(r);
+    r = test_exec_read_file("fixtures", "mv_src.txt");
+    ASSERT(r != NULL && strstr(r, "src-content") != NULL);
+    free(r);
+
+    /* A fresh destination still moves. */
+    unlink("fixtures/mv_dst.txt");
+    test_reset_workspace();
+    r = test_exec_tool("fixtures", "move_file", args);
+    ASSERT(r != NULL && strstr(r, "\"ok\":true") != NULL);
+    free(r);
+    r = test_exec_read_file("fixtures", "mv_src.txt");
+    ASSERT(r != NULL && strstr(r, "not found") != NULL);
+    free(r);
+    r = test_exec_read_file("fixtures", "mv_dst.txt");
+    ASSERT(r != NULL && strstr(r, "src-content") != NULL);
+    free(r);
+
+    unlink("fixtures/mv_dst.txt");
+    return 1;
+}
+
 static int test_bash_git_does_not_discover_parent_repository(void) {
     char root[256];
     char nested[320];
@@ -5144,6 +5187,7 @@ int main(int argc, char **argv) {
     TEST(bash_git_does_not_discover_parent_repository);
     TEST(scan_skips_vcs_directories);
     TEST(scan_continues_past_big_directory);
+    TEST(move_file_refuses_existing_destination);
     TEST(duplicate_tool_call_id_detected);
     TEST(compact_scans_tool_results);
     TEST(compact_ignores_false_timed_out);

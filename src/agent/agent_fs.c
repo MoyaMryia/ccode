@@ -2013,6 +2013,19 @@ char *exec_move_file(struct agent_context *ctx, const char *workspace, const cha
         close(src_parent_fd);
         return ccode_strdup("{\"error\":\"Destination path outside workspace or parent not found\"}");
     }
+    /* rename(2) would silently replace an existing destination; every other
+     * mutating tool here refuses on existing targets, so move must too.
+     * (Check-then-rename has a tiny TOCTOU window; renameat2 RENAME_NOREPLACE
+     * is not portable to the retro/BSD targets this tree supports.) */
+    {
+        struct stat dst_st;
+        if (fstatat(dst_parent_fd, dst_leaf, &dst_st,
+                    AT_SYMLINK_NOFOLLOW) == 0) {
+            close(src_parent_fd);
+            close(dst_parent_fd);
+            return ccode_strdup("{\"error\":\"Destination already exists\"}");
+        }
+    }
     if (renameat(src_parent_fd, src_leaf, dst_parent_fd, dst_leaf) != 0) {
         close(src_parent_fd);
         close(dst_parent_fd);
