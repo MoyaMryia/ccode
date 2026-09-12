@@ -121,6 +121,11 @@ void ccode_conversation_compact(struct ccode_conversation *conv,
                                  const char *change_log_json,
                                  const char *task_list_json);
 
+/* Fill session metadata: bounded model/workspace copies plus the current
+ * time. NULL or empty strings leave the corresponding field empty. */
+void ccode_session_meta_init(struct ccode_session_metadata *meta,
+                             const char *model, const char *workspace);
+
 /* Session persistence: save/load conversation to a local JSON file.
  * The file is created with mode 0600. API keys are never stored because
  * they are not part of the conversation. On load, any malformed JSON,

@@ -2323,6 +2323,27 @@ int ccode_session_most_recent(char *name, size_t name_size) {
     return found ? 0 : -1;
 }
 
+/* Fill session metadata: bounded model/workspace copies plus the current
+ * time. NULL or empty strings leave the corresponding field empty. */
+void ccode_session_meta_init(struct ccode_session_metadata *meta,
+                             const char *model, const char *workspace) {
+    if (!meta) return;
+    memset(meta, 0, sizeof(*meta));
+    if (model) {
+        size_t ml = strlen(model);
+        if (ml >= sizeof(meta->model)) ml = sizeof(meta->model) - 1;
+        memcpy(meta->model, model, ml);
+        meta->model[ml] = '\0';
+    }
+    if (workspace && workspace[0]) {
+        size_t wl = strlen(workspace);
+        if (wl >= sizeof(meta->workspace)) wl = sizeof(meta->workspace) - 1;
+        memcpy(meta->workspace, workspace, wl);
+        meta->workspace[wl] = '\0';
+    }
+    meta->created_at = time(NULL);
+}
+
 /* Compact a session file in place: load the conversation, drop the
  * compactable middle (head and running tail are preserved) and save it
  * back with the original task/change log. Returns 0 on success. */

@@ -1475,20 +1475,7 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
         const char *ch = ctx->change_count > 0 ? change_log_serialize(&agent_ctx) : NULL;
         const char *tk = ctx->task_count > 0 ? task_list_serialize(ctx) : NULL;
         struct ccode_session_metadata meta;
-        memset(&meta, 0, sizeof(meta));
-        if (cfg->model) {
-            size_t ml = strlen(cfg->model);
-            if (ml >= sizeof(meta.model)) ml = sizeof(meta.model) - 1;
-            memcpy(meta.model, cfg->model, ml);
-            meta.model[ml] = '\0';
-        }
-        if (ctx->workspace_root[0]) {
-            size_t wl = strlen(ctx->workspace_root);
-            if (wl >= sizeof(meta.workspace)) wl = sizeof(meta.workspace) - 1;
-            memcpy(meta.workspace, ctx->workspace_root, wl);
-            meta.workspace[wl] = '\0';
-        }
-        meta.created_at = time(NULL);
+        ccode_session_meta_init(&meta, cfg->model, ctx->workspace_root);
         if (ccode_conversation_save(&conv, cfg->save_session, tk, ch, &meta) != 0)
             fputs("Warning: could not save session.\n", stderr);
     }
@@ -2192,20 +2179,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                         continue;
                     }
 
-                    memset(&meta, 0, sizeof(meta));
-                    if (cfg->model) {
-                        size_t ml = strlen(cfg->model);
-                        if (ml >= sizeof(meta.model)) ml = sizeof(meta.model) - 1;
-                        memcpy(meta.model, cfg->model, ml);
-                        meta.model[ml] = '\0';
-                    }
-                    if (ctx->workspace_root[0]) {
-                        size_t wl = strlen(ctx->workspace_root);
-                        if (wl >= sizeof(meta.workspace)) wl = sizeof(meta.workspace) - 1;
-                        memcpy(meta.workspace, ctx->workspace_root, wl);
-                        meta.workspace[wl] = '\0';
-                    }
-                    meta.created_at = time(NULL);
+                    ccode_session_meta_init(&meta, cfg->model, ctx->workspace_root);
 
                     if (ccode_conversation_init(&fresh, CCODE_MAX_MESSAGES) != 0) {
                         fputs("  Out of memory.\n", stderr);
@@ -2323,20 +2297,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
             const char *ch = ctx->change_count > 0 ? change_log_serialize(&agent_ctx) : NULL;
             const char *tk = ctx->task_count > 0 ? task_list_serialize(ctx) : NULL;
             struct ccode_session_metadata meta;
-            memset(&meta, 0, sizeof(meta));
-            if (cfg->model) {
-                size_t ml = strlen(cfg->model);
-                if (ml >= sizeof(meta.model)) ml = sizeof(meta.model) - 1;
-                memcpy(meta.model, cfg->model, ml);
-                meta.model[ml] = '\0';
-            }
-            if (ctx->workspace_root[0]) {
-                size_t wl = strlen(ctx->workspace_root);
-                if (wl >= sizeof(meta.workspace)) wl = sizeof(meta.workspace) - 1;
-                memcpy(meta.workspace, ctx->workspace_root, wl);
-                meta.workspace[wl] = '\0';
-            }
-            meta.created_at = time(NULL);
+            ccode_session_meta_init(&meta, cfg->model, ctx->workspace_root);
             if (ccode_conversation_save(&conv, current_session_path, tk, ch,
                                         &meta) != 0)
                 fputs("Warning: could not save session.\n", stderr);
@@ -2388,20 +2349,7 @@ cleanup:
             const char *ch = ctx->change_count > 0 ? change_log_serialize(&agent_ctx) : NULL;
             const char *tk = ctx->task_count > 0 ? task_list_serialize(ctx) : NULL;
             struct ccode_session_metadata meta;
-            memset(&meta, 0, sizeof(meta));
-            if (cfg->model) {
-                size_t ml = strlen(cfg->model);
-                if (ml >= sizeof(meta.model)) ml = sizeof(meta.model) - 1;
-                memcpy(meta.model, cfg->model, ml);
-                meta.model[ml] = '\0';
-            }
-            if (ctx->workspace_root[0]) {
-                size_t wl = strlen(ctx->workspace_root);
-                if (wl >= sizeof(meta.workspace)) wl = sizeof(meta.workspace) - 1;
-                memcpy(meta.workspace, ctx->workspace_root, wl);
-                meta.workspace[wl] = '\0';
-            }
-            meta.created_at = time(NULL);
+            ccode_session_meta_init(&meta, cfg->model, ctx->workspace_root);
             if (ccode_conversation_save(&conv, save_path, tk, ch, &meta) != 0)
                 fputs("Warning: could not save session.\n", stderr);
         }
