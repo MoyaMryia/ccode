@@ -13,24 +13,18 @@
 #include <time.h>
 #include <unistd.h>
 
-/* Emit one JSON Lines event. The payload is escaped with the shared
- * ccode_json_escape; an over-long payload fails explicitly (fail-closed)
- * instead of being truncated, keeping the reader's fixed line buffer safe. */
+/* Emit one JSON Lines event through the shared wire-format builder. The
+ * dynamic construction is fail-closed (OOM is the only failure), so no
+ * payload is ever silently truncated. */
 static int send_string_event(struct tui_protocol *protocol, const char *type,
                              const char *text) {
-    char line[8300];
-    char *escaped;
-    size_t need;
-    int rc = -1;
-    escaped = ccode_json_escape(text ? text : "");
-    if (!escaped) return -1;
-    need = strlen(escaped);
-    if (need <= 8190) {
-        snprintf(line, sizeof(line), "{\"type\":\"%s\",\"text\":\"%s\"}\n",
-                 type, escaped);
-        rc = ccode_fd_write_all(protocol->input_fd, line, strlen(line));
-    }
-    free(escaped);
+    char *event;
+    size_t length;
+    int rc;
+    if (ccode_json_build_event(type, text ? text : "", &event, &length) != 0)
+        return -1;
+    rc = ccode_fd_write_all(protocol->input_fd, event, length);
+    free(event);
     return rc;
 }
 

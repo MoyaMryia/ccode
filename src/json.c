@@ -77,6 +77,68 @@ char *ccode_json_escape(const char *input) {
     return output;
 }
 
+/* Build one JSON Lines event: {"type":"<type>","text":"<text>"}\n.
+ * ANSI escape sequences in text are stripped (agent output must not leak
+ * terminal control bytes through the protocol); control bytes are escaped,
+ * everything else passes through as UTF-8. Dynamic allocation, fail-closed:
+ * returns 0 and a malloc'd event (caller frees), or -1 without allocating
+ * on overflow/OOM. Both the CLI backend and the TUI protocol emit through
+ * this function so the wire format cannot drift. */
+int ccode_json_build_event(const char *type, const char *text,
+                           char **event_out, size_t *event_length_out) {
+    size_t i;
+    int in_escape = 0;
+    size_t type_length = strlen(type);
+    size_t text_length = text ? strlen(text) : 0;
+    size_t capacity;
+    char *event;
+    size_t pos = 0;
+
+    if (!type || !event_out || !event_length_out) return -1;
+    if (type_length > SIZE_MAX - 32 ||
+        text_length > (SIZE_MAX - type_length - 32) / 6) return -1;
+    capacity = type_length + text_length * 6 + 32;
+    event = malloc(capacity);
+    if (!event) return -1;
+    pos += (size_t)snprintf(event + pos, capacity - pos,
+                            "{\"type\":\"%s\",\"text\":\"", type);
+    for (i = 0; text && text[i]; i++) {
+        if (in_escape) {
+            if ((text[i] >= 'a' && text[i] <= 'z') ||
+                (text[i] >= 'A' && text[i] <= 'Z'))
+            in_escape = 0;
+            continue;
+        }
+        if ((unsigned char)text[i] == 0x1b) {
+            in_escape = 1;
+            continue;
+        }
+        if (text[i] == '"' || text[i] == '\\') event[pos++] = '\\';
+        if (text[i] == '\n') { event[pos++] = '\\'; event[pos++] = 'n'; }
+        else if (text[i] == '\r') { event[pos++] = '\\'; event[pos++] = 'r'; }
+        else if ((unsigned char)text[i] < 0x20) {
+            int written = snprintf(event + pos, capacity - pos, "\\u%04x",
+                                   (unsigned int)(unsigned char)text[i]);
+            if (written < 0 || (size_t)written >= capacity - pos) {
+                free(event);
+                return -1;
+            }
+            pos += (size_t)written;
+        }
+        else event[pos++] = text[i];
+    }
+    if (pos + 3 >= capacity) {
+        free(event);
+        return -1;
+    }
+    memcpy(event + pos, "\"}\n", 3);
+    pos += 3;
+    event[pos] = '\0';
+    *event_out = event;
+    *event_length_out = pos;
+    return 0;
+}
+
 /* Validate that s is well-formed UTF-8. Returns 0 on success, -1 otherwise. */
 int ccode_valid_utf8(const char *s) {
     const unsigned char *p = (const unsigned char *)s;

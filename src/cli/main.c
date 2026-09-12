@@ -85,64 +85,10 @@ static int boolean_field(const char *line, const char *name, int *value) {
     return 0;
 }
 
-static int json_build_event(const char *type, const char *text,
-                            char **event_out, size_t *event_length_out) {
-    size_t i;
-    int in_escape = 0;
-    size_t type_length = strlen(type);
-    size_t text_length = text ? strlen(text) : 0;
-    size_t capacity;
-    char *event;
-    size_t pos = 0;
-
-    if (type_length > SIZE_MAX - 32 ||
-        text_length > (SIZE_MAX - type_length - 32) / 6) return -1;
-    capacity = type_length + text_length * 6 + 32;
-    event = malloc(capacity);
-    if (!event) return -1;
-    pos += (size_t)snprintf(event + pos, capacity - pos,
-                            "{\"type\":\"%s\",\"text\":\"", type);
-    for (i = 0; text && text[i]; i++) {
-        if (in_escape) {
-            if ((text[i] >= 'a' && text[i] <= 'z') ||
-                (text[i] >= 'A' && text[i] <= 'Z'))
-            in_escape = 0;
-            continue;
-        }
-        if ((unsigned char)text[i] == 0x1b) {
-            in_escape = 1;
-            continue;
-        }
-        if (text[i] == '"' || text[i] == '\\') event[pos++] = '\\';
-        if (text[i] == '\n') { event[pos++] = '\\'; event[pos++] = 'n'; }
-        else if (text[i] == '\r') { event[pos++] = '\\'; event[pos++] = 'r'; }
-        else if ((unsigned char)text[i] < 0x20) {
-            int written = snprintf(event + pos, capacity - pos, "\\u%04x",
-                                   (unsigned int)(unsigned char)text[i]);
-            if (written < 0 || (size_t)written >= capacity - pos) {
-                free(event);
-                return -1;
-            }
-            pos += (size_t)written;
-        }
-        else event[pos++] = text[i];
-    }
-    if (pos + 3 >= capacity) {
-        free(event);
-        return -1;
-    }
-    memcpy(event + pos, "\"}\n", 3);
-    pos += 3;
-    event[pos] = '\0';
-    *event_out = event;
-    *event_length_out = pos;
-    return 0;
-}
-
 static void json_print(const char *type, const char *text) {
     char *event;
     size_t event_length;
-    if (json_build_event(type, text, &event, &event_length) == 0) {
+    if (ccode_json_build_event(type, text, &event, &event_length) == 0) {
         (void)ccode_fd_write_all(STDOUT_FILENO, event, event_length);
         free(event);
     }
@@ -151,7 +97,7 @@ static void json_print(const char *type, const char *text) {
 static void json_print_fd(int fd, const char *type, const char *text) {
     char *event;
     size_t event_length;
-    if (json_build_event(type, text, &event, &event_length) != 0) return;
+    if (ccode_json_build_event(type, text, &event, &event_length) != 0) return;
     (void)ccode_fd_write_all(fd, event, event_length);
     free(event);
 }

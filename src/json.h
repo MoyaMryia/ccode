@@ -24,6 +24,13 @@ int ccode_append_cstr(char **buf, size_t *pos, size_t *cap, const char *s);
  * (caller frees). Returns NULL on allocation failure or NULL input. */
 char *ccode_json_escape(const char *input);
 
+/* Build one JSON Lines event {"type":"..","text":".."}\n with ANSI escape
+ * sequences stripped from text. Returns 0 and a malloc'd event (caller
+ * frees), or -1 on overflow/OOM. The single wire-format authority for the
+ * CLI backend and the TUI protocol. */
+int ccode_json_build_event(const char *type, const char *text,
+                           char **event_out, size_t *event_length_out);
+
 /* Validate that s is well-formed UTF-8. Returns 0 on success, -1 otherwise. */
 int ccode_valid_utf8(const char *s);
 
