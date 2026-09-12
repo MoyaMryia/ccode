@@ -201,7 +201,6 @@ static int prepared_tool_defaults(struct prepared_tool *p) {
 }
 
 void prepared_tool_free(struct prepared_tool *prepared) {
-    size_t i;
     if (!prepared) return;
     free(prepared->value);
     free(prepared->content);
@@ -210,10 +209,6 @@ void prepared_tool_free(struct prepared_tool *prepared) {
     free(prepared->include);
     free(prepared->old_string);
     free(prepared->new_string);
-    for (i = 0; i < CCODE_MAX_ARGS; i++) {
-        free(prepared->argv[i]);
-        prepared->argv[i] = NULL;
-    }
     prepared->value = NULL;
     prepared->content = NULL;
     prepared->tool_path = NULL;
@@ -221,7 +216,6 @@ void prepared_tool_free(struct prepared_tool *prepared) {
     prepared->include = NULL;
     prepared->old_string = NULL;
     prepared->new_string = NULL;
-    prepared->argc = 0;
     prepared->display[0] = '\0';
 }
 
@@ -281,105 +275,6 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
             return "{\"error\":\"old_string must not be empty\"}";
         prepared->kind = PREPARED_EDIT_FILE;
         prepared->display[0] = '\0';
-        return NULL;
-    }
-
-    if (strcmp(name, "run_command") == 0) {
-        int have_argv = 0;
-        int j;
-        int timeout_field = 0;
-        int child_idx = 1;
-        prepared->kind = PREPARED_RUN_COMMAND;
-        prepared->argc = 0;
-        prepared->timeout_ms = CCODE_RUN_COMMAND_TIMEOUT;
-
-        while (child_idx + 1 < num_tokens) {
-            int key_idx = child_idx;
-            int val_idx = child_idx + 1;
-            if (key_idx >= num_tokens ||
-                tokens[key_idx].type != CCODE_JSMN_STRING)
-                return "{\"error\":\"Invalid run_command arguments\"}";
-            if (ccode_jsmn_token_streq(arguments, &tokens[key_idx], "argv")) {
-                int arr_size;
-                if (have_argv || val_idx >= num_tokens ||
-                    tokens[val_idx].type != CCODE_JSMN_ARRAY)
-                    return "{\"error\":\"Invalid run_command arguments\"}";
-                have_argv = 1;
-                arr_size = tokens[val_idx].size;
-                if (arr_size > CCODE_MAX_ARGS)
-                    return "{\"error\":\"Too many argv elements\"}";
-                {
-                    int elem_idx = val_idx + 1;
-                    for (j = 0; j < arr_size; j++) {
-                        if (elem_idx >= num_tokens ||
-                            tokens[elem_idx].type != CCODE_JSMN_STRING)
-                            return "{\"error\":\"Invalid argv element\"}";
-                        if (copy_string_token_dyn(arguments, &tokens[elem_idx], &prepared->argv[j]) != 0)
-                            return "{\"error\":\"Invalid argv element\"}";
-                        if (prepared->argv[j][0] == '~' &&
-                            (prepared->argv[j][1] == '/' || prepared->argv[j][1] == '\0'))
-                            return refuse_path("Home-relative paths are not allowed",
-                                               prepared->argv[j], REFUSE_RULE_HOME);
-                        if (prepared->argv[j][0] == '\0')
-                            return "{\"error\":\"Empty argv element\"}";
-                        elem_idx++;
-                    }
-                    prepared->argc = (size_t)arr_size;
-                }
-            } else if (ccode_jsmn_token_streq(arguments, &tokens[key_idx], "timeout_ms")) {
-                if (timeout_field || val_idx >= num_tokens ||
-                    tokens[val_idx].type != CCODE_JSMN_PRIMITIVE)
-                    return "{\"error\":\"Invalid run_command arguments\"}";
-                timeout_field = 1;
-                {
-                    long val;
-                    if (strict_nonnegative_integer_token(arguments,
-                            &tokens[val_idx], &val) != 0 ||
-                        val <= 0 || val > 300000)
-                        return "{\"error\":\"Invalid timeout_ms\"}";
-                    prepared->timeout_ms = (int)val;
-                }
-            } else {
-                return "{\"error\":\"Invalid run_command arguments\"}";
-            }
-            /* Advance past the value and all its descendants. */
-            child_idx = val_idx + 1;
-            while (child_idx < num_tokens &&
-                   tokens[child_idx].start < tokens[val_idx].end)
-                child_idx++;
-        }
-        if (!have_argv || prepared->argc == 0)
-            return "{\"error\":\"Invalid run_command arguments\"}";
-        {
-            char *argv_ptrs[CCODE_MAX_ARGS];
-            for (j = 0; j < (int)prepared->argc; j++)
-                argv_ptrs[j] = prepared->argv[j];
-            if (is_shell_string_invocation(argv_ptrs, prepared->argc))
-                return "{\"error\":\"Shell string execution is not allowed\"}";
-        }
-
-        {
-            size_t dpos = 0;
-            char timeout[48];
-            int n;
-            if (append_fixed_cstr(prepared->display,
-                    sizeof(prepared->display), &dpos, "argv=[") != 0)
-                return "{\"error\":\"Command approval display too large\"}";
-            for (j = 0; j < (int)prepared->argc; j++) {
-                if ((j > 0 && append_fixed_cstr(prepared->display,
-                        sizeof(prepared->display), &dpos, ",") != 0) ||
-                    append_display_json_string(prepared->display,
-                        sizeof(prepared->display), &dpos,
-                        prepared->argv[j]) != 0)
-                    return "{\"error\":\"Command approval display too large\"}";
-            }
-            n = snprintf(timeout, sizeof(timeout), "] timeout_ms=%d",
-                         prepared->timeout_ms);
-            if (n <= 0 || (size_t)n >= sizeof(timeout) ||
-                append_fixed_cstr(prepared->display,
-                    sizeof(prepared->display), &dpos, timeout) != 0)
-                return "{\"error\":\"Command approval display too large\"}";
-        }
         return NULL;
     }
 
@@ -695,17 +590,58 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
     }
 
     if (strcmp(name, "bash") == 0) {
-        if (num_tokens != 3 || tokens[0].size != 2 ||
-            tokens[1].type != CCODE_JSMN_STRING ||
-            !ccode_jsmn_token_streq(arguments, &tokens[1], "command") ||
-            copy_string_token_dyn(arguments, &tokens[2], &prepared->value) != 0)
+        int have_command = 0;
+        int have_timeout = 0;
+        int i;
+        prepared->kind = PREPARED_BASH;
+        prepared->timeout_ms = CCODE_RUN_COMMAND_TIMEOUT;
+        if (num_tokens < 3 || num_tokens > 5 || (num_tokens % 2) == 0)
+            return "{\"error\":\"Invalid bash arguments\"}";
+        for (i = 1; i < num_tokens; i += 2) {
+            if (tokens[i].type != CCODE_JSMN_STRING)
+                return "{\"error\":\"Invalid bash arguments\"}";
+            if (ccode_jsmn_token_streq(arguments, &tokens[i], "command")) {
+                if (have_command ||
+                    copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
+                    return "{\"error\":\"Invalid bash arguments\"}";
+                have_command = 1;
+            } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
+                                              "timeout_ms")) {
+                long val;
+                if (have_timeout || i + 1 >= num_tokens ||
+                    tokens[i + 1].type != CCODE_JSMN_PRIMITIVE)
+                    return "{\"error\":\"Invalid bash arguments\"}";
+                if (strict_nonnegative_integer_token(arguments,
+                        &tokens[i + 1], &val) != 0 ||
+                    val <= 0 || val > 300000)
+                    return "{\"error\":\"Invalid timeout_ms\"}";
+                prepared->timeout_ms = (int)val;
+                have_timeout = 1;
+            } else {
+                return "{\"error\":\"Invalid bash arguments\"}";
+            }
+        }
+        if (!have_command)
             return "{\"error\":\"Invalid bash arguments\"}";
         if (contains_home_path(prepared->value))
             return refuse_path("Home-relative paths are not allowed",
                                prepared->value, REFUSE_RULE_HOME);
-        prepared->kind = PREPARED_BASH;
-        snprintf(prepared->display, sizeof(prepared->display),
-                 "bash command=%s", prepared->value);
+        {
+            size_t dpos = 0;
+            char timeout[48];
+            int n;
+            if (append_fixed_cstr(prepared->display,
+                    sizeof(prepared->display), &dpos, "bash command=") != 0 ||
+                append_display_json_string(prepared->display,
+                    sizeof(prepared->display), &dpos, prepared->value) != 0)
+                return "{\"error\":\"Command approval display too large\"}";
+            n = snprintf(timeout, sizeof(timeout), " timeout_ms=%d",
+                         prepared->timeout_ms);
+            if (n <= 0 || (size_t)n >= sizeof(timeout) ||
+                append_fixed_cstr(prepared->display,
+                    sizeof(prepared->display), &dpos, timeout) != 0)
+                return "{\"error\":\"Command approval display too large\"}";
+        }
         return NULL;
     }
 

@@ -46,14 +46,6 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "\"regex\":{\"type\":\"boolean\",\"description\":\"Treat pattern as regex instead of literal (optional)\"}"
      "},\"required\":[\"pattern\"]}"},
 
-    {"run_command",
-     "Execute a command with arguments",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"argv\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
-     "\"description\":\"Command and arguments to execute\"},"
-     "\"timeout_ms\":{\"type\":\"number\",\"description\":\"Timeout in milliseconds (optional)\"}"
-     "},\"required\":[\"argv\"]}"},
-
     {"task_create",
      "Create a new task",
      "{\"type\":\"object\",\"properties\":{"
@@ -73,9 +65,10 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "\"required\":[]}"},
 
     {"bash",
-     "Execute a shell command",
+     "Execute a shell command (supports pipes, redirects, and shell syntax)",
      "{\"type\":\"object\",\"properties\":{"
-     "\"command\":{\"type\":\"string\",\"description\":\"Shell command to execute\"}"
+     "\"command\":{\"type\":\"string\",\"description\":\"Shell command to execute\"},"
+     "\"timeout_ms\":{\"type\":\"number\",\"description\":\"Timeout in milliseconds (optional, default 120000, max 300000)\"}"
      "},\"required\":[\"command\"]}"},
 
     {"delete_file",
@@ -244,7 +237,7 @@ char *ccode_build_write_tools_json(void) {
     size_t pos = 0;
     char *buf = malloc(cap);
     const char *enabled_names[] = {"read_file", "write_file", "edit_file",
-                                   "run_command", "bash",
+                                   "bash",
                                    "delete_file", "move_file",
                                    "glob", "grep",
                                    "task_create", "task_update", "task_list",

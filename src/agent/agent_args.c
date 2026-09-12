@@ -302,16 +302,6 @@ int append_display_json_string(char *display, size_t cap, size_t *pos,
     return 0;
 }
 
-int is_shell_string_invocation(char * const *argv, size_t argc) {
-    static const char *shells[] = {"sh", "bash", "dash", "zsh", "ksh"};
-    size_t i;
-    if (argc < 2 || (strcmp(argv[1], "-c") != 0 &&
-                     strcmp(argv[1], "-lc") != 0)) return 0;
-    for (i = 0; i < sizeof(shells) / sizeof(shells[0]); i++)
-        if (strcmp(argv[0], shells[i]) == 0) return 1;
-    return 0;
-}
-
 int contains_home_path(const char *text) {
     static const char *const prefixes[] = {
         "~/", "~\\", "$HOME/", "${HOME}/"

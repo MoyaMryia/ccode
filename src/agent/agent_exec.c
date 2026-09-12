@@ -1,4 +1,4 @@
-/* Command execution tools: run_command, bash, git and web_fetch. */
+/* Command execution tools: bash and web_fetch. */
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -50,19 +50,6 @@ char *command_policy_refuse(struct agent_context *ctx,
 
     if (!prepared) return NULL;
     workspace = ctx && ctx->workspace_initialized ? ctx->workspace_root : NULL;
-    if (prepared->kind == PREPARED_RUN_COMMAND) {
-        for (i = 0; i < prepared->argc; i++) {
-            if (ccode_command_is_sensitive_why(prepared->argv[i], workspace,
-                                               why, sizeof(why)))
-                return command_reject_json(
-                    "Command may access sensitive paths", why);
-            if (ccode_command_mentions_destructive_why(prepared->argv[i],
-                                                       why, sizeof(why)))
-                return command_reject_json(
-                    "Destructive command is not allowed", why);
-        }
-        return NULL;
-    }
     if (prepared->kind == PREPARED_BASH) {
         if (ccode_command_is_sensitive_why(prepared->value, workspace,
                                            why, sizeof(why)))
@@ -248,7 +235,7 @@ static DWORD WINAPI win32_reader_thread(void *arg) {
 
 static char *exec_run_command_ex(struct agent_context *ctx, const char *workspace,
                                char * const *argv, size_t argc,
-                               int timeout_ms, int allow_shell) {
+                               int timeout_ms) {
     char stdout_buf[CCODE_COMMAND_OUTPUT_LIMIT + 1];
     char stderr_buf[CCODE_COMMAND_OUTPUT_LIMIT + 1];
     size_t stdout_len = 0;
@@ -278,8 +265,6 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
 
     if (argc == 0)
         return ccode_strdup("{\"error\":\"No command specified\"}");
-    if (!allow_shell && is_shell_string_invocation(argv, argc))
-        return ccode_strdup("{\"error\":\"Shell string execution is not allowed\"}");
     if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
     {
@@ -656,7 +641,7 @@ static int build_git_ceiling_env(const char *workspace_root, char *out,
 
 static char *exec_run_command_ex(struct agent_context *ctx, const char *workspace,
                                char * const *argv, size_t argc,
-                               int timeout_ms, int allow_shell) {
+                               int timeout_ms) {
     int stdout_pipe[2] = {-1, -1};
     int stderr_pipe[2] = {-1, -1};
     pid_t child;
@@ -690,8 +675,6 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     ctx->last_result_total_err = 0;
     if (argc == 0)
         return ccode_strdup("{\"error\":\"No command specified\"}");
-    if (!allow_shell && is_shell_string_invocation(argv, argc))
-        return ccode_strdup("{\"error\":\"Shell string execution is not allowed\"}");
     /* Workspace must be initialized before filtering so soft-sensitive
      * patterns can be tolerated for paths inside the workspace. */
     if (init_workspace(ctx, workspace) != 0)
@@ -1017,10 +1000,11 @@ oom:
 char *exec_run_command(struct agent_context *ctx, const char *workspace,
                                char * const *argv, size_t argc,
                                int timeout_ms) {
-    return exec_run_command_ex(ctx, workspace, argv, argc, timeout_ms, 0);
+    return exec_run_command_ex(ctx, workspace, argv, argc, timeout_ms);
 }
 
-char *exec_bash_command(struct agent_context *ctx, const char *workspace, const char *command) {
+char *exec_bash_command(struct agent_context *ctx, const char *workspace,
+                        const char *command, int timeout_ms) {
     char *argv[4];
     char cmd_buf[4096];
 
@@ -1028,6 +1012,8 @@ char *exec_bash_command(struct agent_context *ctx, const char *workspace, const 
         return ccode_strdup("{\"error\":\"Missing command argument\"}");
     if (strlen(command) >= sizeof(cmd_buf))
         return ccode_strdup("{\"error\":\"Command too long\"}");
+    if (timeout_ms <= 0 || timeout_ms > 300000)
+        timeout_ms = CCODE_RUN_COMMAND_TIMEOUT;
     memcpy(cmd_buf, command, strlen(command) + 1);
 #ifdef _WIN32
     /* No /bin/sh on Windows: run shell strings through cmd.exe. */
@@ -1039,7 +1025,7 @@ char *exec_bash_command(struct agent_context *ctx, const char *workspace, const 
 #endif
     argv[2] = cmd_buf;
     argv[3] = NULL;
-    return exec_run_command_ex(ctx, workspace, argv, 3, CCODE_RUN_COMMAND_TIMEOUT, 1);
+    return exec_run_command_ex(ctx, workspace, argv, 3, timeout_ms);
 }
 
 char *exec_web_fetch(const struct prepared_tool *prepared) {

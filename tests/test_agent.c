@@ -1136,9 +1136,6 @@ static int test_home_relative_paths_are_rejected(void) {
     ASSERT(test_prepare_tool_display("glob",
         "{\"pattern\":\"*.c\",\"path\":\"~/src\"}",
         display, sizeof(display)) != 0);
-    ASSERT(test_prepare_tool_display("run_command",
-        "{\"argv\":[\"cat\",\"~/secret.txt\"]}",
-        display, sizeof(display)) != 0);
     ASSERT(test_prepare_tool_display("bash",
         "{\"command\":\"cat ~/secret.txt\"}",
         display, sizeof(display)) != 0);
@@ -1690,20 +1687,20 @@ static int test_tool_argument_shapes(void) {
         /* plain payloads */
         { "read_file", "{\"file_path\":\"x\"}", NULL },
         { "grep", "{\"pattern\":\"n\",\"path\":\"src\",\"context\":1}", NULL },
-        { "run_command", "{\"argv\":[\"true\"],\"timeout_ms\":1000}", NULL },
+        { "bash", "{\"command\":\"true\",\"timeout_ms\":1000}", NULL },
 
         /* single object envelope; the multi-key inner payloads are the
          * exact shape that overflowed the old 8-token unwrap buffer */
         { "read_file", "{\"arguments\":{\"file_path\":\"x\"}}", NULL },
         { "grep", "{\"arguments\":{\"pattern\":\"n\",\"path\":\"src\",\"context\":1}}", NULL },
         { "grep", "{\"arguments\":{\"pattern\":\"n\",\"include\":\"*.c\",\"path\":\"src\",\"context\":0}}", NULL },
-        { "run_command", "{\"arguments\":{\"argv\":[\"echo\",\"a\",\"b\"],\"timeout_ms\":1000}}", NULL },
+        { "bash", "{\"arguments\":{\"command\":\"echo a b\",\"timeout_ms\":1000}}", NULL },
         { "web_fetch", "{\"arguments\":{\"url\":\"http://127.0.0.1/\",\"method\":\"GET\",\"timeout\":5}}", NULL },
 
         /* single JSON-string envelope */
         { "read_file", "{\"arguments\":\"{\\\"file_path\\\":\\\"x\\\"}\"}", NULL },
         { "grep", "{\"arguments\":\"{\\\"pattern\\\":\\\"n\\\",\\\"path\\\":\\\"src\\\",\\\"context\\\":1}\"}", NULL },
-        { "run_command", "{\"arguments\":\"{\\\"argv\\\":[\\\"true\\\"],\\\"timeout_ms\\\":1000}\"}", NULL },
+        { "bash", "{\"arguments\":\"{\\\"command\\\":\\\"true\\\",\\\"timeout_ms\\\":1000}\"}", NULL },
 
         /* malformed / not JSON at all */
         { "read_file", "", "Could not parse tool arguments" },
@@ -1724,10 +1721,6 @@ static int test_tool_argument_shapes(void) {
           "Home-relative paths are not allowed" },
 
         /* hostile intents stay rejected after any unwrapping */
-        { "run_command", "{\"argv\":[\"sh\",\"-c\",\"echo hi\"]}",
-          "Shell string execution is not allowed" },
-        { "run_command", "{\"arguments\":{\"argv\":[\"sh\",\"-c\",\"echo hi\"]}}",
-          "Shell string execution is not allowed" },
         { "bash", "{\"command\":\"cat ~/secret\"}",
           "Home-relative paths are not allowed" },
         { "bash", "{\"arguments\":{\"command\":\"cat ~/secret\"}}",
@@ -1769,27 +1762,23 @@ static int test_tool_argument_shapes(void) {
         { "grep", "{\"arguments\":{\"pattern\":\"n\",\"pattern\":\"m\"}}",
           "Invalid grep arguments" },
 
-        /* run_command shape and numeric hostility behind an envelope */
-        { "run_command", "{\"arguments\":{\"argv\":\"true\"}}",
-          "Invalid run_command arguments" },
-        { "run_command", "{\"arguments\":{\"argv\":[1,2]}}",
-          "Invalid argv element" },
-        { "run_command", "{\"arguments\":{\"argv\":[]}}",
-          "Invalid run_command arguments" },
-        { "run_command", "{\"arguments\":{\"argv\":[\"true\"]}}", NULL },
-        { "run_command", "{\"arguments\":{\"argv\":[\"true\"],\"timeout_ms\":0}}",
+        /* bash shape and numeric hostility behind an envelope */
+        { "bash", "{\"arguments\":{\"command\":123}}",
+          "Invalid bash arguments" },
+        { "bash", "{\"arguments\":{\"command\":\"true\"}}", NULL },
+        { "bash", "{\"arguments\":{\"command\":\"true\",\"timeout_ms\":0}}",
           "Invalid timeout_ms" },
-        { "run_command", "{\"arguments\":{\"argv\":[\"true\"],\"timeout_ms\":-5}}",
+        { "bash", "{\"arguments\":{\"command\":\"true\",\"timeout_ms\":-5}}",
           "Invalid timeout_ms" },
-        { "run_command", "{\"arguments\":{\"argv\":[\"true\"],\"timeout_ms\":300001}}",
+        { "bash", "{\"arguments\":{\"command\":\"true\",\"timeout_ms\":300001}}",
           "Invalid timeout_ms" },
-        { "run_command", "{\"arguments\":{\"argv\":[\"true\"],\"timeout_ms\":\"1000\"}}",
-          "Invalid run_command arguments" },
-        { "run_command", "{\"arguments\":{\"argv\":[\"true\"],\"timeout_ms\":1.5}}",
+        { "bash", "{\"arguments\":{\"command\":\"true\",\"timeout_ms\":\"1000\"}}",
+          "Invalid bash arguments" },
+        { "bash", "{\"arguments\":{\"command\":\"true\",\"timeout_ms\":1.5}}",
           "Invalid timeout_ms" },
-        { "run_command",
-          "{\"arguments\":{\"argv\":[\"true\"],\"timeout_ms\":1000,\"timeout_ms\":2000}}",
-          "Invalid run_command arguments" },
+        { "bash",
+          "{\"arguments\":{\"command\":\"true\",\"timeout_ms\":1000,\"timeout_ms\":2000}}",
+          "Invalid bash arguments" },
 
         /* grep context hostility */
         { "grep", "{\"arguments\":{\"pattern\":\"n\",\"context\":101}}",
@@ -1948,10 +1937,10 @@ static int test_tool_argument_shapes(void) {
             { "read_file", "{\"arguments\":{\"file_path\":\"x\"}", "\"error\"" },
             { "read_file", "{\"arguments\":{\"file_path\":\"x\"}}}", "\"error\"" },
             { "read_file", "{\"arguments\":{\"arguments\":", "\"error\"" },
-            { "run_command", "{\"timeout_ms\":1000}", "\"error\"" },
-            { "run_command", "{\"argv\":true}", "\"error\"" },
-            { "run_command", "{\"argv\":[\"echo\",null]}", "\"error\"" },
-            { "run_command", "{\"argv\":[\"echo\"] \"timeout_ms\":1}", "\"error\"" },
+            { "bash", "{\"timeout_ms\":1000}", "\"error\"" },
+            { "bash", "{\"command\":true}", "\"error\"" },
+            { "bash", "{\"command\":null}", "\"error\"" },
+            { "bash", "{\"command\":\"echo\" \"timeout_ms\":1}", "\"error\"" },
             { "grep", "{\"pattern\":}", "\"error\"" },
             { "grep", "{\"context\":1}", "\"error\"" },
             { "glob", "{\"pattern\":[\"x\"]}", "\"error\"" },
@@ -2509,11 +2498,11 @@ static int test_run_command_drains_capped_output(void) {
     return 1;
 }
 
-static int test_run_command_structured_argv(void) {
+static int test_bash_structured_args(void) {
     char *r;
     test_reset_workspace();
-    r = test_exec_tool("fixtures", "run_command",
-                       "{\"argv\":[\"echo\",\"hello\"],\"timeout_ms\":5000}");
+    r = test_exec_tool("fixtures", "bash",
+                       "{\"command\":\"echo hello\",\"timeout_ms\":5000}");
     ASSERT(r != NULL);
     ASSERT(strstr(r, "\"exit_code\":0") != NULL);
     free(r);
@@ -2626,54 +2615,32 @@ static int test_run_command_large_stderr_clean_exit(void) {
     return 1;
 }
 
-static int test_run_command_invalid_argv(void) {
+static int test_bash_invalid_args(void) {
     char *r;
     test_reset_workspace();
-    r = test_exec_tool("fixtures", "run_command",
-                       "{\"argv\":[]}");
-    ASSERT(r != NULL && strstr(r, "Invalid run_command arguments") != NULL);
+    r = test_exec_tool("fixtures", "bash", "{\"command\":\"echo\",\"x\":1}");
+    ASSERT(r != NULL && strstr(r, "Invalid bash arguments") != NULL);
     free(r);
-    r = test_exec_tool("fixtures", "run_command",
-                       "{\"argv\":[\"echo\"],\"timeout_ms\":-1}");
+    r = test_exec_tool("fixtures", "bash",
+                       "{\"command\":\"echo\",\"timeout_ms\":-1}");
     ASSERT(r != NULL && strstr(r, "Invalid timeout_ms") != NULL);
     free(r);
-    r = test_exec_tool("fixtures", "run_command",
-                       "{\"argv\":[\"\"],\"timeout_ms\":5000}");
-    ASSERT(r != NULL && strstr(r, "Empty argv element") != NULL);
+    r = test_exec_tool("fixtures", "bash", "{\"timeout_ms\":5000}");
+    ASSERT(r != NULL && strstr(r, "Invalid bash arguments") != NULL);
     free(r);
     return 1;
 }
 
-static int test_run_command_rejects_shell_strings(void) {
-    static const char *shells[] = {"sh", "bash", "dash", "zsh", "ksh"};
-    size_t i;
-    for (i = 0; i < sizeof(shells) / sizeof(shells[0]); i++) {
-        char json[128];
-        char *r;
-        snprintf(json, sizeof(json),
-                 "{\"argv\":[\"%s\",\"-c\",\"echo hidden\"]}", shells[i]);
-        r = test_exec_tool("fixtures", "run_command", json);
-        ASSERT(r != NULL && strstr(r, "Shell string execution") != NULL);
-        free(r);
-    }
-    {
-        char *argv[] = {"bash", "-lc", "echo hidden"};
-        char *r = test_exec_run_command("fixtures", argv, 3, 5000);
-        ASSERT(r != NULL && strstr(r, "Shell string execution") != NULL);
-        free(r);
-    }
-    return 1;
-}
 
 static int test_command_and_grep_json_are_strict(void) {
     static const char *commands[] = {
-        "{\"argv\":[\"echo\"],\"timeout_ms\":null}",
-        "{\"argv\":[\"echo\"],\"timeout_ms\":true}",
-        "{\"argv\":[\"echo\"],\"timeout_ms\":1.5}",
-        "{\"argv\":[\"echo\"],\"timeout_ms\":1e3}",
-        "{\"argv\":[\"echo\"],\"timeout_ms\":01}",
-        "{\"argv\":[\"echo\"],,\"timeout_ms\":1}",
-        "{\"argv\":[\"echo\",],\"timeout_ms\":1}"
+        "{\"command\":\"echo\",\"timeout_ms\":null}",
+        "{\"command\":\"echo\",\"timeout_ms\":true}",
+        "{\"command\":\"echo\",\"timeout_ms\":1.5}",
+        "{\"command\":\"echo\",\"timeout_ms\":1e3}",
+        "{\"command\":\"echo\",\"timeout_ms\":01}",
+        "{\"command\":\"echo\",,\"timeout_ms\":1}",
+        "{\"command\":\"echo\",]\"timeout_ms\":1}"
     };
     static const char *greps[] = {
         "{\"pattern\":\"x\",\"context\":null}",
@@ -2685,7 +2652,7 @@ static int test_command_and_grep_json_are_strict(void) {
     };
     size_t i;
     for (i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
-        char *r = test_exec_tool("fixtures", "run_command", commands[i]);
+        char *r = test_exec_tool("fixtures", "bash", commands[i]);
         ASSERT(r != NULL && strstr(r, "error") != NULL);
         free(r);
     }
@@ -2699,40 +2666,29 @@ static int test_command_and_grep_json_are_strict(void) {
 
 static int test_command_approval_display_is_exact(void) {
     char display[9000];
-    ASSERT(test_prepare_tool_display("run_command",
-        "{\"argv\":[\"printf\",\"a b\",\"quote\\\"x\",\"line\\nnext\","
-        "\"back\\\\slash\",\"ninth\",\"10\",\"11\",\"12\"],"
+    ASSERT(test_prepare_tool_display("bash",
+        "{\"command\":\"printf \\\"a b\\\" && echo done\","
         "\"timeout_ms\":4321}", display, sizeof(display)) == 0);
     ASSERT(strcmp(display,
-        "argv=[\"printf\",\"a b\",\"quote\\\"x\",\"line\\nnext\","
-        "\"back\\\\slash\",\"ninth\",\"10\",\"11\",\"12\"] timeout_ms=4321") == 0);
+        "bash command=\"printf \\\"a b\\\" && echo done\" timeout_ms=4321") == 0);
     return 1;
 }
 
 static int test_command_approval_display_overflow_rejected(void) {
-    char *json = malloc(50000);
+    char *json = malloc(20000);
     size_t pos = 0;
-    int i, j;
+    int i;
     char *r;
     ASSERT(json != NULL);
-    pos += (size_t)snprintf(json + pos, 50000 - pos, "{\"argv\":[");
-    for (i = 0; i < 16; i++) {
-        if (i > 0) json[pos++] = ',';
-        json[pos++] = '\"';
-        for (j = 0; j < 255; j++) {
-            memcpy(json + pos, "\\u0001", 6);
-            pos += 6;
-        }
-        json[pos++] = '\"';
-    }
-    memcpy(json + pos, "]}", 3);
-    r = test_exec_tool("fixtures", "run_command", json);
+    pos += (size_t)snprintf(json + pos, 20000 - pos, "{\"command\":\"");
+    for (i = 0; i < 12000; i++) json[pos++] = 'a';
+    memcpy(json + pos, "\",\"timeout_ms\":1000}", 21);
+    r = test_exec_tool("fixtures", "bash", json);
     ASSERT(r != NULL && strstr(r, "approval display too large") != NULL);
     free(r);
     free(json);
     return 1;
 }
-
 static int test_gitignore_fifo_is_not_opened_blocking(void) {
     char *r;
     unlink("fixtures/.gitignore");
@@ -2787,7 +2743,7 @@ static int test_change_log_retains_truncation_and_denials(void) {
     test_change_log_reset();
     test_change_log_add_command_full("git --no-pager diff", 0, 0, 1, 0);
     test_change_log_add_command_full("yes", 124, 1, 1, 1);
-    test_change_log_add_denied_entry("run_command");
+    test_change_log_add_denied_entry("bash");
 
     ASSERT(test_change_log_count() == 3);
     out = test_change_log_serialize();
@@ -4264,8 +4220,8 @@ static int test_command_sandbox_enforced(void) {
     ASSERT(strstr(r, "mentions destructive command 'dd'") != NULL);
     free(r);
 
-    r = test_exec_tool("fixtures", "run_command",
-                       "{\"argv\":[\"cat\",\"/etc/shadow\"]}");
+    r = test_exec_tool("fixtures", "bash",
+                       "{\"command\":\"cat /etc/shadow\"}");
     ASSERT(r != NULL);
     ASSERT(strstr(r, "sensitive paths") != NULL);
     ASSERT(strstr(r, "etc/shadow") != NULL);
@@ -4934,9 +4890,8 @@ int main(int argc, char **argv) {
     TEST(run_command_timeout_reports_null_exit_and_signal);
     TEST(run_command_uses_workspace_and_scrubbed_environment);
     TEST(run_command_drains_capped_output);
-    TEST(run_command_structured_argv);
-    TEST(run_command_invalid_argv);
-    TEST(run_command_rejects_shell_strings);
+    TEST(bash_structured_args);
+    TEST(bash_invalid_args);
     TEST(command_and_grep_json_are_strict);
     TEST(command_approval_display_is_exact);
     TEST(command_approval_display_overflow_rejected);

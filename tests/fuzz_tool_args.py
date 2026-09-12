@@ -61,7 +61,7 @@ BASE = {
                      "timeout": 5}],
     "agent_tool":  [{"task": "inspect the parser"},
                     {"task": "x", "read_only": "false"}],
-    "run_command": [{"argv": ["echo", "hi"]},
+    "bash": [{"command": "echo hi"},
                     {"argv": ["ls", "-l"], "timeout_ms": 1000}],
 }
 
@@ -75,7 +75,7 @@ REQUIRED = {
     "grep": ["pattern"], "task_create": ["content"],
     "task_update": ["id", "status"], "task_list": [],
     "web_search": ["query"], "web_fetch": ["url"], "agent_tool": ["task"],
-    "run_command": ["argv"],
+    "bash": ["command"],
 }
 
 
@@ -241,24 +241,24 @@ def gen_invalid(rnd):
             add(tool, w + w, "envelope-second-root")
             add(tool, w + "}", "envelope-extra-brace")
 
-    out.append(Case("run_command",
-                    '{"argv":["true"],"timeout_ms":0}', ("error",),
+    out.append(Case("bash",
+                    '{"command":"true","timeout_ms":0}', ("error",),
                     "timeout-0"))
-    out.append(Case("run_command",
-                    '{"argv":["true"],"timeout_ms":-1}', ("error",),
+    out.append(Case("bash",
+                    '{"command":"true","timeout_ms":-1}', ("error",),
                     "timeout-neg"))
-    out.append(Case("run_command",
-                    '{"argv":["true"],"timeout_ms":300001}', ("error",),
+    out.append(Case("bash",
+                    '{"command":"true","timeout_ms":300001}', ("error",),
                     "timeout-huge"))
-    out.append(Case("run_command",
-                    '{"argv":["true"],"timeout_ms":"1"}', ("error",),
+    out.append(Case("bash",
+                    '{"command":"true","timeout_ms":"1"}', ("error",),
                     "timeout-string"))
-    out.append(Case("run_command",
-                    '{"argv":["true"],"timeout_ms":1.5}', ("error",),
+    out.append(Case("bash",
+                    '{"command":"true","timeout_ms":1.5}', ("error",),
                     "timeout-float"))
-    out.append(Case("run_command", '{"argv":["sh","-c","true"]}',
-                    ("contains", "Shell string execution is not allowed"),
-                    "shell-string"))
+    out.append(Case("bash", '{"command":"sh -c true"}',
+                    ("contains", "error"),
+                    "bash-tool-still-executes"))
     out.append(Case("grep", '{"pattern":"n","context":101}', ("error",),
                     "context-101"))
     out.append(Case("grep", '{"pattern":"n","context":-1}', ("error",),

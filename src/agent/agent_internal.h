@@ -140,7 +140,6 @@ enum prepared_tool_kind {
     PREPARED_EDIT_FILE,
     PREPARED_GLOB,
     PREPARED_GREP,
-    PREPARED_RUN_COMMAND,
     PREPARED_TASK_CREATE,
     PREPARED_TASK_UPDATE,
     PREPARED_TASK_LIST,
@@ -171,8 +170,6 @@ struct prepared_tool {
     char *new_string;
     /* Approval display: bounded human-facing summary (truncated if long). */
     char display[2 * 4096 + 64];
-    char *argv[CCODE_MAX_ARGS];
-    size_t argc;
     int timeout_ms;
     int web_timeout_sec;
     size_t web_max_size;
@@ -251,7 +248,6 @@ int strict_nonnegative_integer_token(const char *json,
                                             long *value);
 int append_display_json_string(char *display, size_t cap, size_t *pos,
                                       const char *value);
-int is_shell_string_invocation(char * const *argv, size_t argc);
 int contains_home_path(const char *text);
 const char *prepare_tool(const char *name, const char *arguments,
                                 struct prepared_tool *prepared);
@@ -261,7 +257,7 @@ char *exec_run_command(struct agent_context *ctx, const char *workspace,
                              char * const *argv, size_t argc,
                              int timeout_ms);
 char *exec_bash_command(struct agent_context *ctx, const char *workspace,
-                             const char *command);
+                             const char *command, int timeout_ms);
 char *exec_web_fetch(const struct prepared_tool *prepared);
 void default_stream_reasoning(const char *content, void *context);
 

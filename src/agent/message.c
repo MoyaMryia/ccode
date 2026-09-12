@@ -665,7 +665,7 @@ void ccode_conversation_compact(struct ccode_conversation *conv,
                 for (j = 0; j < conv->messages[i].tool_call_count; j++) {
                     if (conv->messages[i].tool_calls[j].name) {
                         tool_call_count++;
-                        if (strcmp(conv->messages[i].tool_calls[j].name, "run_command") == 0)
+                        if (strcmp(conv->messages[i].tool_calls[j].name, "bash") == 0)
                             command_count++;
                     }
                 }

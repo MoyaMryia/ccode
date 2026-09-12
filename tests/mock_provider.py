@@ -407,8 +407,8 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                             "id": "call_cmd1",
                             "type": "function",
                             "function": {
-                                "name": "run_command",
-                                "arguments": '{"argv":["touch","must_not_exist_marker.txt"]}'
+                                "name": "bash",
+                                "arguments": '{"command":"touch must_not_exist_marker.txt"}'
                             }
                         }]},
                         "finish_reason": "tool_calls"
@@ -449,8 +449,8 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                             "id": "call_sleep",
                             "type": "function",
                             "function": {
-                                "name": "run_command",
-                                "arguments": '{"argv":["python3","-c","import time; time.sleep(30); open(\\"cancel_marker.txt\\",\\"w\\").close()"]}'
+                                "name": "bash",
+                                "arguments": "{\"command\":\"python3 -c 'import time; time.sleep(30); open(\\\"cancel_marker.txt\\\",\\\"w\\\").close()'\"}"
                             }
                         }]},
                         "finish_reason": "tool_calls"
@@ -480,7 +480,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                 events = [{"data": json.dumps({
                     "choices": [{"index": 0, "delta": {"content": "Verifying the focused test..."}, "finish_reason": None}]
                 })}, {"data": json.dumps({
-                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_test1", "type": "function", "function": {"name": "run_command", "arguments": '{"argv":["grep","-q","sub.*return a - b","src/main.c"]}'}}]}, "finish_reason": None}]
+                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_test1", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":\"grep -q 'sub.*return a - b' src/main.c\"}"}}]}, "finish_reason": None}]
                 })}, {"data": json.dumps({
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
                 })}]
@@ -504,7 +504,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                 events = [{"data": json.dumps({
                     "choices": [{"index": 0, "delta": {"content": "Re-verifying..."}, "finish_reason": None}]
                 })}, {"data": json.dumps({
-                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_test2", "type": "function", "function": {"name": "run_command", "arguments": '{"argv":["grep","-q","sub.*return a - b","src/main.c"]}'}}]}, "finish_reason": None}]
+                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_test2", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":\"grep -q 'sub.*return a - b' src/main.c\"}"}}]}, "finish_reason": None}]
                 })}, {"data": json.dumps({
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
                 })}]
@@ -543,11 +543,11 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
                 })}]
             elif tool_count == 2:
-                # Turn 3: emit run_command to verify
+                # Turn 3: emit bash to verify
                 events = [{"data": json.dumps({
                     "choices": [{"index": 0, "delta": {"content": "Now let me verify the fix..."}, "finish_reason": None}]
                 })}, {"data": json.dumps({
-                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_test", "type": "function", "function": {"name": "run_command", "arguments": '{"argv":["echo","fix verified"]}'}}]}, "finish_reason": None}]
+                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_test", "type": "function", "function": {"name": "bash", "arguments": '{"command":"echo fix verified"}'}}]}, "finish_reason": None}]
                 })}, {"data": json.dumps({
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
                 })}]

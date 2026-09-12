@@ -146,8 +146,8 @@ static const char ccode_system_prompt_part1[] =
         "- Use edit_file for targeted modifications; use write_file only for genuinely "
         "new files or complete generated content. Do not re-read a file after a "
         "successful edit.\n"
-        "- Use run_command or bash only for commands that require execution. Keep "
-        "commands focused, bounded, and relevant to the task.\n"
+        "- Use bash for commands that require execution. Keep commands focused, "
+        "bounded, and relevant to the task.\n"
         "- Use web_fetch or web_search only when the task needs information outside "
         "the workspace. Never guess URLs.\n"
         "- Delegate independent, well-scoped investigations to agent_tool when that "
@@ -247,7 +247,7 @@ static int json_true(const char *js, ccode_jsmntok_t *toks, int ntok,
            strncmp(js + tok->start, "true", 4) == 0;
 }
 
-/* run_command/bash: exit/signal/timed_out summary + stdout/stderr blocks. */
+/* bash: exit/signal/timed_out summary + stdout/stderr blocks. */
 static void render_command_result(FILE *out, const char *js,
                                   ccode_jsmntok_t *toks, int ntok) {
     ccode_jsmntok_t *tok;

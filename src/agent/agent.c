@@ -600,14 +600,6 @@ static char *execute_prepared_tool(struct agent_context *ctx,
                          prepared->context_lines,
                          prepared->use_regex,
                          prepared->tool_path[0] ? prepared->tool_path : NULL);
-    if (prepared->kind == PREPARED_RUN_COMMAND) {
-        char *argv_ptrs[CCODE_MAX_ARGS];
-        size_t j;
-        for (j = 0; j < prepared->argc; j++)
-            argv_ptrs[j] = (char *)prepared->argv[j];
-        return exec_run_command(ctx, workspace, argv_ptrs, prepared->argc,
-                                prepared->timeout_ms);
-    }
     if (prepared->kind == PREPARED_TASK_CREATE)
         return exec_task_create(ctx, prepared->value);
     if (prepared->kind == PREPARED_TASK_UPDATE)
@@ -615,7 +607,8 @@ static char *execute_prepared_tool(struct agent_context *ctx,
     if (prepared->kind == PREPARED_TASK_LIST)
         return exec_task_list(ctx);
     if (prepared->kind == PREPARED_BASH)
-        return exec_bash_command(ctx, workspace, prepared->value);
+        return exec_bash_command(ctx, workspace, prepared->value,
+                                 prepared->timeout_ms);
     if (prepared->kind == PREPARED_DELETE_FILE)
         return exec_delete_file(ctx, workspace, prepared->value);
     if (prepared->kind == PREPARED_MOVE_FILE)
@@ -669,7 +662,6 @@ static int is_enabled_tool(const char *name, int write_enabled) {
            (write_enabled && name &&
              (strcmp(name, "write_file") == 0 ||
               strcmp(name, "edit_file") == 0 ||
-              strcmp(name, "run_command") == 0 ||
               strcmp(name, "bash") == 0 ||
               strcmp(name, "delete_file") == 0 ||
               strcmp(name, "move_file") == 0 ||
@@ -1066,7 +1058,6 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         preq.workspace_root = ctx->workspace_root;
                         preq.read_only = prepared.kind != PREPARED_WRITE_FILE &&
                                          prepared.kind != PREPARED_EDIT_FILE &&
-                                         prepared.kind != PREPARED_RUN_COMMAND &&
                                          prepared.kind != PREPARED_BASH &&
                                          prepared.kind != PREPARED_DELETE_FILE &&
                                          prepared.kind != PREPARED_MOVE_FILE;
@@ -1164,8 +1155,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                             break;
                         }
                         if (ctx->last_result_blob &&
-                            (prepared.kind == PREPARED_RUN_COMMAND ||
-                             prepared.kind == PREPARED_BASH ||
+                            (prepared.kind == PREPARED_BASH ||
                              prepared.kind == PREPARED_READ_FILE)) {
                             if (ccode_conversation_set_result_blob(conv,
                                     ctx->last_result_blob,
@@ -1178,8 +1168,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                             }
                         }
                         if (ctx->last_result_blob_err &&
-                            (prepared.kind == PREPARED_RUN_COMMAND ||
-                             prepared.kind == PREPARED_BASH)) {
+                            (prepared.kind == PREPARED_BASH)) {
                             if (ccode_conversation_set_result_blob_err(conv,
                                     ctx->last_result_blob_err,
                                     ctx->last_result_total_err) != 0) {
