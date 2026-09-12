@@ -19,13 +19,20 @@
 
 ### 工具
 
-- `read_file` / `write_file` / `glob` / `grep`（支持正则）
-- `bash` / `run_command`
+- `read_file` / `edit_file` / `glob` / `grep`（支持正则）；`edit_file` 空
+  `old_string` 原子创建新文件，pre-rename 校验要求目标不存在，永不覆盖
+- `bash`（唯一命令工具；可选 `timeout_ms`，默认 120s 上限 300s；审批
+  display 显式构造，超长报错不静默截断）
+- `task`（action=create/update/list，字段组合按 action 严格校验）
 - `read_tool_output`（只读）：按 `tool_call_id` 分页取回被存档的超长工具输出窗口（`offset`/`limit`，单次上限 64 KiB；命令可选 `stream=stdout|stderr`，默认 stdout，无 stdout 存档时自动选 stderr），越界/未知 id/非当前会话一律结构化报错
 - `delete_file` / `move_file`（限工作区内）
 - `web_fetch`（带域名黑名单、请求限流、大小上限；跟随 3xx 跳转，支持绝对/协议相对/根相对/相对 `Location`，相对目标折叠 `./` 与 `../`，超限报 `Too many redirects`；解析 1.1 chunked 响应并在末尾去分块；响应头逐行按 CRLF 截断，`content_type`/`url` 进 JSON 前转义）。响应体超过 `max_size` 时读满上限并显式标 `truncated`——修掉了旧版在 64 KiB 处静默丢数据、以及在带 `truncated` 后缀时结果 JSON 缓冲溢出的两个 bug；读超时或短于 `Content-Length` 也标 `truncated`，结果 JSON 构造带长度校验
 - `web_search`（Bing 端点可配）
-- `agent_tool`（子代理，独立循环、默认只读、深度上限 3）；只读子代理并行 fork 运行，其自身的只读工具（read_file/glob/grep/git_*，均限工作区内）自动放行——子进程在自己的进程组里读控制终端会触发 SIGTTIN 停住并让父进程 poll 死等，且多个子进程争抢同一 stdin，所以不再逐次弹审批
+- `agent_tool`（子代理，独立循环、默认只读、深度上限 3）；只读子代理并行 fork 运行，其自身的只读工具（read_file/glob/grep/read_tool_output，均限工作区内）自动放行——子进程在自己的进程组里读控制终端会触发 SIGTTIN 停住并让父进程 poll 死等，且多个子进程争抢同一 stdin，所以不再逐次弹审批
+- 工具面收敛（2026-09-12）：19 -> 12 个。删 `git_*`（git 经 `bash` 执行，
+  `GIT_CEILING_DIRECTORIES` 下沉为所有命令子进程统一环境）、`run_command`
+  （并入 `bash`）、`write_file`（并入 `edit_file` 创建语义）、`task_*` 三件
+  （合并为 `task` 单工具）。只读面为 read_file/glob/grep/read_tool_output
 - 工具调用参数解析：容忍模型把参数包进一层或多层 `{"arguments": ...}`（对象与 JSON 字符串形式混合），最多 8 层；超限报 `nested too deep`，信封值非对象/字符串、或信封带尾随数据时明确拒绝；多键信封不再被误判。校验失败时错误附带该工具的参数 schema（`expected parameters: ...`），让模型知道该传什么，而不是只回一句 `Invalid ... arguments`
 - 工具字符串参数堆分配（`prepared_tool` 的 value/content/path/old/new/argv 等），不再受旧 4095 字节上限，只受整包 `MAX_TOOL_OUTPUT`（50KB）约束；`web_search` 结果会话重载的 100KB 栈缓冲也改堆分配。valgrind（单测 + 800 例 fuzz-tool-args）0 error / 0 leak
 - 工具调用参数转义：流式收到的原始转义参数在存入对话前只解码一次，回灌请求时只转义一次，历史里的 assistant tool_call 不再双重转义（旧行为会把 `{"command":"ls"}` 回灌成 `{\"command\":\"ls\"}`，把模型带偏、越纠越乱）
@@ -88,6 +95,6 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（174 agent + 45 json + 32 http + 17 tui + 21 markdown + 5 tty + 8 e2e + 4 streaming；集成 37；`make mutate` 含 result/reasoning/webfetch 新 mutant 全 KILLED；test-tui-commands 与 test-tui-real 手动运行（`make ccode ccode-tui ccode-cli` 后 `make test-tui-real`），全绿）。行为收敛项(2026-09-12):`/models` 三前端同文本、`/reasoning effort` 三前端同校验、JSON Lines 事件单一构造器——见 `docs/AUDIT.md`
+3. 现有测试套件全过（154 agent + 45 json + 32 http + 17 tui + 21 markdown + 5 tty + 8 e2e + 4 streaming；集成 37；`make mutate` 含 result/reasoning/webfetch 新 mutant 全 KILLED；test-tui-commands 与 test-tui-real 手动运行（`make ccode ccode-tui ccode-cli` 后 `make test-tui-real`），全绿）。行为收敛项(2026-09-12):`/models` 三前端同文本、`/reasoning effort` 三前端同校验、JSON Lines 事件单一构造器——见 `docs/AUDIT.md`
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟
 5. 工具调用/指令安全改动要过 `make fuzz-tool-args fuzz-command-paths fuzz-paths`，且 `make mutate`（故意注入错误看测试是否抓住）保持全部 KILLED

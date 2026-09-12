@@ -61,8 +61,6 @@ BASE = {
                      "timeout": 5}],
     "agent_tool":  [{"task": "inspect the parser"},
                     {"task": "x", "read_only": "false"}],
-    "bash": [{"command": "echo hi"},
-                    {"argv": ["ls", "-l"], "timeout_ms": 1000}],
 }
 
 # Required keys per tool; mutate these for reliably-invalid cases. task_list
@@ -255,9 +253,6 @@ def gen_invalid(rnd):
     out.append(Case("bash",
                     '{"command":"true","timeout_ms":1.5}', ("error",),
                     "timeout-float"))
-    out.append(Case("bash", '{"command":"sh -c true"}',
-                    ("contains", "error"),
-                    "bash-tool-still-executes"))
     out.append(Case("grep", '{"pattern":"n","context":101}', ("error",),
                     "context-101"))
     out.append(Case("grep", '{"pattern":"n","context":-1}', ("error",),

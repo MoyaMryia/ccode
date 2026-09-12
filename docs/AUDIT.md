@@ -59,6 +59,30 @@ REPL(agent.c)、JSON 后端(backend_command)、进程内 TUI(inproc_handle_comma
 
 `src/http.c` `resolve_with_deadline()` 已收敛一半：数值 IP 字面量（IPv4/IPv6）直接构造 `sockaddr`，不再 fork `getaddrinfo` 子进程；只有真实主机名还需要 deadline-bounded DNS 子进程。完全去掉 fork 需要可移植的非阻塞 DNS（线程/c-ares/平台 API），属独立重构，暂缓。
 
+## 2026-09-12 工具面收敛（19 -> 12）
+
+四个原子提交：删 `git_*` 三件（git 经 bash）、删 `run_command`（并入 bash，
+补 `timeout_ms`）、`task_*` 三合一、删 `write_file`（edit_file 空
+old_string 创建）。工具名单同步点从 5 处收缩；`is_shell_string_invocation`
+随 argv 入口移除。bash 审批 display 改显式构造（超长报错）。
+
+**随收敛产生的安全回归（已知、已评估）：**
+
+1. 仓库配置的 `diff.external`/`textconv` 不再被强制屏蔽——原 git_diff 工具
+   传 `--no-ext-diff --no-textconv`，现在 git 经 bash 跑，恶意仓库配置的
+   diff 驱动可执行。缓解：命令过滤与 Landlock 写沙箱仍生效；git 经审批。
+2. `GIT_CEILING_DIRECTORIES` 从 git 专用包装下沉为**所有**命令子进程的统一
+   环境（agent_exec.c build_git_ceiling_env），覆盖面比原来更大；e2e 曾因
+   缺此防护把外层仓库未提交改动 diff 进输出，已回归钉住
+   （test_bash_git_does_not_discover_parent_repository）。
+3. 只读模式（含只读子代理）不再有 git 工具；探索型子代理看不了 git 历史，
+   由父代理代查。
+
+**遗留观察（本轮审查发现、未处理）：** webfetch 请求行未消毒 + method 未限
+GET/HEAD；webfetch 无私网/链路本地 SSRF 默认拒绝；glob/grep 不跳过 `.git`；
+单目录超 512 项中止整轮扫描；move_file 静默覆盖目标；FNV-1a 基数
+agent_results.c 与 agent_fs.c 不一致（改常数会让旧会话 blob 失联）。
+
 ## 2026-09-12 已收敛的重复
 
 - `write_all` 循环 ×3 → `src/fdio.c` `ccode_fd_write_all`

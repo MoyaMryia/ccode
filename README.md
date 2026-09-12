@@ -8,7 +8,7 @@ TUI（单体 `ccode` / 分离 `ccode-tui`）与 CLI 共用同一套 agent 核心
 
 - 交互式对话（REPL）或单条提问，二选一
 - 纯 CLI 命令行（`ccode-cli`）；TUI（单体 `ccode` / 分离 `ccode-tui`）默认不构建，手动 `make ccode ccode-tui`
-- 读文件、写文件、搜代码（glob/grep）、跑命令、抓网页、搜网页，还能派子代理干活
+- 读文件、编辑文件（含创建）、搜代码（glob/grep）、跑命令、抓网页、搜网页，还能派子代理干活
 - Markdown 渲染成带颜色的终端输出
 - 会话保存、列表、恢复
 - 模型列表、搜索、切换
