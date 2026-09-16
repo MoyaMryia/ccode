@@ -4443,13 +4443,15 @@ static int test_read_file_sanitizes_invalid_utf8(void) {
 
     snprintf(path, sizeof(path), "fixtures/bad_utf8_%ld.txt", (long)getpid());
     {
+        /* Invalid sequences: bare continuation byte, overlong C0 AF,
+         * truncated 3-byte lead, then valid multibyte (中文). */
+        static const char invalid_utf8[] =
+            "ok\xc2\xa6\xc0\xaf\xe6\x96 text\xe4\xb8\xad\xe6\x96\x87";
         FILE *f = fopen(path, "wb");
         size_t pad;
         ASSERT(f != NULL);
         for (pad = 0; pad < 2048; pad++) fputs("valid text line\n", f);
-        /* Invalid sequences: bare continuation byte, overlong C0 AF,
-         * truncated 3-byte lead, then valid multibyte (中文). */
-        fwrite("ok\xc2\xa6\xc0\xaf\xe6\x96 text\xe4\xb8\xad\xe6\x96\x87", 1, 30, f);
+        fwrite(invalid_utf8, 1, sizeof(invalid_utf8) - 1, f);
         for (pad = 0; pad < 2048; pad++) fputs("more valid text\n", f);
         fclose(f);
     }
