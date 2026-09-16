@@ -13,9 +13,6 @@
 static ccode_permission_handler permission_handler;
 static void *permission_context;
 
-#define is_bidi_control(cp) ccode_cp_is_bidi_control(cp)
-
-//BLAME-IMPACT(dup): markdown.c:30 — 转义逻辑与 markdown.c emit_text 重复
 static void fprint_safe_limit(FILE *stream, const char *value,
                               const char *null_value, size_t limit,
                               int keep_layout) {
@@ -43,14 +40,12 @@ static void fprint_safe_limit(FILE *stream, const char *value,
             else if (cp == '\r') fputs("\\r", stream);
             else if (cp == '\t') fputs("\\t", stream);
             else fprintf(stream, "\\x%02X", cp);
-        } else if ((length == 1 && cp >= 0x7fU) ||
-                   (cp >= 0x80U && cp <= 0x9fU)) {
-            if (length == 1) fprintf(stream, "\\x%02X", cp);
-            else fprintf(stream, "\\u%04X", cp);
-        } else if (is_bidi_control(cp)) {
-            fprintf(stream, "\\u%04X", cp);
         } else {
-            fwrite(s + offset, 1, length, stream);
+            int esc_width;
+            const char *esc = ccode_cp_safe_escape(cp, length, &esc_width);
+            (void)esc_width;
+            if (esc) fputs(esc, stream);
+            else fwrite(s + offset, 1, length, stream);
         }
         offset += length;
     }
@@ -174,7 +169,6 @@ int ccode_permission_ask(struct ccode_permission_request *req) {
 
         fflush(stderr);
 
-        //BLAME-IMPACT(readline): lineedit.c:13 — 已是统一入口的消费者，收敛其余 fgets 到此
         if (ccode_read_line(line, sizeof(line)) <= 0) {
             fprintf(stderr, "\n");
             return 0;

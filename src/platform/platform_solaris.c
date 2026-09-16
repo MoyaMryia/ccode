@@ -19,6 +19,7 @@
 #if defined(__sun)
 
 #include "platform.h"
+#include "platform_common.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -63,8 +64,7 @@ int ccode_platform_exe_path(char *buf, size_t cap) {
  * us to a specific ABI), we read the file head and parse the two integers
  * at their documented offsets. If the procfs layout is unavailable we
  * return 0, as platform.h allows platforms without a usable procfs to do. */
-//BLAME-IMPACT(dup): markdown.c:30 — 与其它平台逐字相同(AUDIT #3)；同文件双份
-int ccode_platform_detect_escaped(pid_t child) {
+int ccode_platform_detect_escaped(pid_t child, pid_t child_pgid) {
     DIR *dir;
     struct dirent *entry;
     pid_t child_pgid;
@@ -115,12 +115,7 @@ int ccode_platform_detect_escaped(pid_t child) {
 /* ── Write sandbox ── */
 
 int ccode_platform_sandbox_apply(const char *workspace_path) {
-    /* No Landlock equivalent on illumos. No-op returning -1 keeps the
-     * command filter in sandbox.c as the only protection, the same
-     * fallback Linux takes when Landlock is unavailable. platform.h
-     * allows this. */
-    (void)workspace_path;
-    return -1;
+    return ccode_platform_no_sandbox(workspace_path);
 }
 
 /* ── SIGPIPE-safe send ──
@@ -129,54 +124,17 @@ int ccode_platform_sandbox_apply(const char *workspace_path) {
  * (and Solaris 11.4+); use it where present, otherwise no-op and rely on
  * the caller's signal disposition. send_flags() returns 0. */
 int ccode_platform_socket_nosigpipe(int fd) {
-#ifdef SO_NOSIGPIPE
-    int on = 1;
-    return setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on)) == 0
-               ? 0 : -1;
-#else
-    (void)fd;
-    return -1;
-#endif
+    return ccode_platform_nosigpipe_sockopt(fd);
 }
 
 int ccode_platform_send_flags(void) {
     return 0; /* SO_NOSIGPIPE (where available) handles it socket-wide. */
 }
 
-#else /* !__sun */
-
-/*
- * Fallback: compiled for a platform this file was not written for (the
- * Makefile normally picks the matching platform_*.c). Provide the
- * best-effort no-ops that platform.h allows, so the build still links and
- * callers fall back to argv[0]/PATH search, process-group kill and the
- * command filter in sandbox.c.
- */
+#else
 
 #include "platform.h"
+#include "platform_common.h"
 
-int ccode_platform_exe_path(char *buf, size_t cap) {
-    (void)buf; (void)cap;
-    return -1;
-}
-
-int ccode_platform_detect_escaped(pid_t child) {
-    (void)child;
-    return 0;
-}
-
-int ccode_platform_sandbox_apply(const char *workspace_path) {
-    (void)workspace_path;
-    return -1;
-}
-
-int ccode_platform_socket_nosigpipe(int fd) {
-    (void)fd;
-    return -1;
-}
-
-int ccode_platform_send_flags(void) {
-    return 0;
-}
-
-#endif /* __sun */
+CCODE_PLATFORM_FALLBACK_BODY
+#endif

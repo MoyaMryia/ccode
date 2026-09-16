@@ -29,6 +29,7 @@
 #include "../src/agent/message.h"
 #include "../src/agent/agent.h"
 #include "../src/agent/agent_internal.h"
+#include "../src/json.h"
 #include "../src/webfetch.h"
 #include "../src/websearch.h"
 #include "../src/models.h"
@@ -4875,19 +4876,13 @@ static int test_web_search_prepare(void) {
 static int test_coding_agent_prompt_contract(void) {
     const char *prompt = ccode_coding_agent_system_prompt();
     ASSERT(prompt != NULL);
-    ASSERT(strstr(prompt, "Read the relevant files") != NULL);
+    /* Minimal persona (deepseek-harness `minimal` style): a short paragraph
+     * as the complete prompt; tool guidance lives in the tool schemas. */
+    ASSERT(strstr(prompt, "helpful software engineer assistant") != NULL);
+    ASSERT(strstr(prompt, "Inspect the relevant code before changing it") != NULL);
     ASSERT(strstr(prompt, "smallest change") != NULL);
-    ASSERT(strstr(prompt, "Do not claim that a change is complete") != NULL);
     ASSERT(strstr(prompt, "Never invent test results") != NULL);
-    ASSERT(strstr(prompt, "read_file") != NULL);
-    ASSERT(strstr(prompt, "edit_file") != NULL);
-    ASSERT(strstr(prompt, "Ask for approval before side effects") != NULL);
-    ASSERT(strstr(prompt, "GitHub-flavored Markdown") != NULL);
-    ASSERT(strstr(prompt, "task tool (action create)") != NULL);
-    ASSERT(strstr(prompt, "agent_tool") != NULL);
-    ASSERT(strstr(prompt, "Never commit") != NULL);
-    ASSERT(strstr(prompt, "file_path:line_number") != NULL);
-    ASSERT(strstr(prompt, "AGENTS.md") != NULL);
+    ASSERT(strlen(prompt) < 4095);
     return 1;
 }
 

@@ -222,7 +222,10 @@ int tui_term_read_key(int timeout_ms) {
     pfd.events = POLLIN;
     result = poll(&pfd, 1, timeout_ms);
     if (result <= 0) return -1;
-    //BLAME-IMPACT(readline): cli/main.c:270 — 另一份裸 read(STDIN) 键解析，与 lineedit/tui_input 并存
+    /* Raw key decode for the TUI (escape sequences / arrow keys). This is a
+     * decode layer above the line reader, not a second line editor: the
+     * lineedit library never needs arrow keys, and tui_input_key is already
+     * shared with it. See AUDIT #2. */
     if (read(STDIN_FILENO, &c, 1) != 1) return -1;
     if (c == 0x1b) {
         struct pollfd sequence_poll = { STDIN_FILENO, POLLIN, 0 };

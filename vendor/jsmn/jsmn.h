@@ -30,6 +30,10 @@ int ccode_jsmn_parse(ccode_jsmn_parser *parser, const char *js, size_t len,
 
 int ccode_jsmn_token_streq(const char *js, ccode_jsmntok_t *tok,
                            const char *s);
-int ccode_jsmn_token_to_int(const char *js, ccode_jsmntok_t *tok);
+
+/* Decode the four hex digits at s into *value (value may be NULL). Returns 0
+ * on success, -1 when any character is not a hex digit. Shared XXXX decoder
+ * for JSON \u escapes. */
+int ccode_jsmn_hex4(const char *s, unsigned int *value);
 
 #endif

@@ -128,13 +128,28 @@ int tui_protocol_send_clear(struct tui_protocol *protocol) {
 }
 
 int tui_protocol_send_resize(struct tui_protocol *protocol, int cols, int rows) {
-    char line[128];
-    //BLAME-IMPACT(json): json.c:10 — 手搓事件 JSON，改 ccode_json_build_event
-    snprintf(line, sizeof(line), "{\"type\":\"resize\",\"cols\":%d,\"rows\":%d}\n", cols, rows);
-    return ccode_fd_write_all(protocol->input_fd, line, strlen(line));
+    struct ccode_buf b;
+    int rc = -1;
+    ccode_buf_init(&b);
+    if (ccode_buf_append_c(&b, '{') == 0 &&
+        ccode_json_append_quoted(&b, "type") == 0 &&
+        ccode_buf_append(&b, ":") == 0 &&
+        ccode_json_append_quoted(&b, "resize") == 0 &&
+        ccode_buf_append(&b, ",\"cols\":") == 0 &&
+        ccode_json_append_int(&b, cols) == 0 &&
+        ccode_buf_append(&b, ",\"rows\":") == 0 &&
+        ccode_json_append_int(&b, rows) == 0 &&
+        ccode_buf_append(&b, "}\n") == 0)
+        rc = ccode_fd_write_all(protocol->input_fd, b.data, b.len);
+    ccode_buf_free(&b);
+    return rc;
 }
 
-//BLAME-IMPACT(readline): cli/main.c:270 — 第五份读行；fd 分帧逻辑保留，门面对齐 lineedit
+/* Read one newline-delimited protocol line. This framer is deliberately
+ * separate from ccode_read_line_fd: the backend pipe is non-blocking and the
+ * caller polls, so a half line must be cached across calls (pending) and an
+ * oversized line reported (-2) rather than drained. The line editor blocks on
+ * a tty and needs neither. See AUDIT #2. */
 int tui_protocol_read_line(struct tui_protocol *protocol, char *line, size_t cap) {
     char *newline;
     ssize_t n;
@@ -169,43 +184,10 @@ int tui_protocol_read_line(struct tui_protocol *protocol, char *line, size_t cap
     }
 }
 
-//BLAME-IMPACT(json): jsmn.c:6 — hex 解析三份之一(jsmn/json.c/tui)
-static int hex_value(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-//BLAME-IMPACT(json): cli/main.c:55 — 第三份字段提取，自带有损 unescape(\uXXXX->'?')；改调 ccode_json_unescape
 int tui_protocol_field(const char *line, const char *field, char *out, size_t cap) {
-    size_t pos;
-    char needle[128];
-    const char *start, *p;
-    pos = 0;
-    if (!line || !field || !out || cap == 0) return -1;
-    snprintf(needle, sizeof(needle), "\"%s\":\"", field);
-    start = strstr(line, needle);
-    if (!start) return -1;
-    p = start + strlen(needle);
-    while (*p && *p != '"') {
-        if (pos + 1 >= cap) return -1;
-        if (*p == '\\') {
-            p++;
-            if (*p == 'n') out[pos++] = '\n';
-            else if (*p == 'r') out[pos++] = '\r';
-            else if (*p == 't') out[pos++] = '\t';
-            else if (*p == '"' || *p == '\\' || *p == '/') out[pos++] = *p;
-            else if (*p == 'u' && hex_value(p[1]) >= 0 && hex_value(p[2]) >= 0 &&
-                     hex_value(p[3]) >= 0 && hex_value(p[4]) >= 0) {
-                out[pos++] = '?'; p += 4;
-            } else return -1;
-        } else out[pos++] = *p;
-        p++;
-    }
-    if (*p != '"') return -1;
-    out[pos] = '\0';
-    return 0;
+    /* Single field extractor over the shared token tree; unlike the old
+     * scanner this decodes \uXXXX instead of collapsing it to '?'. */
+    return ccode_json_get_string(line, field, out, cap);
 }
 
 int tui_protocol_exited(struct tui_protocol *protocol, int *exit_code) {

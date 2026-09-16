@@ -59,10 +59,8 @@ enum tool_arg_unwrap {
  * note below). */
 static int is_arguments_envelope(const char *s, ccode_jsmntok_t *tokens,
                                  int *value_idx) {
-    ccode_jsmn_parser parser;
     int n, after;
-    ccode_jsmn_init(&parser);
-    n = ccode_jsmn_parse(&parser, s, strlen(s), tokens, 256);
+    n = ccode_json_parse(s, strlen(s), tokens, 256);
     if (n < 2) return 0;
     if (tokens[0].type != CCODE_JSMN_OBJECT) return 0;
     if (tokens[1].type != CCODE_JSMN_STRING ||
@@ -168,18 +166,11 @@ static const char *refuse_path(const char *error, const char *value,
 }
 
 /* Decode a string token into a freshly allocated buffer (caller owns it via
- * prepared_tool_free). Unlike the fixed-buffer copy_string_token this is not
- * capped at CCODE_MAX_ARGUMENT_LEN; the caller bounds the encoded arguments. */
-//BLAME-IMPACT(json): json.c:10 — 重复 ccode_json_token_string/to_string
+ * prepared_tool_free). Wrapper over json.c's canonical unescape. */
 static int copy_string_token_dyn(const char *json, const ccode_jsmntok_t *token,
                                  char **out) {
-    size_t len = (size_t)(token->end - token->start);
-    char *buf = malloc(len + 1);
+    char *buf = ccode_json_token_string(json, token);
     if (!buf) return -1;
-    if (copy_string_token(json, token, buf, len + 1) != 0) {
-        free(buf);
-        return -1;
-    }
     free(*out);
     *out = buf;
     return 0;
@@ -225,7 +216,6 @@ void prepared_tool_free(struct prepared_tool *prepared) {
 
 static const char *prepare_tool_inner(const char *name, const char *arguments,
                                       struct prepared_tool *prepared) {
-    ccode_jsmn_parser parser;
     ccode_jsmntok_t tokens[128];
     int num_tokens;
 
@@ -234,9 +224,7 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
     if (strlen(arguments) > MAX_TOOL_OUTPUT)
         return "{\"error\":\"Tool arguments too large\"}";
 
-    ccode_jsmn_init(&parser);
-    num_tokens = ccode_jsmn_parse(&parser, arguments, strlen(arguments),
-                                  tokens, 128);
+    num_tokens = ccode_json_parse(arguments, strlen(arguments), tokens, 128);
     if (num_tokens <= 0 || tokens[0].type != CCODE_JSMN_OBJECT ||
         !only_whitespace_after_root(arguments, &tokens[0]))
         return "{\"error\":\"Could not parse tool arguments\"}";
@@ -826,13 +814,13 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
  * buffer valid until the next call, or the original error when there is no
  * schema to add. */
 static const char *explain_tool_error(const char *name, const char *error) {
-    static char buf[2048];
+    static struct ccode_buf buf;
     const char *schema = NULL;
     const char *body;
     const char *close;
     char *esc_schema;
     size_t i;
-    int n;
+    int ok;
 
     if (!error || !name) return error;
     if (strncmp(error, "{\"error\":\"", 10) != 0) return error;
@@ -840,7 +828,6 @@ static const char *explain_tool_error(const char *name, const char *error) {
      * need the full schema repeated. */
     if (strstr(error, "expected") != NULL) return error;
     /* Security refusals already carry a "reason"; do not bolt the schema on. */
-    //BLAME-IMPACT(json): cli/main.c:55 — strstr 提字段，改走 token 树
     if (strstr(error, "\"reason\"") != NULL) return error;
     body = error + 10;
     close = strrchr(error, '"');
@@ -856,12 +843,17 @@ static const char *explain_tool_error(const char *name, const char *error) {
 
     esc_schema = ccode_json_escape(schema);
     if (!esc_schema) return error;
-    n = snprintf(buf, sizeof(buf),
-                 "{\"error\":\"%.*s; expected parameters: %s\"}",
-                 (int)(close - body), body, esc_schema);
+    /* body is already the escaped content of the original error string, and
+     * esc_schema is escaped, so both are appended verbatim. */
+    ccode_buf_clear(&buf);
+    ok = ccode_buf_append(&buf, "{\"error\":\"") == 0 &&
+         ccode_buf_append_n(&buf, body, (size_t)(close - body)) == 0 &&
+         ccode_buf_append(&buf, "; expected parameters: ") == 0 &&
+         ccode_buf_append(&buf, esc_schema) == 0 &&
+         ccode_buf_append(&buf, "\"}") == 0;
     free(esc_schema);
-    if (n <= 0 || (size_t)n >= sizeof(buf)) return error;
-    return buf;
+    if (!ok) return error;
+    return buf.data;
 }
 
 /* Entry point: unwrap any {"arguments": ...} envelopes before the strict

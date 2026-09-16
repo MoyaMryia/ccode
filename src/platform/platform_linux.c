@@ -14,6 +14,8 @@
 #endif
 
 #include "platform.h"
+#define CCODE_PLATFORM_HAVE_PROC 1
+#include "platform_common.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -51,60 +53,8 @@ int ccode_platform_exe_path(char *buf, size_t cap) {
  *
  * (Moved verbatim from agent.c to remove the /proc dependency from the
  * main source tree. The logic is unchanged.) */
-//BLAME:child_pgid = getpgid(child); 但唯一调用点在     
-//agent_exec.c:900 位于 waitpid 回收 child 之后，Linux 上必然返回 -1，于是整个 detect_escaped 退化成恒为 0 的死探  
-//测（且 PID 复用时可能读到无关进程的 pgid）。                         
-//BLAME-IMPACT(dup): platform_linux.c:54 — 与其它平台逐字相同(AUDIT #3)；同文件双份
-int ccode_platform_detect_escaped(pid_t child) {
-    DIR *dir;
-    struct dirent *entry;
-    pid_t child_pgid;
-    int escaped = 0;
-
-    child_pgid = getpgid(child);
-    if (child_pgid < 0) return 0;
-
-    dir = opendir("/proc");
-    if (!dir) return 0;
-
-    while ((entry = readdir(dir)) != NULL) {
-        char stat_path[320];
-        char stat_buf[8192];
-        int fd;
-        ssize_t n;
-        char *paren;
-        char *close_paren;
-        char *fields;
-        char state_c;
-        int ppid, pgid;
-
-        if (entry->d_name[0] < '0' || entry->d_name[0] > '9') continue;
-        {
-            long pid_val = atol(entry->d_name);
-            if (pid_val <= 0 || pid_val == (long)child) continue;
-        }
-        snprintf(stat_path, sizeof(stat_path), "/proc/%s/stat", entry->d_name);
-        fd = open(stat_path, O_RDONLY | O_CLOEXEC);
-        if (fd < 0) continue;
-        n = read(fd, stat_buf, sizeof(stat_buf) - 1);
-        close(fd);
-        if (n <= 0) continue;
-        stat_buf[n] = '\0';
-
-        paren = strchr(stat_buf, '(');
-        if (!paren) continue;
-        close_paren = strrchr(paren, ')');
-        if (!close_paren) continue;
-        fields = close_paren + 1;
-        if (sscanf(fields, " %c %d %d", &state_c, &ppid, &pgid) != 3) continue;
-
-        if (ppid == (int)child && pgid != (int)child_pgid) {
-            escaped = 1;
-            break;
-        }
-    }
-    closedir(dir);
-    return escaped;
+int ccode_platform_detect_escaped(pid_t child, pid_t child_pgid) {
+    return ccode_platform_proc_detect_escaped(child, child_pgid);
 }
 
 /* ── Landlock write sandbox ──
@@ -241,48 +191,17 @@ int ccode_platform_sandbox_apply(const char *workspace_path) {
  * Linux suppresses SIGPIPE per-send via the MSG_NOSIGNAL flag, so the
  * socket-level no-op leaves the flag do the work. */
 int ccode_platform_socket_nosigpipe(int fd) {
-    (void)fd;
-    return 0; /* MSG_NOSIGNAL is used per-send instead. */
+    return ccode_platform_nosigpipe_ok(fd);
 }
 
 int ccode_platform_send_flags(void) {
     return MSG_NOSIGNAL;
 }
 
-#else /* !__linux__ */
-
-/*
- * Fallback: compiled for a platform this file was not written for (the
- * Makefile normally picks the matching platform_*.c). Provide the
- * best-effort no-ops that platform.h allows, so the build still links and
- * callers fall back to argv[0]/PATH search, process-group kill and the
- * command filter in sandbox.c.
- */
+#else
 
 #include "platform.h"
+#include "platform_common.h"
 
-int ccode_platform_exe_path(char *buf, size_t cap) {
-    (void)buf; (void)cap;
-    return -1;
-}
-
-int ccode_platform_detect_escaped(pid_t child) {
-    (void)child;
-    return 0;
-}
-
-int ccode_platform_sandbox_apply(const char *workspace_path) {
-    (void)workspace_path;
-    return -1;
-}
-
-int ccode_platform_socket_nosigpipe(int fd) {
-    (void)fd;
-    return -1;
-}
-
-int ccode_platform_send_flags(void) {
-    return 0;
-}
-
-#endif /* __linux__ */
+CCODE_PLATFORM_FALLBACK_BODY
+#endif

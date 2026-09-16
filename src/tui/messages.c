@@ -35,14 +35,14 @@ int tui_messages_add(struct tui_messages *messages, enum tui_message_type type,
     char *copy;
     if (!messages) return -1;
     if (messages->count == messages->cap) {
-        //BLAME-IMPACT(vector): message.c:21 — 消息列表自增，统一 vector
-        size_t new_cap = messages->cap ? messages->cap * 2 : 32;
-        struct tui_message *grown =
-            (struct tui_message *)realloc(messages->items,
-                                          new_cap * sizeof(*grown));
-        if (!grown) return -1;
-        messages->items = grown;
-        messages->cap = new_cap;
+        struct ccode_vec v;
+        v.data = messages->items;
+        v.len = messages->cap;
+        v.cap = messages->cap;
+        v.elem = sizeof(struct tui_message);
+        if (ccode_vec_reserve(&v, messages->count + 1) != 0) return -1;
+        messages->items = (struct tui_message *)v.data;
+        messages->cap = v.cap;
     }
     copy = tui_message_copy(text);
     if (!copy) return -1;

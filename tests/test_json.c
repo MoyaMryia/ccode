@@ -345,8 +345,8 @@ static int test_accumulator_process(void) {
     r = ccode_sse_accumulator_process(&acc, "[DONE]", 6);
     ASSERT(r == 1);
 
-    ASSERT(acc.content != NULL);
-    ASSERT(strcmp(acc.content, "Hello") == 0);
+    ASSERT(acc.content.data != NULL);
+    ASSERT(strcmp(acc.content.data, "Hello") == 0);
     ASSERT(acc.finish_reason != NULL);
     ASSERT(strcmp(acc.finish_reason, "stop") == 0);
 
@@ -383,7 +383,7 @@ static int test_accumulator_stream_callback(void) {
         "{\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}",
         strlen("{\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}")) == 0);
     ASSERT(strcmp(capture.text, "Hello") == 0);
-    ASSERT(strcmp(acc.content, "Hello") == 0);
+    ASSERT(strcmp(acc.content.data, "Hello") == 0);
     ccode_sse_accumulator_destroy(&acc);
     return 1;
 }
@@ -756,15 +756,15 @@ static int test_content_accumulator_hard_limit(void) {
     ASSERT(oversized != NULL);
     ccode_sse_accumulator_init(&acc);
     ASSERT(TEST_PROCESS(&acc, json) == 0);
-    ASSERT(acc.content_len == CCODE_MAX_SSE_CONTENT_LEN);
+    ASSERT(acc.content.len == CCODE_MAX_SSE_CONTENT_LEN);
     ASSERT(TEST_PROCESS(&acc,
         "{\"choices\":[{\"delta\":{\"content\":\"x\"}}]}") == -1);
-    ASSERT(acc.content_len == CCODE_MAX_SSE_CONTENT_LEN);
+    ASSERT(acc.content.len == CCODE_MAX_SSE_CONTENT_LEN);
     free(json);
     ccode_sse_accumulator_destroy(&acc);
     ccode_sse_accumulator_init(&acc);
     ASSERT(TEST_PROCESS(&acc, oversized) == -1);
-    ASSERT(acc.content == NULL);
+    ASSERT(acc.content.data == NULL);
     free(oversized);
     ccode_sse_accumulator_destroy(&acc);
     return 1;
@@ -792,10 +792,10 @@ static int test_tool_arguments_accumulator_hard_limit(void) {
 static int test_accumulator_rejects_size_t_wrap(void) {
     struct ccode_sse_accumulator acc;
     ccode_sse_accumulator_init(&acc);
-    acc.content_len = SIZE_MAX;
+    acc.content.len = SIZE_MAX;
     ASSERT(TEST_PROCESS(&acc,
         "{\"choices\":[{\"delta\":{\"content\":\"x\"}}]}") == -1);
-    acc.content_len = 0;
+    acc.content.len = 0;
     ccode_sse_accumulator_destroy(&acc);
     return 1;
 }
@@ -851,10 +851,10 @@ static int test_accumulator_reasoning_callback(void) {
 
     ASSERT(strcmp(reasoning_cap.text, "thinking") == 0);
     ASSERT(strcmp(content_cap.text, "answer") == 0);
-    ASSERT(acc.reasoning_content != NULL);
-    ASSERT(strcmp(acc.reasoning_content, "thinking") == 0);
-    ASSERT(acc.content != NULL);
-    ASSERT(strcmp(acc.content, "answer") == 0);
+    ASSERT(acc.reasoning_content.data != NULL);
+    ASSERT(strcmp(acc.reasoning_content.data, "thinking") == 0);
+    ASSERT(acc.content.data != NULL);
+    ASSERT(strcmp(acc.content.data, "answer") == 0);
     ccode_sse_accumulator_destroy(&acc);
     return 1;
 }

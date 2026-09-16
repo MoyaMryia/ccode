@@ -81,8 +81,11 @@ int ccode_platform_exe_path(char *buf, size_t cap);
  * Win32:  Cygwin: scan /proc/<pid>/stat same as Linux
  * Darwin/BSD/Haiku/MINIX: return 0 (no usable procfs; rely on
  *          process-group kill)
+ *
+ * child_pgid is the child's process group id captured while it was still
+ * alive; getpgid(child) after the waitpid that reaps it is invalid.
  */
-int ccode_platform_detect_escaped(pid_t child);
+int ccode_platform_detect_escaped(pid_t child, pid_t child_pgid);
 
 /*
  * Apply a write sandbox restricting filesystem writes to the workspace

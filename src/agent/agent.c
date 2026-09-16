@@ -9,6 +9,8 @@
 #include "../lineedit.h"
 #include "../http.h"
 #include "../json.h"
+#include "../vec.h"
+#include "../commands.h"
 #include "../webfetch.h"
 #include "../websearch.h"
 #include "../sandbox.h"
@@ -58,19 +60,16 @@ static struct agent_context agent_ctx;
  * A sub-agent runs against its own context copy, so its dedup state never
  * suppresses a summary the parent still needs to append. */
 
-//BLAME-IMPACT(prompt): agent.c:67 — 独立 prompt 且 git_* 已失效，与主 prompt 统一
+/* Same minimal persona as the main prompt, plus the delegate contract:
+ * no stale tool names (git_* was removed). */
 static const char *subagent_system_prompt(void) {
     return
-        "You are a delegate sub-agent of ccode, the terminal coding agent. "
-        "You are given a single focused task inside the current workspace. "
-        "Inspect the relevant files first: use glob to find paths, grep to "
-        "search content, and read_file when you know the path. Prefer "
-        "read-only tools (read_file, glob, grep, git_*) and make no changes " //BLAME: 我们还有git工具吗
-        "unless the task explicitly asks for them. Match your thoroughness "
-        "to what the caller requested. Never claim something was verified "
-        "unless a check actually ran. If a tool result was denied or "
-        "failed, say so instead of assuming success. Your final message is "
-        "the only thing returned to the calling agent, so make it "
+        "You are a delegate sub-agent of ccode, a helpful software engineer "
+        "assistant. You are given a single focused task inside the current "
+        "workspace; inspect the relevant files first and stay within that "
+        "task. Prefer read-only tools (read_file, glob, grep) and make no "
+        "changes unless the task explicitly asks for them. Your final message "
+        "is the only thing returned to the calling agent, so make it "
         "self-contained: state findings with file_path:line_number "
         "references, list every change you made, and name anything left "
         "unverified.";
@@ -882,7 +881,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
         /* Close the reasoning block before printing the regular answer. */
         ccode_print_reasoning_end();
 
-        if (!cfg->on_content) ccode_print_content_delta(acc.content);
+        if (!cfg->on_content) ccode_print_content_delta(acc.content.data);
 
         /* The assistant message is fully received: emit any trailing
          * partial line that was buffered during streaming, then reset
@@ -895,7 +894,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
              * tool_calls: serializing it as content:null matches the
              * OpenAI/DeepSeek wire shape and avoids provider 400s on the
              * "content:\"\" + tool_calls" combination. */
-            const char *assistant_content = acc.content;
+            const char *assistant_content = acc.content.data;
             if (ccode_conversation_add(conv, CCODE_ROLE_ASSISTANT,
                                        assistant_content) != 0) {
                 ccode_sse_accumulator_destroy(&acc);
@@ -905,9 +904,9 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
             }
             /* Attach the chain-of-thought so it is persisted and echoed back
              * on the next request (required by thinking models that use
-             * tools). acc.reasoning_content may be NULL. */
+             * tools). acc.reasoning_content.data may be NULL. */
             if (ccode_conversation_set_reasoning(conv,
-                                                 acc.reasoning_content) != 0) {
+                                                 acc.reasoning_content.data) != 0) {
                 ccode_sse_accumulator_destroy(&acc);
                 fprintf(stderr, "Out of memory.\n");
                 result = -1;
@@ -931,7 +930,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                 }
                 if (result < 0) break;
 
-                if (cfg->on_content && acc.content && acc.content[0])
+                if (cfg->on_content && acc.content.data && acc.content.data[0])
                     cfg->on_content("\n", cfg->on_content_context);
                 if (!cfg->quiet) putchar('\n');
 
@@ -1284,6 +1283,18 @@ static int conversation_has_system(const struct ccode_conversation *conv) {
     return 0;
 }
 
+/* Install the coding-agent system prompt when tool use is on and none is
+ * present yet. Idempotent, so it is the single injection point the REPL's
+ * new/clear/resume paths all call. Returns 0 (also when nothing is needed) or
+ * -1 on allocation failure. */
+static int ensure_system_prompt(struct ccode_conversation *conv,
+                                const struct ccode_agent_config *cfg) {
+    if (!(cfg->read_only_tools || cfg->tools_enabled)) return 0;
+    if (conversation_has_system(conv)) return 0;
+    return ccode_conversation_add(conv, CCODE_ROLE_SYSTEM,
+                                  ccode_coding_agent_system_prompt());
+}
+
 /* Keep the oversized-result archive aligned with the active session file.
  * Called once per prompt after any session switch/new/resume. */
 static void sync_results_dir(struct agent_context *ctx, const char *session_path) {
@@ -1374,16 +1385,11 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
                     conv.count);
     }
 
-    if ((cfg->read_only_tools || cfg->tools_enabled) &&
-        !conversation_has_system(&conv)) {
-        //BLAME-IMPACT(prompt): agent_output.c:110 — 第 1/5 处重复注入，抽 ensure_system_prompt
-        const char *sys = ccode_coding_agent_system_prompt();
-        if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
-            fprintf(stderr, "Out of memory.\n");
-            ccode_conversation_destroy(&conv);
-            reset_workspace_state(&agent_ctx);
-            return 1;
-        }
+    if (ensure_system_prompt(&conv, cfg) != 0) {
+        fprintf(stderr, "Out of memory.\n");
+        ccode_conversation_destroy(&conv);
+        reset_workspace_state(&agent_ctx);
+        return 1;
     }
 
     if (cfg->prompt) {
@@ -1464,41 +1470,17 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
 #define CCODE_HISTORY_MAX 64
 #define CCODE_INPUT_LINE_MAX 8192
 
-const char *ccode_normalize_thinking_effort(const char *effort) {
-    if (strcmp(effort, "low") == 0) return "low";
-    if (strcmp(effort, "medium") == 0) return "medium";
-    if (strcmp(effort, "high") == 0) return "high";
-    if (strcmp(effort, "xhigh") == 0) return "xhigh";
-    if (strcmp(effort, "max") == 0) return "max";
-    return NULL;
+/* Prompt history for /history: a growable vec of owned strings, bounded at
+ * push time by CCODE_HISTORY_MAX. */
+static void repl_history_clear(struct ccode_vec *history) {
+    size_t i;
+    for (i = 0; i < history->len; i++)
+        free(*(char **)ccode_vec_at(history, i));
+    ccode_vec_clear(history);
 }
-//BLAME: 神人啊这里没改？
-//BLAME-IMPACT(dispatch): agent.c:1473 — 命令清单与 main.c /help 重复
-static void print_repl_help(void) {
-    fprintf(stderr,
-        "  Slash commands:\n"
-        "    /help              Show this help\n"
-        "    /exit              Exit the REPL\n"
-        "    /clear             Reset the conversation history\n"
-        "    /compact           Compact the conversation history\n"
-        "    /model [NAME]       Show current model or switch\n"
-        "    /model default N   Set default model\n"
-        "    /models            List available models from API\n"
-        "    /models search K   Search models by keyword\n"
-        "    /models info NAME  Show model details\n"
-        "    /thinking          Show or toggle the thinking field\n"
-        "    /thinking on|off   Enable or disable thinking\n"
-        "    /reasoning         Show or toggle the reasoning_effort field\n"
-        "    /reasoning on|off  Enable or disable reasoning_effort\n"
-        "    /reasoning effort L Set reasoning effort: low, medium, high, xhigh, max\n"
-        "    /history           Show prompts entered this session\n"
-        "    /sessions [delete N|rename O N|export N F]\n"
-        "                       List saved sessions (aliases: /session list,\n"
-        "                       /resume --list) or delete/rename/export one\n"
-        "    /resume [NAME]     Resume a session (most recent if no name)\n"
-        "    /session new [N]   Start a new session (optionally saved as N)\n"
-        "    /session switch N  Switch to a saved session\n");
-}
+
+/* Slash-command help is rendered by the shared registry (commands.c), so the
+ * REPL, the JSON backend and the TUI cannot drift. */
 
 /* Shared pretty printer for the JSON session list from ccode_session_list().
  * Used by /sessions and /session list. */
@@ -1529,18 +1511,439 @@ static void print_resumed_conversation(const struct ccode_conversation *conv) {
     fflush(stdout);
 }
 
+/*  Slash-command vtable for the line REPL ──
+ * Routing lives in commands.c; these methods own the REPL's conversation,
+ * history and session state. On allocation failure a method sets `oom` and
+ * the caller jumps to its cleanup label (a function pointer cannot `goto`). */
+
+struct repl_cmd {
+    struct ccode_agent_config *cfg;
+    struct ccode_conversation *conv;
+    struct agent_context *ctx;
+    char *current_model;
+    size_t current_model_cap;
+    char *current_effort;
+    size_t current_effort_cap;
+    struct ccode_vec *history;
+    char *session_path;
+    size_t session_path_cap;
+    int *have_session_path;
+    int oom;
+};
+
+static void repl_emit(void *self, const char *text) {
+    (void)self;
+    fputs(text, stderr);
+}
+
+static int repl_exit(void *self) {
+    (void)self;
+    return 1;
+}
+
+static void repl_clear(void *self) {
+    struct repl_cmd *c = self;
+    repl_history_clear(c->history);
+    ccode_conversation_destroy(c->conv);
+    if (ccode_conversation_init(c->conv, CCODE_MAX_MESSAGES) != 0) {
+        c->oom = 1;
+        return;
+    }
+    ccode_agent_summary_cache_reset();
+    if (ensure_system_prompt(c->conv, c->cfg) != 0) {
+        c->oom = 1;
+        return;
+    }
+    fputs("  Conversation cleared.\n", stderr);
+}
+
+static void repl_compact(void *self) {
+    struct repl_cmd *c = self;
+    const char *ch =
+        c->ctx->change_count > 0 ? change_log_serialize(c->ctx) : NULL;
+    const char *tk = c->ctx->task_count > 0 ? task_list_serialize(c->ctx) : NULL;
+    ccode_conversation_compact(c->conv, ch, tk);
+    ccode_agent_summary_cache_reset();
+    fputs("  Conversation compacted.\n", stderr);
+}
+
+static void repl_show_model(void *self) {
+    struct repl_cmd *c = self;
+    fprintf(stderr, "  Current model: %s\n", c->current_model);
+}
+
+static void repl_set_model(void *self, const char *name) {
+    struct repl_cmd *c = self;
+    size_t ml = strlen(name);
+    if (ml >= c->current_model_cap) ml = c->current_model_cap - 1;
+    memcpy(c->current_model, name, ml);
+    c->current_model[ml] = '\0';
+    c->cfg->model = c->current_model;
+    fprintf(stderr, "  Model switched to: %s\n", c->current_model);
+}
+
+static void repl_show_default_model(void *self) {
+    const char *cur;
+    (void)self;
+    cur = getenv("CCODE_MODEL");
+    fprintf(stderr, "  Default model: %s\n", cur ? cur : "(not set)");
+}
+
+static void repl_set_default_model(void *self, const char *name) {
+    (void)self;
+    setenv("CCODE_MODEL", name, 1);
+    fprintf(stderr, "  Default model set to: %s\n", name);
+}
+
+static void repl_list_models(void *self, const char *keyword,
+                             const char *info) {
+    struct repl_cmd *c = self;
+    char *text = ccode_models_render(c->cfg->api_base, c->cfg->api_key,
+                                     keyword, info, c->current_model);
+    if (!text)
+        fputs("  Could not fetch model list.\n", stderr);
+    else
+        fputs(text, stderr);
+    free(text);
+}
+
+static void repl_show_thinking(void *self) {
+    struct repl_cmd *c = self;
+    fprintf(stderr, "  Thinking: %s\n",
+            c->cfg->thinking_enabled ? "on" : "off");
+}
+
+static void repl_set_thinking(void *self, int on) {
+    struct repl_cmd *c = self;
+    c->cfg->thinking_enabled = on;
+    fputs(on ? "  Thinking enabled.\n" : "  Thinking disabled.\n", stderr);
+}
+
+static void repl_show_reasoning(void *self) {
+    struct repl_cmd *c = self;
+    fprintf(stderr, "  Reasoning: %s (effort: %s)\n",
+            c->cfg->thinking_effort ? "on" : "off", c->current_effort);
+}
+
+static void repl_set_reasoning(void *self, int on) {
+    struct repl_cmd *c = self;
+    if (on) {
+        if (!c->cfg->thinking_effort)
+            c->cfg->thinking_effort = c->current_effort;
+        fprintf(stderr, "  Reasoning enabled (effort: %s).\n",
+                c->current_effort);
+    } else {
+        c->cfg->thinking_effort = NULL;
+        fputs("  Reasoning disabled.\n", stderr);
+    }
+}
+
+static void repl_set_effort(void *self, const char *effort) {
+    struct repl_cmd *c = self;
+    snprintf(c->current_effort, c->current_effort_cap, "%s", effort);
+    c->cfg->thinking_effort = c->current_effort;
+    fprintf(stderr, "  Reasoning effort set to: %s.\n", c->current_effort);
+}
+
+static void repl_show_history(void *self) {
+    struct repl_cmd *c = self;
+    size_t i;
+    fprintf(stderr, "  Session history (%d prompts):\n",
+            (int)c->history->len);
+    for (i = 0; i < c->history->len; i++) {
+        fprintf(stderr, "    [%d] ", (int)i + 1);
+        ccode_fprint_safe(stderr, *(char **)ccode_vec_at(c->history, i), "");
+        fputc('\n', stderr);
+    }
+}
+
+static void repl_export(struct repl_cmd *c, const char *args) {
+    int n;
+    const char *ext = "json";
+    FILE *out;
+    char out_path[4096];
+    char *exported;
+    char name[256], fmt[32];
+
+    n = sscanf(args, "%255s %31s", name, fmt);
+    if (n < 1) {
+        fputs("  Usage: /sessions export <name> [format]\n", stderr);
+        return;
+    }
+    if (n >= 2) ext = fmt;
+    exported = ccode_session_export(name, ext);
+    if (!exported) {
+        fprintf(stderr, "  Could not export session: %s\n", name);
+        return;
+    }
+    {
+        size_t nl = strlen(name);
+        if (nl > 5 && strcmp(name + nl - 5, ".json") == 0) nl -= 5;
+        if (strcmp(ext, "md") == 0 || strcmp(ext, "markdown") == 0)
+            snprintf(out_path, sizeof(out_path), "%.*s.md", (int)nl, name);
+        else if (strcmp(ext, "txt") == 0 || strcmp(ext, "text") == 0)
+            snprintf(out_path, sizeof(out_path), "%.*s.txt", (int)nl, name);
+        else
+            snprintf(out_path, sizeof(out_path), "%.*s.json", (int)nl, name);
+    }
+    {
+        char *full;
+        size_t full_size =
+            strlen(c->ctx->workspace_root) + strlen(out_path) + 2;
+        full = malloc(full_size);
+        if (!full) {
+            fputs("  Out of memory.\n", stderr);
+            free(exported);
+            return;
+        }
+        snprintf(full, full_size, "%s/%s",
+                 c->ctx->workspace_root[0] ? c->ctx->workspace_root : ".",
+                 out_path);
+        out = fopen(full, "wb");
+        free(full);
+        if (!out) {
+            fputs("  Could not write export file.\n", stderr);
+            free(exported);
+            return;
+        }
+        fputs(exported, out);
+        fclose(out);
+    }
+    fprintf(stderr, "  Session exported to: %s\n", out_path);
+    free(exported);
+}
+
+static void repl_session_new(struct repl_cmd *c, const char *arg) {
+    const char *name = arg[3] == ' ' ? arg + 4 : "";
+    struct ccode_session_metadata meta;
+    struct ccode_conversation fresh;
+    char path[4096];
+    size_t nl = strlen(name);
+
+    ccode_agent_summary_cache_reset();
+    task_list_reset(c->ctx);
+    change_log_reset(c->ctx);
+    repl_history_clear(c->history);
+    ccode_conversation_destroy(c->conv);
+    if (ccode_conversation_init(c->conv, CCODE_MAX_MESSAGES) != 0) {
+        c->oom = 1;
+        return;
+    }
+    if (ensure_system_prompt(c->conv, c->cfg) != 0) {
+        c->oom = 1;
+        return;
+    }
+
+    if (name[0] == '\0') {
+        *c->have_session_path = 0;
+        c->session_path[0] = '\0';
+        fputs("  New session started (unnamed).\n", stderr);
+        return;
+    }
+    {
+        const char *dir = ccode_session_dir();
+        if (!dir || strchr(name, '/') || nl < 6 ||
+            strcmp(name + nl - 5, ".json") != 0 ||
+            nl >= CCODE_SESSION_NAME_MAX) {
+            fprintf(stderr, "  Invalid session name: %s\n", name);
+            return;
+        }
+        if (snprintf(path, sizeof(path), "%s/%s", dir, name) >=
+            (int)sizeof(path)) {
+            fputs("  Session path too long.\n", stderr);
+            return;
+        }
+    }
+
+    ccode_session_meta_init(&meta, c->cfg->model, c->ctx->workspace_root);
+    if (ccode_conversation_init(&fresh, CCODE_MAX_MESSAGES) != 0) {
+        c->oom = 1;
+        return;
+    }
+    if (ensure_system_prompt(&fresh, c->cfg) != 0) {
+        ccode_conversation_destroy(&fresh);
+        c->oom = 1;
+        return;
+    }
+    if (ccode_conversation_save(&fresh, path, NULL, NULL, &meta) != 0) {
+        ccode_conversation_destroy(&fresh);
+        fprintf(stderr, "  Could not save session: %s\n", name);
+        return;
+    }
+    ccode_conversation_destroy(&fresh);
+    if (strlen(path) < c->session_path_cap) {
+        memcpy(c->session_path, path, strlen(path) + 1);
+        *c->have_session_path = 1;
+    }
+    fprintf(stderr, "  New session started: %s\n", name);
+}
+
+static void repl_session_switch(struct repl_cmd *c, const char *arg) {
+    const char *name = arg + 7;
+    const char *dir = ccode_session_dir();
+    struct ccode_conversation new_conv;
+    char path[4096];
+    size_t nl = strlen(name);
+
+    if (!dir || strchr(name, '/') || nl < 6 ||
+        strcmp(name + nl - 5, ".json") != 0 ||
+        nl >= CCODE_SESSION_NAME_MAX) {
+        fprintf(stderr, "  Invalid session name: %s\n", name);
+        return;
+    }
+    if (snprintf(path, sizeof(path), "%s/%s", dir, name) >= (int)sizeof(path)) {
+        fputs("  Session path too long.\n", stderr);
+        return;
+    }
+    if (ccode_conversation_init(&new_conv, CCODE_MAX_MESSAGES) != 0) {
+        c->oom = 1;
+        return;
+    }
+    if (ccode_conversation_load(&new_conv, path, NULL, NULL) != 0) {
+        ccode_conversation_destroy(&new_conv);
+        fprintf(stderr, "  Could not load session: %s\n", name);
+        return;
+    }
+    ccode_conversation_destroy(c->conv);
+    *c->conv = new_conv;
+    ccode_agent_summary_cache_reset();
+    task_list_reset(c->ctx);
+    change_log_reset(c->ctx);
+    if (strlen(path) < c->session_path_cap) {
+        memcpy(c->session_path, path, strlen(path) + 1);
+        *c->have_session_path = 1;
+    }
+    fprintf(stderr, "  Switched to session: %s (%zu messages loaded)\n", name,
+            c->conv->count);
+}
+
+static void repl_sessions(void *self, const char *arg) {
+    struct repl_cmd *c = self;
+    if (*arg == '\0' || strcmp(arg, "list") == 0) {
+        print_session_list();
+        return;
+    }
+    if (strncmp(arg, "delete ", 7) == 0) {
+        const char *name = arg + 7;
+        if (name[0] == '\0' || ccode_session_delete(name) != 0)
+            fputs("  Usage: /sessions delete <name>\n", stderr);
+        else
+            fprintf(stderr, "  Session deleted: %s\n", name);
+        return;
+    }
+    if (strncmp(arg, "rename ", 7) == 0) {
+        char old_n[256], new_n[256];
+        if (sscanf(arg + 7, "%255s %255s", old_n, new_n) != 2 ||
+            ccode_session_rename(old_n, new_n) != 0)
+            fputs("  Usage: /sessions rename <old> <new>\n", stderr);
+        else
+            fprintf(stderr, "  Session renamed: %s -> %s\n", old_n, new_n);
+        return;
+    }
+    if (strncmp(arg, "export ", 7) == 0) {
+        repl_export(c, arg + 7);
+        return;
+    }
+    if (strncmp(arg, "new", 3) == 0 && (arg[3] == '\0' || arg[3] == ' ')) {
+        repl_session_new(c, arg);
+        return;
+    }
+    if (strncmp(arg, "switch ", 7) == 0) {
+        repl_session_switch(c, arg);
+        return;
+    }
+    fputs("  Usage: /sessions [list|delete NAME|rename OLD NEW|export NAME [FORMAT]]\n",
+          stderr);
+}
+
+static void repl_resume(void *self, const char *name) {
+    struct repl_cmd *c = self;
+    char session_path[4096];
+    const char *dir = ccode_session_dir();
+
+    if (!dir) {
+        fputs("  Session directory not available.\n", stderr);
+        return;
+    }
+    if (ccode_session_ensure_dir() != 0) {
+        fputs("  Could not create session directory.\n", stderr);
+        return;
+    }
+    if (name[0] == '\0') {
+        char recent[CCODE_SESSION_NAME_MAX];
+        if (ccode_session_most_recent(recent, sizeof(recent)) != 0) {
+            fputs("  No saved sessions found.\n", stderr);
+            return;
+        }
+        name = recent;
+    }
+    if (snprintf(session_path, sizeof(session_path), "%s/%s", dir, name) >=
+        (int)sizeof(session_path)) {
+        fputs("  Session path too long.\n", stderr);
+        return;
+    }
+    {
+        struct ccode_conversation new_conv;
+        if (ccode_conversation_init(&new_conv, CCODE_MAX_MESSAGES) != 0) {
+            c->oom = 1;
+            return;
+        }
+        if (ccode_conversation_load(&new_conv, session_path, NULL, NULL) != 0) {
+            ccode_conversation_destroy(&new_conv);
+            fprintf(stderr, "  Could not load session: %s\n", name);
+            return;
+        }
+        ccode_conversation_destroy(c->conv);
+        *c->conv = new_conv;
+        ccode_agent_summary_cache_reset();
+        fprintf(stderr, "  Resumed session: %s (%zu messages loaded)\n", name,
+                c->conv->count);
+        print_resumed_conversation(c->conv);
+        task_list_reset(c->ctx);
+        change_log_reset(c->ctx);
+        if (strlen(session_path) < c->session_path_cap) {
+            memcpy(c->session_path, session_path, strlen(session_path) + 1);
+            *c->have_session_path = 1;
+        }
+    }
+}
+
+/* Route one "/command" line. Returns 1 when the REPL should exit. */
+static int repl_dispatch(struct repl_cmd *cmd, const char *line) {
+    struct ccode_cmd_ctx c;
+    memset(&c, 0, sizeof(c));
+    c.self = cmd;
+    c.emit = repl_emit;
+    c.emit_error = repl_emit;
+    c.do_exit = repl_exit;
+    c.do_clear = repl_clear;
+    c.do_compact = repl_compact;
+    c.show_model = repl_show_model;
+    c.set_model = repl_set_model;
+    c.show_default_model = repl_show_default_model;
+    c.set_default_model = repl_set_default_model;
+    c.list_models = repl_list_models;
+    c.show_thinking = repl_show_thinking;
+    c.set_thinking = repl_set_thinking;
+    c.show_reasoning = repl_show_reasoning;
+    c.set_reasoning = repl_set_reasoning;
+    c.set_effort = repl_set_effort;
+    c.show_history = repl_show_history;
+    c.sessions = repl_sessions;
+    c.resume = repl_resume;
+    return ccode_command_dispatch(&c, line);
+}
 int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
     struct agent_context *ctx = &agent_ctx;
     int have_session_path;
     char current_session_path[4096];
     int conv_initialized;
     struct ccode_conversation conv;
-    int history_count;
     int exit_code;
     char current_model[256];
     char current_effort[16];
-    char *history;
-    history_count = 0;
+    struct ccode_vec history;
+    ccode_vec_init(&history, sizeof(char *));
 
     if (cfg->model) {
         size_t ml = strlen(cfg->model);
@@ -1566,16 +1969,6 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
     have_session_path = 0;
 
     current_session_path[0] = '\0';
-	//BLAME: 你管这叫动态数组？
-    /* Keep the prompt history off the stack: 64 x 8192 bytes does not belong
-     * in a fixed-size frame (small-stack platforms / future threads). */
-    //BLAME-IMPACT(vector): agent.c:1566 — 固定 64x8192 堆块，伪动态数组
-    history = malloc(CCODE_HISTORY_MAX * CCODE_INPUT_LINE_MAX);
-    if (!history) {
-        fprintf(stderr, "Out of memory.\n");
-        return 1;
-    }
-    memset(history, 0, CCODE_HISTORY_MAX * CCODE_INPUT_LINE_MAX);
     ccode_agent_summary_cache_reset();
     ccode_agent_context_init(&agent_ctx);
     reset_workspace_state(&agent_ctx);
@@ -1613,21 +2006,13 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
         }
     }
 
-    if ((cfg->read_only_tools || cfg->tools_enabled) &&
-        !conversation_has_system(&conv)) {
-        //BLAME-IMPACT(prompt): agent_output.c:110 — 第 2/5 处重复注入，抽 ensure_system_prompt
-        const char *sys = ccode_coding_agent_system_prompt();
-        if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
-            fprintf(stderr, "Out of memory.\n");
-            goto cleanup;
-        }
+    if (ensure_system_prompt(&conv, cfg) != 0) {
+        fprintf(stderr, "Out of memory.\n");
+        goto cleanup;
     }
 
     fprintf(stderr, "ccode interactive mode. Type /help for commands, /exit to quit.\n");
-		//BLAME: 和另外一个文件一样，你能不能把功能拆到单独的函数里
     for (;;) {
-        //BLAME-IMPACT(readline): cli/main.c:270 — 定长行 + 手工 drain，收进 lineedit
-        //BLAME-IMPACT(dispatch): agent.c:1622 — 巨型 REPL 循环，拆到按行为函数(同 backend_command)
         char line[CCODE_INPUT_LINE_MAX];
         size_t len;
         int turn_result;
@@ -1641,471 +2026,39 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
         }
 
         len = strlen(line);
-		//BLAME: 你reject了个锤子 你tm line这个数组就开了这么一片地方
         /* Reject/bound overlong input at the line level. */
         if (len >= CCODE_INPUT_LINE_MAX - 1) {
             fprintf(stderr, "  Input too long; please keep prompts under %d bytes.\n",
                     CCODE_INPUT_LINE_MAX - 1);
-            /* Drain the rest of the overlong line. */
-            if (line[len - 1] != '\n') {
-                int c;
-                //BLAME-IMPACT(readline): cli/main.c:270 — 超长行排空应收进 lineedit
-                while ((c = getchar()) != '\n' && c != EOF) {}
-            }
+            /* ccode_read_line already drained the overlong remainder. */
             continue;
         }
         if (len == 0) continue;
 
         if (line[0] == '/') {
-            if (strcmp(line, "/exit") == 0 || strcmp(line, "/quit") == 0) {
-                break;
-            } else if (strcmp(line, "/help") == 0) {
-                print_repl_help();
-                continue;
-            } else if (strcmp(line, "/history") == 0) {
-                int i;
-                fprintf(stderr, "  Session history (%d prompts):\n", history_count);
-                for (i = 0; i < history_count; i++) {
-                    fprintf(stderr, "    [%d] ", i + 1);
-                    ccode_fprint_safe(stderr,
-                                      history + i * CCODE_INPUT_LINE_MAX, "");
-                    fputc('\n', stderr);
-                }
-                continue;
-            } else if (strcmp(line, "/compact") == 0) {
-                const char *ch = ctx->change_count > 0 ? change_log_serialize(&agent_ctx) : NULL;
-                const char *tk = ctx->task_count > 0 ? task_list_serialize(ctx) : NULL;
-                ccode_conversation_compact(&conv, ch, tk);
-                ccode_agent_summary_cache_reset();
-                fprintf(stderr, "  Conversation compacted.\n");
-                continue;
-            } else if (strcmp(line, "/models") == 0 ||
-                       strncmp(line, "/models search ", 15) == 0 ||
-                       strncmp(line, "/models info ", 13) == 0) {
-                const char *keyword = NULL;
-                const char *info = NULL;
-                char *text;
-                if (strncmp(line, "/models search ", 15) == 0) {
-                    keyword = line + 15;
-                    if (keyword[0] == '\0') {
-                        fputs("  Usage: /models search <keyword>\n", stderr);
-                        continue;
-                    }
-                } else if (strncmp(line, "/models info ", 13) == 0) {
-                    info = line + 13;
-                    if (info[0] == '\0') {
-                        fputs("  Usage: /models info <name>\n", stderr);
-                        continue;
-                    }
-                }
-                text = ccode_models_render(cfg->api_base, cfg->api_key,
-                                           keyword, info, current_model);
-                if (!text)
-                    fputs("  Could not fetch model list.\n", stderr);
-                else
-                    fputs(text, stderr);
-                free(text);
-                continue;
-            } else if (strncmp(line, "/model", 6) == 0) {
-                if (strcmp(line, "/model") == 0) {
-                    fprintf(stderr, "  Current model: %s\n", current_model);
-                    continue;
-                }
-                if (strncmp(line, "/model default ", 15) == 0) {
-                    const char *def = line + 15;
-                    if (def[0] == '\0') {
-                        fprintf(stderr, "  Default model: %s\n",
-                                getenv("CCODE_MODEL") ? getenv("CCODE_MODEL") : "(not set)");
-                    } else {
-                        setenv("CCODE_MODEL", def, 1);
-                        fprintf(stderr, "  Default model set to: %s\n", def);
-                    }
-                    continue;
-                }
-                if (line[6] == ' ') {
-                    const char *model_name = line + 7;
-                    if (model_name[0] != '\0') {
-                        size_t ml = strlen(model_name);
-                        if (ml >= sizeof(current_model)) ml = sizeof(current_model) - 1;
-                        memcpy(current_model, model_name, ml);
-                        current_model[ml] = '\0';
-                        cfg->model = current_model;
-                        fprintf(stderr, "  Model switched to: %s\n", current_model);
-                    }
-                    continue;
-                }
-                fputs("  Unknown command: ", stderr);
-                ccode_fprint_safe(stderr, line, "");
-                fputs(" (try /help)\n", stderr);
-                continue;
-            } else if (strncmp(line, "/thinking", 9) == 0) {
-                if (strcmp(line, "/thinking") == 0) {
-                    fprintf(stderr, "  Thinking: %s\n",
-                            cfg->thinking_enabled ? "on" : "off");
-                    continue;
-                }
-                if (strcmp(line, "/thinking on") == 0) {
-                    cfg->thinking_enabled = 1;
-                    fputs("  Thinking enabled.\n", stderr);
-                    continue;
-                }
-                if (strcmp(line, "/thinking off") == 0) {
-                    cfg->thinking_enabled = 0;
-                    fputs("  Thinking disabled.\n", stderr);
-                    continue;
-                }
-                if (strncmp(line, "/thinking effort ", 17) == 0) {
-                    /* Legacy alias of /reasoning effort: same validation. */
-                    const char *eff = ccode_normalize_thinking_effort(line + 17);
-                    if (eff) {
-                        snprintf(current_effort, sizeof(current_effort),
-                                 "%s", eff);
-                        cfg->thinking_effort = current_effort;
-                        fprintf(stderr, "  Reasoning effort set to: %s.\n",
-                                current_effort);
-                    } else {
-                        fputs("  Usage: /thinking effort low|medium|high|xhigh|max\n",
-                              stderr);
-                    }
-                    continue;
-                }
-                fputs("  Usage: /thinking [on|off]\n", stderr);
-                continue;
-            } else if (strncmp(line, "/reasoning", 10) == 0) {
-                if (strcmp(line, "/reasoning") == 0) {
-                    fprintf(stderr, "  Reasoning: %s (effort: %s)\n",
-                            cfg->thinking_effort ? "on" : "off",
-                            current_effort);
-                    continue;
-                }
-                if (strcmp(line, "/reasoning on") == 0) {
-                    if (!cfg->thinking_effort)
-                        cfg->thinking_effort = current_effort;
-                    fprintf(stderr, "  Reasoning enabled (effort: %s).\n",
-                            current_effort);
-                    continue;
-                }
-                if (strcmp(line, "/reasoning off") == 0) {
-                    cfg->thinking_effort = NULL;
-                    fputs("  Reasoning disabled.\n", stderr);
-                    continue;
-                }
-                if (strncmp(line, "/reasoning effort ", 18) == 0) {
-                    const char *eff = ccode_normalize_thinking_effort(line + 18);
-                    if (eff) {
-                        snprintf(current_effort, sizeof(current_effort),
-                                 "%s", eff);
-                        cfg->thinking_effort = current_effort;
-                        fprintf(stderr,
-                            "  Reasoning effort set to: %s.\n",
-                            current_effort);
-                    } else {
-                        fputs("  Usage: /reasoning effort low|medium|high|xhigh|max\n",
-                              stderr);
-                    }
-                    continue;
-                }
-                fputs("  Usage: /reasoning [on|off|effort low|medium|high|xhigh|max]\n",
-                      stderr);
-                continue;
-            } else if (strcmp(line, "/clear") == 0) {
-                history_count = 0;
-                ccode_conversation_destroy(&conv);
-                if (ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) != 0) {
-                    fprintf(stderr, "Out of memory.\n");
-                    goto cleanup;
-                }
-                ccode_agent_summary_cache_reset();
-                if (cfg->read_only_tools || cfg->tools_enabled) {
-                    //BLAME-IMPACT(prompt): agent_output.c:110 — 第 3/5 处重复注入，抽 ensure_system_prompt
-                    const char *sys = ccode_coding_agent_system_prompt();
-                    if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
-                        fprintf(stderr, "Out of memory.\n");
-                        goto cleanup;
-                    }
-                }
-                fprintf(stderr, "  Conversation cleared.\n");
-                continue;
-            } else if (strcmp(line, "/sessions") == 0) {
-                print_session_list();
-                continue;
-            } else if (strncmp(line, "/sessions delete ", 17) == 0) {
-                const char *name = line + 17;
-                if (name[0] == '\0' || ccode_session_delete(name) != 0)
-                    fputs("  Usage: /sessions delete <name>\n", stderr);
-                else
-                    fprintf(stderr, "  Session deleted: %s\n", name);
-                continue;
-            } else if (strncmp(line, "/sessions rename ", 17) == 0) {
-                char old_n[256], new_n[256];
-                if (sscanf(line + 17, "%255s %255s", old_n, new_n) != 2 ||
-                    ccode_session_rename(old_n, new_n) != 0)
-                    fputs("  Usage: /sessions rename <old> <new>\n", stderr);
-                else
-                    fprintf(stderr, "  Session renamed: %s -> %s\n", old_n, new_n);
-                continue;
-            } else if (strncmp(line, "/sessions export ", 17) == 0) {
-                int n;
-                const char * ext;
-                FILE * out;
-                char out_path[4096];
-                char * exported;
-                char name[256], fmt[32];
-                ext = "json";
-                n = sscanf(line + 17, "%255s %31s", name, fmt);
-                if (n < 1) {
-                    fputs("  Usage: /sessions export <name> [format]\n", stderr);
-                    continue;
-                }
-                if (n >= 2) ext = fmt;
-                exported = ccode_session_export(name, fmt);
-                if (!exported) {
-                    fprintf(stderr, "  Could not export session: %s\n", name);
-                    continue;
-                }
-                {
-                    size_t nl = strlen(name);
-                    if (nl > 5 && strcmp(name + nl - 5, ".json") == 0) nl -= 5;
-                    if (strcmp(ext, "md") == 0 || strcmp(ext, "markdown") == 0)
-                        snprintf(out_path, sizeof(out_path), "%.*s.md", (int)nl, name);
-                    else if (strcmp(ext, "txt") == 0 || strcmp(ext, "text") == 0)
-                        snprintf(out_path, sizeof(out_path), "%.*s.txt", (int)nl, name);
-                    else
-                        snprintf(out_path, sizeof(out_path), "%.*s.json", (int)nl, name);
-                }
-                {
-                    char *full;
-                    size_t full_size = strlen(ctx->workspace_root)
-                                       + strlen(out_path) + 2;
-                    full = malloc(full_size);
-                    if (!full) {
-                        fputs("  Out of memory.\n", stderr);
-                        free(exported);
-                        continue;
-                    }
-                    snprintf(full, full_size, "%s/%s",
-                             ctx->workspace_root[0] ? ctx->workspace_root : ".",
-                             out_path);
-                    out = fopen(full, "wb");
-                    free(full);
-                    if (!out) {
-                        fputs("  Could not write export file.\n", stderr);
-                        free(exported);
-                        continue;
-                    }
-                    fputs(exported, out);
-                    fclose(out);
-                }
-                fprintf(stderr, "  Session exported to: %s\n", out_path);
-                free(exported);
-                continue;
-            } else if (strncmp(line, "/resume", 7) == 0) {
-                const char *name = line[7] == ' ' ? line + 8 : "";
-                char session_path[4096];
-                const char *dir = ccode_session_dir();
-
-                if (strcmp(name, "--list") == 0) {
-                    print_session_list();
-                    continue;
-                }
-
-                if (!dir) {
-                    fputs("  Session directory not available.\n", stderr);
-                    continue;
-                }
-                if (ccode_session_ensure_dir() != 0) {
-                    fputs("  Could not create session directory.\n", stderr);
-                    continue;
-                }
-
-                if (name[0] == '\0') {
-                    char recent[CCODE_SESSION_NAME_MAX];
-                    if (ccode_session_most_recent(recent, sizeof(recent)) != 0) {
-                        fputs("  No saved sessions found.\n", stderr);
-                        continue;
-                    }
-                    name = recent;
-                }
-
-                if (snprintf(session_path, sizeof(session_path), "%s/%s",
-                             dir, name) >= (int)sizeof(session_path)) {
-                    fputs("  Session path too long.\n", stderr);
-                    continue;
-                }
-
-                {
-                    struct ccode_conversation new_conv;
-                    if (ccode_conversation_init(&new_conv, CCODE_MAX_MESSAGES) != 0) {
-                        fputs("  Out of memory.\n", stderr);
-                        goto cleanup;
-                    }
-                    if (ccode_conversation_load(&new_conv, session_path,
-                                                NULL, NULL) != 0) {
-                        ccode_conversation_destroy(&new_conv);
-                        fprintf(stderr, "  Could not load session: %s\n", name);
-                        continue;
-                    }
-                    ccode_conversation_destroy(&conv);
-                    conv = new_conv;
-                    ccode_agent_summary_cache_reset();
-                    fprintf(stderr, "  Resumed session: %s (%zu messages loaded)\n",
-                            name, conv.count);
-                    print_resumed_conversation(&conv);
-                    task_list_reset(ctx);
-                    change_log_reset(&agent_ctx);
-                    if (strlen(session_path) < sizeof(current_session_path)) {
-                        memcpy(current_session_path, session_path,
-                               strlen(session_path) + 1);
-                        have_session_path = 1;
-                    }
-                }
-                continue;
-            } else if (strncmp(line, "/session", 8) == 0) {
-                const char *arg = line[8] == ' ' ? line + 9 : "";
-                const char *dir = ccode_session_dir();
-
-                if (strcmp(arg, "list") == 0) {
-                    print_session_list();
-                    continue;
-                }
-
-                if (!dir) {
-                    fputs("  Session directory not available.\n", stderr);
-                    continue;
-                }
-                if (ccode_session_ensure_dir() != 0) {
-                    fputs("  Could not create session directory.\n", stderr);
-                    continue;
-                }
-
-                if (strncmp(arg, "new", 3) == 0 &&
-                    (arg[3] == '\0' || arg[3] == ' ')) {
-                    const char *name = arg[3] == ' ' ? arg + 4 : "";
-                    struct ccode_session_metadata meta;
-                    struct ccode_conversation fresh;
-                    char path[4096];
-                    size_t nl = strlen(name);
-
-                    ccode_agent_summary_cache_reset();
-                    task_list_reset(ctx);
-                    change_log_reset(&agent_ctx);
-                    history_count = 0;
-                    ccode_conversation_destroy(&conv);
-                    if (ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) != 0) {
-                        fputs("  Out of memory.\n", stderr);
-                        goto cleanup;
-                    }
-                    if (cfg->read_only_tools || cfg->tools_enabled) {
-                        //BLAME-IMPACT(prompt): agent_output.c:110 — 第 4/5 处重复注入，抽 ensure_system_prompt
-                        const char *sys = ccode_coding_agent_system_prompt();
-                        if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
-                            fputs("  Out of memory.\n", stderr);
-                            goto cleanup;
-                        }
-                    }
-
-                    if (name[0] == '\0') {
-                        have_session_path = 0;
-                        current_session_path[0] = '\0';
-                        fprintf(stderr, "  New session started (unnamed).\n");
-                        continue;
-                    }
-                    if (!dir || strchr(name, '/') ||
-                        nl < 6 || strcmp(name + nl - 5, ".json") != 0 ||
-                        nl >= CCODE_SESSION_NAME_MAX) {
-                        fprintf(stderr, "  Invalid session name: %s\n", name);
-                        continue;
-                    }
-                    if (snprintf(path, sizeof(path), "%s/%s", dir, name)
-                        >= (int)sizeof(path)) {
-                        fputs("  Session path too long.\n", stderr);
-                        continue;
-                    }
-
-                    ccode_session_meta_init(&meta, cfg->model, ctx->workspace_root);
-
-                    if (ccode_conversation_init(&fresh, CCODE_MAX_MESSAGES) != 0) {
-                        fputs("  Out of memory.\n", stderr);
-                        goto cleanup;
-                    }
-                    if (cfg->read_only_tools || cfg->tools_enabled) {
-                        //BLAME-IMPACT(prompt): agent_output.c:110 — 第 5/5 处重复注入，抽 ensure_system_prompt
-                        const char *sys = ccode_coding_agent_system_prompt();
-                        if (ccode_conversation_add(&fresh, CCODE_ROLE_SYSTEM, sys) != 0) {
-                            ccode_conversation_destroy(&fresh);
-                            fputs("  Out of memory.\n", stderr);
-                            goto cleanup;
-                        }
-                    }
-                    if (ccode_conversation_save(&fresh, path, NULL, NULL, &meta) != 0) {
-                        ccode_conversation_destroy(&fresh);
-                        fprintf(stderr, "  Could not save session: %s\n", name);
-                        continue;
-                    }
-                    ccode_conversation_destroy(&fresh);
-                    if (strlen(path) < sizeof(current_session_path)) {
-                        memcpy(current_session_path, path, strlen(path) + 1);
-                        have_session_path = 1;
-                    }
-                    fprintf(stderr, "  New session started: %s\n", name);
-                    continue;
-                }
-
-                if (strncmp(arg, "switch", 6) == 0 && arg[6] == ' ') {
-                    const char *name = arg + 7;
-                    struct ccode_conversation new_conv;
-                    char path[4096];
-                    size_t nl = strlen(name);
-
-                    if (!dir || strchr(name, '/') ||
-                        nl < 6 || strcmp(name + nl - 5, ".json") != 0 ||
-                        nl >= CCODE_SESSION_NAME_MAX) {
-                        fprintf(stderr, "  Invalid session name: %s\n", name);
-                        continue;
-                    }
-                    if (snprintf(path, sizeof(path), "%s/%s", dir, name)
-                        >= (int)sizeof(path)) {
-                        fputs("  Session path too long.\n", stderr);
-                        continue;
-                    }
-                    if (ccode_conversation_init(&new_conv, CCODE_MAX_MESSAGES) != 0) {
-                        fputs("  Out of memory.\n", stderr);
-                        goto cleanup;
-                    }
-                    if (ccode_conversation_load(&new_conv, path, NULL, NULL) != 0) {
-                        ccode_conversation_destroy(&new_conv);
-                        fprintf(stderr, "  Could not load session: %s\n", name);
-                        continue;
-                    }
-                    ccode_conversation_destroy(&conv);
-                    conv = new_conv;
-                    ccode_agent_summary_cache_reset();
-                    task_list_reset(ctx);
-                    change_log_reset(&agent_ctx);
-                    if (strlen(path) < sizeof(current_session_path)) {
-                        memcpy(current_session_path, path, strlen(path) + 1);
-                        have_session_path = 1;
-                    }
-                    fprintf(stderr, "  Switched to session: %s (%zu messages loaded)\n",
-                            name, conv.count);
-                    continue;
-                }
-
-                fputs("  Usage: /session new [name] | /session switch <name>\n",
-                      stderr);
-                continue;
-            } else {
-                fputs("  Unknown command: ", stderr);
-                ccode_fprint_safe(stderr, line, "");
-                fputs(" (try /help)\n", stderr);
-                continue;
-            }
+            struct repl_cmd cmd;
+            memset(&cmd, 0, sizeof(cmd));
+            cmd.cfg = cfg;
+            cmd.conv = &conv;
+            cmd.ctx = ctx;
+            cmd.current_model = current_model;
+            cmd.current_model_cap = sizeof(current_model);
+            cmd.current_effort = current_effort;
+            cmd.current_effort_cap = sizeof(current_effort);
+            cmd.history = &history;
+            cmd.session_path = current_session_path;
+            cmd.session_path_cap = sizeof(current_session_path);
+            cmd.have_session_path = &have_session_path;
+            if (repl_dispatch(&cmd, line)) break;
+            if (cmd.oom) goto cleanup;
+            continue;
         }
 
-        if (history_count < CCODE_HISTORY_MAX) {
-            memcpy(history + history_count * CCODE_INPUT_LINE_MAX,
-                   line, len + 1);
-            history_count++;
+        if (history.len < CCODE_HISTORY_MAX) {
+            char *copy = ccode_strdup(line);
+            void *slot = copy ? ccode_vec_push(&history) : NULL;
+            if (slot) *(char **)slot = copy;
+            else free(copy);
         }
 
         /* Default session persistence: without an explicit --save-session /
@@ -2199,7 +2152,8 @@ cleanup:
         }
     }
     if (conv_initialized) ccode_conversation_destroy(&conv);
-    free(history);
+    repl_history_clear(&history);
+    ccode_vec_free(&history);
     cleanup_residual_temp_files(&agent_ctx);
     reset_workspace_state(&agent_ctx);
     signal(SIGINT, SIG_DFL);

@@ -5,6 +5,9 @@
 #include <sys/types.h>
 #include <time.h>
 
+/* Growable buffer (vec.h); forward-declared so this header stays light. */
+struct ccode_buf;
+
 /* The conversation array grows on demand from CCODE_INITIAL_MESSAGES up to
  * CCODE_MAX_MESSAGES (a hard memory bound, not a compaction trigger). */
 #define CCODE_INITIAL_MESSAGES 8
@@ -160,6 +163,9 @@ int ccode_session_ensure_dir(void);
  * created on demand). seq > 0 appends a disambiguating suffix for
  * re-mints within the same second. Returns buf, or NULL on failure. */
 char *ccode_session_mint_auto(char *buf, size_t cap, int seq);
+
+/* Same, into a growable buffer (no fixed cap). Returns out->data or NULL. */
+char *ccode_session_mint_auto_buf(struct ccode_buf *out, int seq);
 
 /* List sessions in the session directory. Returns a newly allocated JSON
  * array string (caller must free), or NULL if the directory cannot be

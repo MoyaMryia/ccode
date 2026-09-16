@@ -167,7 +167,6 @@ char *ccode_models_render(const char *api_base, const char *api_key,
                : NULL;
 
     if (!info && !keyword &&
-        //BLAME-IMPACT(json): json.c:10 — 手工文本构建，收敛到统一构建器
         ccode_append_cstr(&out, &pos, &cap, "Available models:\n") != 0)
         { free(models); return NULL; }
     if (info && ccode_append_cstr(&out, &pos, &cap, "") != 0)

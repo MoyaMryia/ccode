@@ -34,6 +34,7 @@
 #include <polarssl/net.h>
 #include <polarssl/ssl.h>
 #include <polarssl/x509_crt.h>
+#include "tls_polarssl_transport.h"
 #elif CCODE_TLS_BACKEND == CCODE_TLS_OPENSSL
 #error "CCODE_TLS_BACKEND=OPENSSL not implemented yet"
 #endif
@@ -814,11 +815,21 @@ static int send_http_request(int fd, const struct parsed_url *url,
     return send_all(fd, body, strlen(body), total_deadline);
 }
 
-//BLAME-IMPACT(dup): markdown.c:30 — 三份 ccode_stream_chat(plain/mbedtls/polarssl)+webfetch，AUDIT #1
-static int stream_chat_plain(const struct parsed_url *url, const char *api_key,
-                             const char *body,
-                             struct ccode_sse_accumulator *acc,
-                             long long total_deadline, int loopback_only) {
+/* ── Transport-neutral SSE response loop ──
+ * The plain / mbedtls / polarssl chat paths differ only in how bytes are
+ * read; parsing, chunk framing, error-body capture and the terminal
+ * completeness check are shared here so the three cannot drift (AUDIT #1). */
+
+struct stream_reader {
+    /* Returns >0 bytes read, 0 on orderly close, -1 on timeout, -2 on fatal
+     * (the callback has already printed a transport-specific error). */
+    ssize_t (*read)(void *ctx, char *buf, size_t n, long long total_deadline);
+    void *ctx;
+};
+
+static int stream_chat_loop(struct stream_reader *reader,
+                            struct ccode_sse_accumulator *acc,
+                            long long total_deadline) {
     struct sse_parser parser;
     char response[IO_BUF_SIZE];
     char error_body[ERROR_BODY_MAX + 1];
@@ -832,9 +843,69 @@ static int stream_chat_plain(const struct parsed_url *url, const char *api_key,
     size_t error_body_len = 0;
     int error_response = 0;
     int status_code = 0;
-    int socket_fd;
 
     memset(&parser, 0, sizeof(parser));
+    while (now_ms() < total_deadline) {
+        ssize_t received =
+            reader->read(reader->ctx, response + used, sizeof(response) - used,
+                         total_deadline);
+        if (received == -2) return -1;
+        if (received <= 0) break;   /* EOF or timeout */
+        {
+            int result;
+            used += (size_t)received;
+            result = process_response(response, &used, &headers_complete,
+                                      &chunked, &chunks_complete,
+                                      &has_content_length, &content_length,
+                                      &body_received, &parser, acc,
+                                      &error_response, &status_code,
+                                      error_body, &error_body_len);
+            if (result > 0)
+                return report_error_response(error_body, error_body_len,
+                                             status_code);
+            if (result < 0) return -1;
+            if (acc->stream_done && chunked && chunks_complete == 1) break;
+            if (used == sizeof(response)) {
+                fprintf(stderr, "Response buffer full.\n");
+                return -1;
+            }
+        }
+    }
+    if (error_response)
+        return report_error_response(error_body, error_body_len, status_code);
+    if (!headers_complete || (chunked && chunks_complete != 1) ||
+        (!chunked && has_content_length && body_received != content_length) ||
+        !acc->stream_done) {
+        if (now_ms() >= total_deadline) fprintf(stderr, "Request timed out.\n");
+        return -1;
+    }
+    return 0;
+}
+
+static ssize_t plain_reader(void *ctx, char *buf, size_t n,
+                            long long total_deadline) {
+    int fd = *(int *)ctx;
+    for (;;) {
+        long long read_deadline = phase_deadline(total_deadline, IO_TIMEOUT_MS);
+        ssize_t received;
+        int ready = wait_fd(fd, POLLIN, read_deadline);
+        if (ready != 1) return -1;
+        received = recv(fd, buf, n, 0);
+        if (received >= 0) return received;
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+            continue;
+        return -2;
+    }
+}
+
+static int stream_chat_plain(const struct parsed_url *url, const char *api_key,
+                             const char *body,
+                             struct ccode_sse_accumulator *acc,
+                             long long total_deadline, int loopback_only) {
+    struct stream_reader reader;
+    int socket_fd;
+    int result;
+
     socket_fd = connect_tcp(url->host, url->port,
                             phase_deadline(total_deadline, CONNECT_TIMEOUT_MS),
                             loopback_only);
@@ -851,53 +922,12 @@ static int stream_chat_plain(const struct parsed_url *url, const char *api_key,
         close(socket_fd);
         return -1;
     }
-    while (now_ms() < total_deadline) {
-        ssize_t received;
-        long long read_deadline = phase_deadline(total_deadline, IO_TIMEOUT_MS);
-        int ready = wait_fd(socket_fd, POLLIN, read_deadline);
-        if (ready != 1) break;
-        received = recv(socket_fd, response + used, sizeof(response) - used, 0);
-        if (received > 0) {
-            int result;
-            used += (size_t)received;
-            result = process_response(response, &used, &headers_complete, &chunked,
-                                      &chunks_complete, &has_content_length,
-                                      &content_length, &body_received,
-                                      &parser, acc, &error_response, &status_code,
-                                      error_body, &error_body_len);
-            if (result > 0) {
-                close(socket_fd);
-                return report_error_response(error_body, error_body_len, status_code);
-            }
-            if (result < 0) {
-                close(socket_fd);
-                return -1;
-            }
-            if (acc->stream_done && chunked && chunks_complete == 1) break;
-            if (used == sizeof(response)) {
-                fprintf(stderr, "Response buffer full.\n");
-                close(socket_fd);
-                return -1;
-            }
-        } else if (received == 0) {
-            break;
-        } else if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
-            close(socket_fd);
-            return -1;
-        }
-    }
+    reader.read = plain_reader;
+    reader.ctx = &socket_fd;
+    result = stream_chat_loop(&reader, acc, total_deadline);
     close(socket_fd);
-    if (error_response)
-        return report_error_response(error_body, error_body_len, status_code);
-    if (!headers_complete || (chunked && chunks_complete != 1) ||
-        (!chunked && has_content_length && body_received != content_length) ||
-        !acc->stream_done) {
-        if (now_ms() >= total_deadline) fprintf(stderr, "Request timed out.\n");
-        return -1;
-    }
-    return 0;
+    return result;
 }
-
 #if CCODE_TLS_BACKEND == CCODE_TLS_NONE
 int ccode_stream_chat(const char *api_base, const char *api_key,
                       const char *body, int allow_remote_http,
@@ -953,11 +983,36 @@ static int tls_write_all(mbedtls_ssl_context *ssl, mbedtls_net_context *server,
     return 0;
 }
 
+struct tls_reader_ctx {
+    mbedtls_ssl_context *ssl;
+    mbedtls_net_context *server;
+};
+
+static ssize_t mbedtls_reader(void *vctx, char *buf, size_t n,
+                              long long total_deadline) {
+    struct tls_reader_ctx *c = vctx;
+    for (;;) {
+        long long read_deadline = phase_deadline(total_deadline, IO_TIMEOUT_MS);
+        int r = mbedtls_ssl_read(c->ssl, (unsigned char *)buf, n);
+        if (r > 0) return r;
+        if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            if (tls_wait(c->server, r, read_deadline) == 1) continue;
+            return -1;
+        }
+        if (r == 0 || r == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return 0;
+        {
+            char error_text[128];
+            mbedtls_strerror(r, error_text, sizeof(error_text));
+            fprintf(stderr, "TLS read error: %s.\n", error_text);
+        }
+        return -2;
+    }
+}
+
 int ccode_stream_chat(const char *api_base, const char *api_key,
                       const char *body, int allow_remote_http,
                       struct ccode_sse_accumulator *acc) {
     struct parsed_url url;
-    struct sse_parser parser;
     mbedtls_net_context server;
     mbedtls_ssl_context ssl;
     mbedtls_ssl_config config;
@@ -967,18 +1022,6 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     const char *ca_file = getenv("CCODE_CA_FILE");
     const char *personalization = "ccode";
     char header[HEADER_BUF_SIZE];
-    char response[IO_BUF_SIZE];
-    char error_body[ERROR_BODY_MAX + 1];
-    size_t used = 0;
-    int headers_complete = 0;
-    int chunked = 0;
-    int chunks_complete = 0;
-    int has_content_length = 0;
-    size_t content_length = 0;
-    size_t body_received = 0;
-    size_t error_body_len = 0;
-    int error_response = 0;
-    int status_code = 0;
     int total_timeout = DEFAULT_TOTAL_TIMEOUT_SEC;
     int result = -1;
     int tls_result;
@@ -987,7 +1030,6 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     const char *env = getenv("CCODE_REQUEST_TIMEOUT");
     if (env) { int value = atoi(env); if (value > 0) total_timeout = value; }
     total_deadline = now_ms() + (long long)total_timeout * 1000;
-    memset(&parser, 0, sizeof(parser));
     if (has_crlf(api_key) || parse_url(api_base, &url) != 0) {
         fprintf(stderr, "Invalid CCODE_API_BASE URL or API key.\n");
         return -1;
@@ -1097,55 +1139,15 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
                           strlen(body), total_deadline) != 0) goto cleanup;
     }
 
-    while (now_ms() < total_deadline) {
-        long long read_deadline = phase_deadline(total_deadline, IO_TIMEOUT_MS);
-        tls_result = mbedtls_ssl_read(&ssl, (unsigned char *)response + used,
-                                     sizeof(response) - used);
-        if (tls_result > 0) {
-            int pr;
-            used += (size_t)tls_result;
-            pr = process_response(response, &used, &headers_complete, &chunked,
-                                  &chunks_complete, &has_content_length,
-                                  &content_length, &body_received,
-                                  &parser, acc, &error_response, &status_code,
-                                  error_body, &error_body_len);
-            if (pr > 0) {
-                result = report_error_response(error_body, error_body_len, status_code);
-                goto cleanup;
-            }
-            if (pr < 0) goto cleanup;
-            if (acc->stream_done && chunked && chunks_complete == 1) break;
-            if (used == sizeof(response)) {
-                fprintf(stderr, "Response buffer full.\n");
-                goto cleanup;
-            }
-            continue;
-        }
-        if (tls_result == MBEDTLS_ERR_SSL_WANT_READ ||
-            tls_result == MBEDTLS_ERR_SSL_WANT_WRITE) {
-            if (tls_wait(&server, tls_result, read_deadline) == 1) continue;
-            fprintf(stderr, "TLS read timed out.\n");
-            goto cleanup;
-        }
-        if (tls_result == 0 || tls_result == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) break;
-        {
-            char error_text[128];
-            mbedtls_strerror(tls_result, error_text, sizeof(error_text));
-            fprintf(stderr, "TLS read error: %s.\n", error_text);
-        }
-        goto cleanup;
+    {
+        struct tls_reader_ctx rctx;
+        struct stream_reader reader;
+        rctx.ssl = &ssl;
+        rctx.server = &server;
+        reader.read = mbedtls_reader;
+        reader.ctx = &rctx;
+        result = stream_chat_loop(&reader, acc, total_deadline);
     }
-    if (error_response) {
-        result = report_error_response(error_body, error_body_len, status_code);
-        goto cleanup;
-    }
-    if (!headers_complete || (chunked && chunks_complete != 1) ||
-        (!chunked && has_content_length && body_received != content_length) ||
-        !acc->stream_done) {
-        if (now_ms() >= total_deadline) fprintf(stderr, "Request timed out.\n");
-        goto cleanup;
-    }
-    result = 0;
 
 cleanup:
     mbedtls_ssl_free(&ssl);
@@ -1159,22 +1161,11 @@ cleanup:
 #elif CCODE_TLS_BACKEND == CCODE_TLS_POLARSSL
 static int polarssl_send_no_signal(void *context, const unsigned char *data,
                                    size_t length) {
-    const int *fd = context;
-    ssize_t sent = send(*fd, data, length, ccode_platform_send_flags());
-    if (sent >= 0) return (int)sent;
-    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-        return POLARSSL_ERR_NET_WANT_WRITE;
-    return POLARSSL_ERR_NET_SEND_FAILED;
+    return ccode_polarssl_transport_send(context, data, length);
 }
 
-//BLAME-IMPACT(dup): markdown.c:30 — 与 webfetch.c wf_polarssl_recv 逐字重复
 static int polarssl_recv(void *context, unsigned char *data, size_t length) {
-    const int *fd = context;
-    ssize_t got = recv(*fd, data, length, 0);
-    if (got >= 0) return (int)got;
-    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-        return POLARSSL_ERR_NET_WANT_READ;
-    return POLARSSL_ERR_NET_RECV_FAILED;
+    return ccode_polarssl_transport_recv(context, data, length);
 }
 
 static int polarssl_wait(const int *fd, int ssl_result, long long deadline) {
@@ -1202,11 +1193,37 @@ static int polarssl_write_all(ssl_context *ssl, const int *fd,
     return 0;
 }
 
+struct polarssl_reader_ctx {
+    ssl_context *ssl;
+    int *fd;
+};
+
+static ssize_t polarssl_reader(void *vctx, char *buf, size_t n,
+                               long long total_deadline) {
+    struct polarssl_reader_ctx *c = vctx;
+    for (;;) {
+        long long read_deadline = phase_deadline(total_deadline, IO_TIMEOUT_MS);
+        int r = ssl_read(c->ssl, (unsigned char *)buf, n);
+        if (r > 0) return r;
+        if (r == POLARSSL_ERR_NET_WANT_READ ||
+            r == POLARSSL_ERR_NET_WANT_WRITE) {
+            if (polarssl_wait(c->fd, r, read_deadline) == 1) continue;
+            return -1;
+        }
+        if (r == 0 || r == POLARSSL_ERR_SSL_PEER_CLOSE_NOTIFY) return 0;
+        {
+            char error_text[128];
+            polarssl_strerror(r, error_text, sizeof(error_text));
+            fprintf(stderr, "TLS read error: %s.\n", error_text);
+        }
+        return -2;
+    }
+}
+
 int ccode_stream_chat(const char *api_base, const char *api_key,
                       const char *body, int allow_remote_http,
                       struct ccode_sse_accumulator *acc) {
     struct parsed_url url;
-    struct sse_parser parser;
     ssl_context ssl;
     x509_crt ca;
     ctr_drbg_context rng;
@@ -1214,18 +1231,6 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     const char *ca_file = getenv("CCODE_CA_FILE");
     const char *personalization = "ccode";
     char header[HEADER_BUF_SIZE];
-    char response[IO_BUF_SIZE];
-    char error_body[ERROR_BODY_MAX + 1];
-    size_t used = 0;
-    int headers_complete = 0;
-    int chunked = 0;
-    int chunks_complete = 0;
-    int has_content_length = 0;
-    size_t content_length = 0;
-    size_t body_received = 0;
-    size_t error_body_len = 0;
-    int error_response = 0;
-    int status_code = 0;
     int total_timeout = DEFAULT_TOTAL_TIMEOUT_SEC;
     int result = -1;
     int tls_result;
@@ -1235,7 +1240,6 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     const char *env = getenv("CCODE_REQUEST_TIMEOUT");
     if (env) { int value = atoi(env); if (value > 0) total_timeout = value; }
     total_deadline = now_ms() + (long long)total_timeout * 1000;
-    memset(&parser, 0, sizeof(parser));
     if (has_crlf(api_key) || parse_url(api_base, &url) != 0) {
         fprintf(stderr, "Invalid CCODE_API_BASE URL or API key.\n");
         return -1;
@@ -1320,56 +1324,15 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
                                strlen(body), total_deadline) != 0) goto cleanup;
     }
 
-    while (now_ms() < total_deadline) {
-        long long read_deadline = phase_deadline(total_deadline, IO_TIMEOUT_MS);
-        tls_result = ssl_read(&ssl, (unsigned char *)response + used,
-                              sizeof(response) - used);
-        if (tls_result > 0) {
-            int pr;
-            used += (size_t)tls_result;
-            pr = process_response(response, &used, &headers_complete, &chunked,
-                                  &chunks_complete, &has_content_length,
-                                  &content_length, &body_received,
-                                  &parser, acc, &error_response, &status_code,
-                                  error_body, &error_body_len);
-            if (pr > 0) {
-                result = report_error_response(error_body, error_body_len, status_code);
-                goto cleanup;
-            }
-            if (pr < 0) goto cleanup;
-            if (acc->stream_done && chunked && chunks_complete == 1) break;
-            if (used == sizeof(response)) {
-                fprintf(stderr, "Response buffer full.\n");
-                goto cleanup;
-            }
-            continue;
-        }
-        if (tls_result == POLARSSL_ERR_NET_WANT_READ ||
-            tls_result == POLARSSL_ERR_NET_WANT_WRITE) {
-            if (polarssl_wait(&fd, tls_result, read_deadline) == 1) continue;
-            fprintf(stderr, "TLS read timed out.\n");
-            goto cleanup;
-        }
-        if (tls_result == 0 ||
-            tls_result == POLARSSL_ERR_SSL_PEER_CLOSE_NOTIFY) break;
-        {
-            char error_text[128];
-            polarssl_strerror(tls_result, error_text, sizeof(error_text));
-            fprintf(stderr, "TLS read error: %s.\n", error_text);
-        }
-        goto cleanup;
+    {
+        struct polarssl_reader_ctx rctx;
+        struct stream_reader reader;
+        rctx.ssl = &ssl;
+        rctx.fd = &fd;
+        reader.read = polarssl_reader;
+        reader.ctx = &rctx;
+        result = stream_chat_loop(&reader, acc, total_deadline);
     }
-    if (error_response) {
-        result = report_error_response(error_body, error_body_len, status_code);
-        goto cleanup;
-    }
-    if (!headers_complete || (chunked && chunks_complete != 1) ||
-        (!chunked && has_content_length && body_received != content_length) ||
-        !acc->stream_done) {
-        if (now_ms() >= total_deadline) fprintf(stderr, "Request timed out.\n");
-        goto cleanup;
-    }
-    result = 0;
 
 cleanup:
     if (fd >= 0) close(fd);

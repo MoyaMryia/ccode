@@ -7,8 +7,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-//BLAME: 我觉得这里的代码在哪里见过
-//BLAME-IMPACT(json): json.c:10 — 重复 POSIX strdup；集中到一处或直接用 libc
 char *ccode_strdup(const char *s) {
     size_t len;
     char *copy;
@@ -21,23 +19,18 @@ char *ccode_strdup(const char *s) {
 
 /* Append a verbatim NUL-terminated string to a growable buffer, keeping it
  * NUL-terminated. *pos and *cap track the used length and allocation size.
- * Returns 0 on success, -1 on allocation failure. This is the canonical
- * dynamic-append helper; modules must not re-derive their own copy. */
+ * Returns 0 on success, -1 on allocation failure. Thin wrapper over the
+ * shared struct ccode_buf (see vec.h); new code should use ccode_buf
+ * directly. */
 int ccode_append_cstr(char **buf, size_t *pos, size_t *cap, const char *s) {
-    size_t len = strlen(s);
-    if (*pos + len + 1 > *cap) {
-        char * tmp;
-        //BLAME-IMPACT(vector): message.c:21 — canonical append 助手：扩展为 struct buf + _n/reserve
-        size_t new_cap = *cap * 2;
-        if (new_cap < *pos + len + 1) new_cap = *pos + len + 1;
-        tmp = realloc(*buf, new_cap);
-        if (!tmp) return -1;
-        *buf = tmp;
-        *cap = new_cap;
-    }
-    memcpy(*buf + *pos, s, len);
-    *pos += len;
-    (*buf)[*pos] = '\0';
+    struct ccode_buf b;
+    b.data = *buf;
+    b.len = *pos;
+    b.cap = *cap;
+    if (ccode_buf_append(&b, s) != 0) return -1;
+    *buf = b.data;
+    *pos = b.len;
+    *cap = b.cap;
     return 0;
 }
 
@@ -136,6 +129,35 @@ char *ccode_json_escape(const char *input) {
     }
     *cursor = '\0';
     return output;
+}
+
+int ccode_json_append_quoted(struct ccode_buf *out, const char *s) {
+    char *escaped;
+    int rc;
+    if (!out) return -1;
+    escaped = ccode_json_escape(s ? s : "");
+    if (!escaped) return -1;
+    rc = (ccode_buf_append_c(out, '"') == 0 &&
+          ccode_buf_append(out, escaped) == 0 &&
+          ccode_buf_append_c(out, '"') == 0) ? 0 : -1;
+    free(escaped);
+    return rc;
+}
+
+int ccode_json_append_int(struct ccode_buf *out, long v) {
+    char num[32];
+    snprintf(num, sizeof(num), "%ld", v);
+    return ccode_buf_append(out, num);
+}
+
+int ccode_json_fprint_string(FILE *out, const char *s) {
+    char *escaped = ccode_json_escape(s ? s : "");
+    int rc;
+    if (!escaped) return -1;
+    rc = (fputc('"', out) != EOF && fputs(escaped, out) != EOF &&
+          fputc('"', out) != EOF) ? 0 : -1;
+    free(escaped);
+    return rc;
 }
 
 /* Same escaping as ccode_json_escape, bounded: stop before the escaped
@@ -371,6 +393,26 @@ int ccode_cp_is_bidi_control(unsigned int cp) {
            (cp >= 0x2066U && cp <= 0x2069U);
 }
 
+const char *ccode_cp_safe_escape(unsigned int cp, size_t raw_len, int *width) {
+    static char buf[8];
+    if (raw_len == 1 && cp >= 0x7fU) {
+        snprintf(buf, sizeof(buf), "\\x%02X", cp);
+        if (width) *width = 4;
+        return buf;
+    }
+    if (raw_len > 1 && cp >= 0x80U && cp <= 0x9fU) {
+        snprintf(buf, sizeof(buf), "\\u%04X", cp);
+        if (width) *width = 6;
+        return buf;
+    }
+    if (ccode_cp_is_bidi_control(cp)) {
+        snprintf(buf, sizeof(buf), "\\u%04X", cp);
+        if (width) *width = 6;
+        return buf;
+    }
+    return NULL;
+}
+
 int ccode_utf8_cp_width(unsigned int cp) {
     if (cp >= 0x1100U &&
         (cp <= 0x115fU || cp == 0x2329U || cp == 0x232aU ||
@@ -383,15 +425,6 @@ int ccode_utf8_cp_width(unsigned int cp) {
     return 1;
 }
 
-
-//BLAME-IMPACT(json): jsmn.c:6 — hex 解析三份之一
-static int json_hex_digit(unsigned char c, unsigned int *value) {
-    if (c >= '0' && c <= '9') *value = c - '0';
-    else if (c >= 'a' && c <= 'f') *value = c - 'a' + 10U;
-    else if (c >= 'A' && c <= 'F') *value = c - 'A' + 10U;
-    else return -1;
-    return 0;
-}
 
 static int append_utf8(char *dest, size_t dest_size, size_t *pos,
                        unsigned int cp) {
@@ -428,7 +461,6 @@ int ccode_json_unescape(const char *src, const char *src_end,
     size_t di = 0;
     while (src < src_end) {
         unsigned int cp;
-        unsigned int digit;
         size_t i;
         if (*src != '\\') {
             unsigned char c = (unsigned char)*src;
@@ -472,19 +504,12 @@ int ccode_json_unescape(const char *src, const char *src_end,
         case 't': cp = '\t'; break;
         case 'u':
             if (src_end - src < 4) return -1;
-            cp = 0;
-            for (i = 0; i < 4; i++) {
-                if (json_hex_digit((unsigned char)src[i], &digit) != 0) return -1;
-                cp = (cp << 4) | digit;
-            }
+            if (ccode_jsmn_hex4(src, &cp) != 0) return -1;
             src += 4;
             if (cp >= 0xd800U && cp <= 0xdbffU) {
-                unsigned int low = 0;
+                unsigned int low;
                 if (src_end - src < 6 || src[0] != '\\' || src[1] != 'u') return -1;
-                for (i = 0; i < 4; i++) {
-                    if (json_hex_digit((unsigned char)src[2 + i], &digit) != 0) return -1;
-                    low = (low << 4) | digit;
-                }
+                if (ccode_jsmn_hex4(src + 2, &low) != 0) return -1;
                 if (low < 0xdc00U || low > 0xdfffU) return -1;
                 cp = 0x10000U + ((cp - 0xd800U) << 10) + (low - 0xdc00U);
                 src += 6;
@@ -633,7 +658,6 @@ static ccode_jsmntok_t *find_index_in(ccode_jsmntok_t *tokens, int num_tokens,
     return NULL;
 }
 
-//BLAME-IMPACT(json): jsmn.c:6 — 唯一 parse 入口；调用方不得再直接 ccode_jsmn_parse
 int ccode_json_parse(const char *data, size_t length,
                      ccode_jsmntok_t *tokens, int maxtok) {
     ccode_jsmn_parser parser;
@@ -693,6 +717,57 @@ int ccode_json_token_to_int(const char *js, const ccode_jsmntok_t *tok,
     }
     *value = v;
     return 0;
+}
+
+/* Deepest JSON object a caller may pass to the field helpers below. Protocol
+ * events and tool results are shallow objects; a bounded array keeps the
+ * helpers allocation-free. */
+#define CCODE_JSON_FIELD_MAX_TOKENS 256
+
+static ccode_jsmntok_t *json_field_token(const char *json, const char *key,
+                                         ccode_jsmntok_t *tokens) {
+    int n;
+    if (!json || !key) return NULL;
+    n = ccode_json_parse(json, strlen(json), tokens,
+                         CCODE_JSON_FIELD_MAX_TOKENS);
+    if (n <= 0 || tokens[0].type != CCODE_JSMN_OBJECT) return NULL;
+    return ccode_json_find_key(tokens, n, 0, json, key);
+}
+
+int ccode_json_get_string(const char *json, const char *key,
+                          char *out, size_t cap) {
+    ccode_jsmntok_t tokens[CCODE_JSON_FIELD_MAX_TOKENS];
+    ccode_jsmntok_t *tok;
+    if (!out || cap == 0) return -1;
+    tok = json_field_token(json, key, tokens);
+    if (!tok || tok->type != CCODE_JSMN_STRING) return -1;
+    return ccode_json_token_to_string(json, tok, out, cap);
+}
+
+char *ccode_json_get_string_dup(const char *json, const char *key) {
+    ccode_jsmntok_t tokens[CCODE_JSON_FIELD_MAX_TOKENS];
+    ccode_jsmntok_t *tok = json_field_token(json, key, tokens);
+    if (!tok || tok->type != CCODE_JSMN_STRING) return NULL;
+    return ccode_json_token_string(json, tok);
+}
+
+int ccode_json_get_bool(const char *json, const char *key, int *value) {
+    ccode_jsmntok_t tokens[CCODE_JSON_FIELD_MAX_TOKENS];
+    ccode_jsmntok_t *tok;
+    int len;
+    if (!value) return -1;
+    tok = json_field_token(json, key, tokens);
+    if (!tok || tok->type != CCODE_JSMN_PRIMITIVE) return -1;
+    len = tok->end - tok->start;
+    if (len == 4 && memcmp(json + tok->start, "true", 4) == 0) {
+        *value = 1;
+        return 0;
+    }
+    if (len == 5 && memcmp(json + tok->start, "false", 5) == 0) {
+        *value = 0;
+        return 0;
+    }
+    return -1;
 }
 
 static ccode_jsmntok_t *navigate(ccode_jsmntok_t *tokens, int num_tokens,
@@ -803,14 +878,15 @@ static int parse_tool_calls(const char *data, ccode_jsmntok_t *tokens,
         tok = find_key_in(tokens, num_tokens, parent_idx, data, "index");
         if (tok && tok->type == CCODE_JSMN_PRIMITIVE) {
             int k;
-            int v;
+            long v;
             if (tok->start >= tok->end) goto malformed;
             for (k = tok->start; k < tok->end; k++) {
                 if (data[k] < '0' || data[k] > '9') goto malformed;
             }
-            v = ccode_jsmn_token_to_int(data, tok);
-            if (v < 0 || v >= CCODE_MAX_SSE_TOOL_CALLS) return -1;
-            slot->index = v;
+            if (ccode_json_token_to_int(data, tok, &v) != 0 || v < 0 ||
+                v >= CCODE_MAX_SSE_TOOL_CALLS)
+                return -1;
+            slot->index = (int)v;
             seen_index = 1;
         } else if (tok) {
             goto malformed;
@@ -1048,8 +1124,8 @@ void ccode_sse_accumulator_init(struct ccode_sse_accumulator *acc) {
 
 void ccode_sse_accumulator_destroy(struct ccode_sse_accumulator *acc) {
     size_t i;
-    free(acc->content);
-    free(acc->reasoning_content);
+    ccode_buf_free(&acc->content);
+    ccode_buf_free(&acc->reasoning_content);
     free(acc->finish_reason);
     for (i = 0; i < acc->tool_call_count; i++) {
         free(acc->tool_calls[i].id);
@@ -1062,67 +1138,19 @@ void ccode_sse_accumulator_destroy(struct ccode_sse_accumulator *acc) {
 static int accumulator_append_content(struct ccode_sse_accumulator *acc,
                                        const char *content) {
     size_t len = strlen(content);
-    size_t needed;
-    if (acc->content_len > CCODE_MAX_SSE_CONTENT_LEN ||
-        len > CCODE_MAX_SSE_CONTENT_LEN - acc->content_len)
+    if (acc->content.len > CCODE_MAX_SSE_CONTENT_LEN ||
+        len > CCODE_MAX_SSE_CONTENT_LEN - acc->content.len)
         return -1;
-    if (acc->content_len > SIZE_MAX - len - 1) return -1;
-    needed = acc->content_len + len + 1;
-    if (needed > acc->content_cap) {
-        char * tmp;
-        size_t new_cap;
-        //BLAME-IMPACT(vector): message.c:21 — SSE content 自增，统一 vector
-        if (!acc->content_cap) new_cap = 256;
-        else if (acc->content_cap > SIZE_MAX / 2) new_cap = needed;
-        else new_cap = acc->content_cap * 2;
-        while (new_cap < needed) {
-            if (new_cap > (CCODE_MAX_SSE_CONTENT_LEN + 1U) / 2U) {
-                new_cap = CCODE_MAX_SSE_CONTENT_LEN + 1U;
-                break;
-            }
-            new_cap *= 2;
-        }
-        tmp = realloc(acc->content, new_cap);
-        if (!tmp) return -1;
-        acc->content = tmp;
-        acc->content_cap = new_cap;
-    }
-    memcpy(acc->content + acc->content_len, content, len + 1);
-    acc->content_len += len;
-    return 0;
+    return ccode_buf_append(&acc->content, content);
 }
 
 static int accumulator_append_reasoning(struct ccode_sse_accumulator *acc,
                                         const char *content) {
     size_t len = strlen(content);
-    size_t needed;
-    if (acc->reasoning_len > CCODE_MAX_SSE_CONTENT_LEN ||
-        len > CCODE_MAX_SSE_CONTENT_LEN - acc->reasoning_len)
+    if (acc->reasoning_content.len > CCODE_MAX_SSE_CONTENT_LEN ||
+        len > CCODE_MAX_SSE_CONTENT_LEN - acc->reasoning_content.len)
         return -1;
-    if (acc->reasoning_len > SIZE_MAX - len - 1) return -1;
-    needed = acc->reasoning_len + len + 1;
-    if (needed > acc->reasoning_cap) {
-        char * tmp;
-        size_t new_cap;
-        //BLAME-IMPACT(vector): message.c:21 — SSE reasoning 自增，统一 vector
-        if (!acc->reasoning_cap) new_cap = 256;
-        else if (acc->reasoning_cap > SIZE_MAX / 2) new_cap = needed;
-        else new_cap = acc->reasoning_cap * 2;
-        while (new_cap < needed) {
-            if (new_cap > (CCODE_MAX_SSE_CONTENT_LEN + 1U) / 2U) {
-                new_cap = CCODE_MAX_SSE_CONTENT_LEN + 1U;
-                break;
-            }
-            new_cap *= 2;
-        }
-        tmp = realloc(acc->reasoning_content, new_cap);
-        if (!tmp) return -1;
-        acc->reasoning_content = tmp;
-        acc->reasoning_cap = new_cap;
-    }
-    memcpy(acc->reasoning_content + acc->reasoning_len, content, len + 1);
-    acc->reasoning_len += len;
-    return 0;
+    return ccode_buf_append(&acc->reasoning_content, content);
 }
 
 static int accumulator_add_tool_call(struct ccode_sse_accumulator *acc,

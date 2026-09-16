@@ -2,8 +2,10 @@
 #define CCODE_JSON_H
 
 #include <stddef.h>
+#include <stdio.h>
 
 #include "../vendor/jsmn/jsmn.h"
+#include "vec.h"
 
 #define CCODE_MAX_SSE_TOOL_CALLS 64
 #define CCODE_MAX_SSE_CONTENT_LEN (1024U * 100U)
@@ -23,6 +25,19 @@ int ccode_append_cstr(char **buf, size_t *pos, size_t *cap, const char *s);
 /* JSON-escape a NUL-terminated string into a newly allocated buffer
  * (caller frees). Returns NULL on allocation failure or NULL input. */
 char *ccode_json_escape(const char *input);
+
+/* Append a quoted, escaped JSON string (including the surrounding quotes) to
+ * a growable buffer. Returns 0 on success, -1 on allocation failure. The
+ * single place callers should build a JSON string value. */
+int ccode_json_append_quoted(struct ccode_buf *out, const char *s);
+
+/* Append a decimal integer. Returns 0 on success, -1 on allocation failure. */
+int ccode_json_append_int(struct ccode_buf *out, long v);
+
+/* Write a quoted, escaped JSON string to a stream. Returns 0 on success, -1
+ * on allocation or write failure. The stream counterpart of
+ * ccode_json_append_quoted (used by the session serializer). */
+int ccode_json_fprint_string(FILE *out, const char *s);
 
 /* Same escaping, but stop before the escaped output exceeds `budget` bytes,
  * so the enclosing result JSON stays under the conversation content cap
@@ -58,6 +73,13 @@ size_t ccode_utf8_decode(const unsigned char *s, size_t remaining,
 /* Bidirectional control code points (overrides/embeddings/marks).
  * Text-emitting and auditing paths escape these; do not re-derive. */
 int ccode_cp_is_bidi_control(unsigned int cp);
+
+/* Classify a codepoint for safe terminal output. Returns a static buffer
+ * holding the escape form ("\\xNN" for a one-byte DEL, "\\uXXXX" for a C1
+ * control or a bidi control) and sets *width to the columns it occupies, or
+ * NULL when the codepoint is emitted verbatim. Shared by markdown emit_text
+ * and the permission/status sanitizer so both escape identically. */
+const char *ccode_cp_safe_escape(unsigned int cp, size_t raw_len, int *width);
 
 /* Terminal display width of a decoded codepoint: 2 for East Asian
  * Wide/Fullwidth ranges, 1 otherwise. The canonical width source for
@@ -95,6 +117,23 @@ int ccode_json_token_to_string(const char *js, const ccode_jsmntok_t *tok,
 int ccode_json_token_to_int(const char *js, const ccode_jsmntok_t *tok,
                             long *value);
 
+/* ── Field extraction ─
+ * Parse a JSON object once and pull a field by name, so callers never
+ * substring-match "key":value. The object must fit in a bounded token
+ * array (protocol events and tool results are shallow objects). */
+
+/* Copy a string field's unescaped value into out (NUL-terminated). Returns 0
+ * on success, -1 when the document is not an object, the key is missing or
+ * not a string, or out is too small. */
+int ccode_json_get_string(const char *json, const char *key,
+                          char *out, size_t cap);
+
+/* Same, but returns a newly allocated string (caller frees) or NULL. */
+char *ccode_json_get_string_dup(const char *json, const char *key);
+
+/* Set *value from a true/false field. Returns 0 on success, -1 otherwise. */
+int ccode_json_get_bool(const char *json, const char *key, int *value);
+
 struct ccode_sse_tool_call {
     int index;
     char *id;
@@ -111,12 +150,8 @@ struct ccode_sse_delta {
 };
 
 struct ccode_sse_accumulator {
-    char *content;
-    size_t content_cap;
-    size_t content_len;
-    char *reasoning_content;
-    size_t reasoning_cap;
-    size_t reasoning_len;
+    struct ccode_buf content;
+    struct ccode_buf reasoning_content;
     struct ccode_sse_tool_call tool_calls[CCODE_MAX_SSE_TOOL_CALLS];
     size_t tool_call_count;
     char *finish_reason;

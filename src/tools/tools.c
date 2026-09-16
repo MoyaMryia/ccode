@@ -114,146 +114,66 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
 const size_t ccode_tool_definitions_count =
     sizeof(ccode_tool_definitions) / sizeof(ccode_tool_definitions[0]);
 
-static size_t estimate_tools_json_len(void) {
-    size_t total = 100;
+static int append_tool_def(struct ccode_buf *b,
+                           const struct ccode_tool_def *def) {
+    if (ccode_buf_append(b,
+            "{\"type\":\"function\",\"function\":{\"name\":") != 0)
+        return -1;
+    if (ccode_json_append_quoted(b, def->name) != 0) return -1;
+    if (ccode_buf_append(b, ",\"description\":") != 0) return -1;
+    if (ccode_json_append_quoted(b, def->description) != 0) return -1;
+    if (ccode_buf_append(b, ",\"parameters\":") != 0) return -1;
+    if (ccode_buf_append(b, def->param_schema) != 0) return -1;
+    return ccode_buf_append(b, "}}");
+}
+
+/* Emit {"tools":[...]} for the named definitions, preserving `names` order
+ * (the tool list is a request-prefix cache key, so order is stable). */
+static char *build_tools_json_named(const char *const *names, size_t count) {
+    struct ccode_buf b;
     size_t i;
-    for (i = 0; i < ccode_tool_definitions_count; i++) {
-        total += strlen(ccode_tool_definitions[i].name) * 2 +
-                 strlen(ccode_tool_definitions[i].description) * 2 +
-                 strlen(ccode_tool_definitions[i].param_schema) + 200;
+    int first = 1;
+    ccode_buf_init(&b);
+    if (ccode_buf_append(&b, "\"tools\":[") != 0) goto fail;
+    for (i = 0; i < count; i++) {
+        size_t j;
+        for (j = 0; j < ccode_tool_definitions_count; j++) {
+            if (strcmp(ccode_tool_definitions[j].name, names[i]) == 0) {
+                if (!first && ccode_buf_append_c(&b, ',') != 0) goto fail;
+                first = 0;
+                if (append_tool_def(&b, &ccode_tool_definitions[j]) != 0)
+                    goto fail;
+                break;
+            }
+        }
     }
-    return total;
+    if (ccode_buf_append_c(&b, ']') != 0) goto fail;
+    return ccode_buf_detach(&b);
+fail:
+    ccode_buf_free(&b);
+    return NULL;
 }
 
 char *ccode_build_tools_json(void) {
-    size_t cap = estimate_tools_json_len();
-    size_t pos = 0;
-    char *buf = malloc(cap);
+    const char *names[sizeof(ccode_tool_definitions) /
+                       sizeof(ccode_tool_definitions[0])];
     size_t i;
-
-    if (!buf) return NULL;
-    buf[0] = '\0';
-
-    //BLAME-IMPACT(json): json.c:10 — 手搓工具 schema JSON（同文件共 3 份），统一构建器
-    if (ccode_append_cstr(&buf, &pos, &cap, "\"tools\":[") != 0) goto fail;
-
-    for (i = 0; i < ccode_tool_definitions_count; i++) {
-        if (i > 0 && ccode_append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
-        if (ccode_append_cstr(&buf, &pos, &cap,
-                "{\"type\":\"function\",\"function\":{") != 0) goto fail;
-
-        if (ccode_append_cstr(&buf, &pos, &cap, "\"name\":\"") != 0) goto fail;
-        if (ccode_append_cstr(&buf, &pos, &cap,
-                ccode_tool_definitions[i].name) != 0) goto fail;
-
-        if (ccode_append_cstr(&buf, &pos, &cap, "\",\"description\":\"") != 0) goto fail;
-        if (ccode_append_cstr(&buf, &pos, &cap,
-                ccode_tool_definitions[i].description) != 0) goto fail;
-
-        if (ccode_append_cstr(&buf, &pos, &cap, "\",\"parameters\":") != 0) goto fail;
-        if (ccode_append_cstr(&buf, &pos, &cap,
-                ccode_tool_definitions[i].param_schema) != 0) goto fail;
-
-        if (ccode_append_cstr(&buf, &pos, &cap, "}}") != 0) goto fail;
-    }
-
-    if (ccode_append_cstr(&buf, &pos, &cap, "]") != 0) goto fail;
-    return buf;
-
-fail:
-    free(buf);
-    return NULL;
-}
-
-static int append_tool_def(char **buf, size_t *pos, size_t *cap,
-                           const struct ccode_tool_def *def) {
-    if (ccode_append_cstr(buf, pos, cap,
-            "{\"type\":\"function\",\"function\":{") != 0) return -1;
-    if (ccode_append_cstr(buf, pos, cap, "\"name\":\"") != 0) return -1;
-    if (ccode_append_cstr(buf, pos, cap, def->name) != 0) return -1;
-    if (ccode_append_cstr(buf, pos, cap, "\",\"description\":\"") != 0) return -1;
-    if (ccode_append_cstr(buf, pos, cap, def->description) != 0) return -1;
-    if (ccode_append_cstr(buf, pos, cap, "\",\"parameters\":") != 0) return -1;
-    if (ccode_append_cstr(buf, pos, cap, def->param_schema) != 0) return -1;
-    if (ccode_append_cstr(buf, pos, cap, "}}") != 0) return -1;
-    return 0;
+    for (i = 0; i < ccode_tool_definitions_count; i++)
+        names[i] = ccode_tool_definitions[i].name;
+    return build_tools_json_named(names, ccode_tool_definitions_count);
 }
 
 char *ccode_build_readonly_tools_json(void) {
-    int first;
-    size_t i;
-    size_t cap = 4096;
-    size_t pos = 0;
-    char *buf = malloc(cap);
-    const char *readonly_names[] = {"read_file", "glob", "grep",
-                                    "read_tool_output"};
-    first = 1;
-
-    if (!buf) return NULL;
-    buf[0] = '\0';
-
-    if (ccode_append_cstr(&buf, &pos, &cap, "\"tools\":[") != 0) goto fail;
-
-    for (i = 0; i < sizeof(readonly_names) / sizeof(readonly_names[0]); i++) {
-        size_t j;
-        for (j = 0; j < ccode_tool_definitions_count; j++) {
-            if (strcmp(ccode_tool_definitions[j].name, readonly_names[i]) == 0) {
-                if (!first) {
-                    if (ccode_append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
-                }
-                first = 0;
-                if (append_tool_def(&buf, &pos, &cap,
-                                    &ccode_tool_definitions[j]) != 0)
-                    goto fail;
-                break;
-            }
-        }
-    }
-
-    if (ccode_append_cstr(&buf, &pos, &cap, "]") != 0) goto fail;
-    return buf;
-
-fail:
-    free(buf);
-    return NULL;
+    static const char *const names[] = {"read_file", "glob", "grep",
+                                        "read_tool_output"};
+    return build_tools_json_named(names, sizeof(names) / sizeof(names[0]));
 }
 
 char *ccode_build_write_tools_json(void) {
-    int first;
-    size_t i;
-    size_t cap = 8192;
-    size_t pos = 0;
-    char *buf = malloc(cap);
-    const char *enabled_names[] = {"read_file", "edit_file",
-                                   "bash",
-                                   "delete_file", "move_file",
-                                   "glob", "grep",
-                                   "task",
-                                   "web_fetch", "web_search", "agent_tool",
-                                   "read_tool_output"};
-    first = 1;
-
-    if (!buf) return NULL;
-    buf[0] = '\0';
-    if (ccode_append_cstr(&buf, &pos, &cap, "\"tools\":[") != 0) goto fail;
-
-    for (i = 0; i < sizeof(enabled_names) / sizeof(enabled_names[0]); i++) {
-        size_t j;
-        for (j = 0; j < ccode_tool_definitions_count; j++) {
-            if (strcmp(ccode_tool_definitions[j].name, enabled_names[i]) == 0) {
-                if (!first && ccode_append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
-                first = 0;
-                if (append_tool_def(&buf, &pos, &cap,
-                                    &ccode_tool_definitions[j]) != 0)
-                    goto fail;
-                break;
-            }
-        }
-    }
-    if (ccode_append_cstr(&buf, &pos, &cap, "]") != 0) goto fail;
-    return buf;
-
-fail:
-    free(buf);
-    return NULL;
+    static const char *const names[] = {"read_file", "edit_file", "bash",
+                                        "delete_file", "move_file", "glob",
+                                        "grep", "task", "web_fetch",
+                                        "web_search", "agent_tool",
+                                        "read_tool_output"};
+    return build_tools_json_named(names, sizeof(names) / sizeof(names[0]));
 }

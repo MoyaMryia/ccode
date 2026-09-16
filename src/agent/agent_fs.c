@@ -339,56 +339,47 @@ void change_log_add_denied(struct agent_context *ctx, const char *tool_name) {
 }
 
 const char *change_log_serialize(struct agent_context *ctx) {
-    static char buf[4096];
-    size_t pos = 0;
+    static struct ccode_buf buf;
     int i;
-    //BLAME-IMPACT(json): json.c:10 — 手搓 change-log JSON，统一构建器
-    pos = (size_t)snprintf(buf, sizeof(buf), "{\"changes\":[");
+    ccode_buf_clear(&buf);
+    if (ccode_buf_append(&buf, "{\"changes\":[") != 0)
+        return "{\"changes\":[]}";
     for (i = 0; i < ctx->change_count; i++) {
-        size_t entry_start = pos;
-        if (i > 0) {
-            if (pos + 1 >= sizeof(buf)) goto truncated;
-            buf[pos++] = ',';
+        size_t entry_start = buf.len;
+        int truncated = 0;
+        if (i > 0 && ccode_buf_append_c(&buf, ',') != 0)
+            return "{\"changes\":[]}";
+        if (ccode_buf_append(&buf, "{\"op\":") != 0 ||
+            ccode_json_append_quoted(&buf, ctx->change_log[i].type) != 0 ||
+            ccode_buf_append(&buf, ",\"target\":") != 0 ||
+            ccode_json_append_quoted(&buf, ctx->change_log[i].target) != 0)
+            truncated = 1;
+        if (!truncated && strcmp(ctx->change_log[i].type, "command") == 0) {
+            if (ccode_buf_append(&buf, ",\"exit_code\":") != 0 ||
+                ccode_json_append_int(&buf, ctx->change_log[i].exit_code) != 0 ||
+                (ctx->change_log[i].timed_out &&
+                 ccode_buf_append(&buf, ",\"timed_out\":true") != 0) ||
+                (ctx->change_log[i].stdout_truncated &&
+                 ccode_buf_append(&buf, ",\"stdout_truncated\":true") != 0) ||
+                (ctx->change_log[i].stderr_truncated &&
+                 ccode_buf_append(&buf, ",\"stderr_truncated\":true") != 0))
+                truncated = 1;
         }
-        if (pos + 15 >= sizeof(buf) ||
-            append_fixed_cstr(buf, sizeof(buf), &pos, "{\"op\":\"") != 0 ||
-            append_json_escaped_fixed(buf, sizeof(buf), &pos, ctx->change_log[i].type) != 0 ||
-            append_fixed_cstr(buf, sizeof(buf), &pos, "\",\"target\":\"") != 0 ||
-            append_json_escaped_fixed(buf, sizeof(buf), &pos, ctx->change_log[i].target) != 0 ||
-            append_fixed_cstr(buf, sizeof(buf), &pos, "\"") != 0)
-            goto truncate_entry;
-        if (strcmp(ctx->change_log[i].type, "command") == 0) {
-            char number[32];
-            int n = snprintf(number, sizeof(number), ",\"exit_code\":%d",
-                             ctx->change_log[i].exit_code);
-            if (n <= 0 || (size_t)n >= sizeof(number) ||
-                append_fixed_cstr(buf, sizeof(buf), &pos, number) != 0 ||
-                (ctx->change_log[i].timed_out && append_fixed_cstr(
-                    buf, sizeof(buf), &pos, ",\"timed_out\":true") != 0) ||
-                (ctx->change_log[i].stdout_truncated && append_fixed_cstr(
-                    buf, sizeof(buf), &pos, ",\"stdout_truncated\":true") != 0) ||
-                (ctx->change_log[i].stderr_truncated && append_fixed_cstr(
-                    buf, sizeof(buf), &pos, ",\"stderr_truncated\":true") != 0))
-                goto truncate_entry;
+        if (!truncated && ctx->change_log[i].denied &&
+            ccode_buf_append(&buf, ",\"denied\":true") != 0)
+            truncated = 1;
+        if (!truncated && ccode_buf_append(&buf, "}") != 0)
+            truncated = 1;
+        if (truncated) {
+            ccode_buf_truncate(&buf, entry_start);
+            if (ccode_buf_append(&buf, "],\"truncated\":true}") != 0)
+                return "{\"changes\":[]}";
+            return buf.data;
         }
-        if (ctx->change_log[i].denied && append_fixed_cstr(buf, sizeof(buf), &pos,
-                ",\"denied\":true") != 0)
-            goto truncate_entry;
-        if (append_fixed_cstr(buf, sizeof(buf), &pos, "}") != 0 ||
-            pos >= sizeof(buf) - 100) goto truncate_entry;
-        continue;
-
-truncate_entry:
-        pos = entry_start;
-        goto truncated;
     }
-    snprintf(buf + pos, sizeof(buf) - pos, "]}");
-    return buf;
-
-truncated:
-    if (pos > sizeof(buf) - 32) pos = sizeof(buf) - 32;
-    snprintf(buf + pos, sizeof(buf) - pos, "],\"truncated\":true}");
-    return buf;
+    if (ccode_buf_append(&buf, "]}") != 0)
+        return "{\"changes\":[]}";
+    return buf.data;
 }
 
 /* ── In-memory task list ── */
@@ -980,24 +971,21 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
 }
 
 /* Grow a dynamic JSON buffer to at least `need` bytes. Returns -1 on
- * allocation failure. */
-//BLAME-IMPACT(vector): message.c:21 — 重造 append 助手，改用统一 buf
+ * allocation failure. Thin wrapper over the shared ccode_buf growth. */
 static int grow_json_buf(char **buf, size_t *pos, size_t *cap, size_t need) {
-    char *tmp;
-    size_t new_cap = *cap * 2;
-    (void)pos;
-    if (new_cap < need) new_cap = need;
-    tmp = realloc(*buf, new_cap);
-    if (!tmp) return -1;
-    *buf = tmp;
-    *cap = new_cap;
+    struct ccode_buf b;
+    b.data = *buf;
+    b.len = *pos;
+    b.cap = *cap;
+    if (ccode_buf_reserve(&b, need) != 0) return -1;
+    *buf = b.data;
+    *cap = b.cap;
     return 0;
 }
 
 /* Append the JSON-escaped form of `s` to a dynamic buffer. Used to safely
  * serialize path entries rather than dropping control bytes or trusting
  * quotes. Returns -1 on allocation failure. */
-//BLAME-IMPACT(json): json.c:10 — 私有 JSON 转义拼接，统一构建器
 int append_json_string_n(char **buf, size_t *pos, size_t *cap,
                                 const char *s, size_t n) {
     return append_json_string_budget(buf, pos, cap, s, n, (size_t)-1, NULL);
@@ -1007,7 +995,11 @@ int append_json_string_n(char **buf, size_t *pos, size_t *cap,
  * the enclosing result JSON stays under the conversation content cap.
  * Returns 0 when everything was appended, 1 when the budget stopped it with
  * raw bytes remaining, -1 on allocation failure. *used_out (when non-NULL)
- * receives the escaped bytes written. */
+ * receives the escaped bytes written.
+ *
+ * This is the budget-aware sibling of the canonical ccode_json_escape /
+ * ccode_json_append_quoted: unlike those it must report how much fit and
+ * substitute U+FFFD for invalid UTF-8, so it keeps its own loop by design. */
 int append_json_string_budget(char **buf, size_t *pos, size_t *cap,
                               const char *s, size_t n, size_t budget,
                               size_t *used_out) {

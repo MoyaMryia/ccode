@@ -3,13 +3,20 @@
 #include <limits.h>
 #include <string.h>
 
-//BLAME: 我觉得这里的函数很多重复了
-
-//BLAME-IMPACT(json): jsmn.c:6 — hex 解析三份之一
-static int is_hex(char c) {
-    return (c >= '0' && c <= '9') ||
-           (c >= 'a' && c <= 'f') ||
-           (c >= 'A' && c <= 'F');
+int ccode_jsmn_hex4(const char *s, unsigned int *value) {
+    unsigned int v = 0;
+    int i;
+    for (i = 0; i < 4; i++) {
+        unsigned char c = (unsigned char)s[i];
+        unsigned int d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10U;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10U;
+        else return -1;
+        v = (v << 4) | d;
+    }
+    if (value) *value = v;
+    return 0;
 }
 
 void ccode_jsmn_init(ccode_jsmn_parser *parser) {
@@ -48,15 +55,13 @@ int ccode_jsmn_parse(ccode_jsmn_parser *parser, const char *js, size_t len,
 
         if (token_type == CCODE_JSMN_STRING) {
             if (c == '\\') {
-                unsigned int j;
                 if (parser->pos + 1 >= len) return -1;
                 parser->pos++;
                 c = js[parser->pos];
                 if (c == 'u') {
                     if (len - parser->pos <= 4) return -1;
-                    for (j = 1; j <= 4; j++) {
-                        if (!is_hex(js[parser->pos + j])) return -1;
-                    }
+                    if (ccode_jsmn_hex4(js + parser->pos + 1, NULL) != 0)
+                        return -1;
                     parser->pos += 4;
                 } else if (c != '"' && c != '\\' && c != '/' &&
                            c != 'b' && c != 'f' && c != 'n' &&
@@ -166,28 +171,4 @@ int ccode_jsmn_token_streq(const char *js, ccode_jsmntok_t *tok,
     size_t len = strlen(s);
     return (size_t)(tok->end - tok->start) == len &&
            memcmp(js + tok->start, s, len) == 0;
-}
-
-//BLAME-IMPACT(json): jsmn.c:6 — 死代码：与 ccode_json_token_to_int 重复且语义不同，删
-int ccode_jsmn_token_to_int(const char *js, ccode_jsmntok_t *tok) {
-    unsigned int val = 0;
-    unsigned int limit;
-    int sign = 1;
-    int i = tok->start;
-    if (i < tok->end && js[i] == '-') { sign = -1; i++; }
-    limit = sign < 0 ? (unsigned int)INT_MAX + 1U : (unsigned int)INT_MAX;
-    for (; i < tok->end; i++) {
-        unsigned int digit;
-        if (js[i] < '0' || js[i] > '9')
-            return 0;
-        digit = (unsigned int)(js[i] - '0');
-        if (val > (limit - digit) / 10)
-            return sign < 0 ? INT_MIN : INT_MAX;
-        val = val * 10 + digit;
-    }
-    if (sign < 0) {
-        if (val == (unsigned int)INT_MAX + 1U) return INT_MIN;
-        return -(int)val;
-    }
-    return (int)val;
 }

@@ -9,6 +9,7 @@
 #include "term.h"
 #include "theme.h"
 #include "../json.h"
+#include "../commands.h"
 #include "../models.h"
 #include "../platform/platform.h"
 #include "../permissions/permissions.h"
@@ -53,14 +54,11 @@ static const char *tui_find_backend(const char *requested) {
 
 static void tui_process_backend(struct tui_protocol *protocol,
                                 struct tui_messages *messages, int *changed,
-                                int *permission_pending, char *permission_text,
-                                size_t permission_text_cap, int *streaming,
+                                int *permission_pending, int *streaming,
                                 int *thinking_enabled, char *thinking_effort,
                                 size_t thinking_effort_cap, int *backend_eof) {
     char line[TUI_PROTOCOL_EVENT_MAX];
     char type[32];
-    //BLAME-IMPACT(vector): cli/main.c:160 — 100KB 栈缓冲，与 cli/main.c:160 同类
-    char text[102401];
     int status;
 
     for (;;) {
@@ -78,27 +76,35 @@ static void tui_process_backend(struct tui_protocol *protocol,
                 *streaming = 1;
             *changed = 1;
         } else if (strcmp(type, "message_delta") == 0) {
-            if (tui_protocol_field(line, "text", text, sizeof(text)) == 0) {
+            char *text = ccode_json_get_string_dup(line, "text");
+            if (text) {
                 if (!*streaming || tui_messages_append_last(messages, TUI_MSG_ASSISTANT, text) != 0)
                     tui_messages_add(messages, TUI_MSG_ASSISTANT, text);
                 *streaming = 1;
                 *changed = 1;
+                free(text);
             }
         } else if (strcmp(type, "reasoning_delta") == 0) {
-            if (tui_protocol_field(line, "text", text, sizeof(text)) == 0) {
+            char *text = ccode_json_get_string_dup(line, "text");
+            if (text) {
                 if (tui_messages_append_last(messages, TUI_MSG_REASONING, text) != 0)
                     tui_messages_add(messages, TUI_MSG_REASONING, text);
                 *changed = 1;
+                free(text);
             }
         } else if (strcmp(type, "message_end") == 0) {
             *streaming = 0;
             *changed = 1;
         } else if (strcmp(type, "ready") == 0 || strcmp(type, "status") == 0 ||
             strcmp(type, "cleared") == 0 || strcmp(type, "error") == 0) {
-            if (tui_protocol_field(line, "text", text, sizeof(text)) == 0)
+            char *text = ccode_json_get_string_dup(line, "text");
+            if (text) {
                 if (tui_messages_add(messages, TUI_MSG_SYSTEM, text) == 0) *changed = 1;
+                free(text);
+            }
         } else if (strcmp(type, "message") == 0) {
-            if (tui_protocol_field(line, "text", text, sizeof(text)) == 0) {
+            char *text = ccode_json_get_string_dup(line, "text");
+            if (text) {
                 if (tui_messages_add(messages, TUI_MSG_ASSISTANT, text) == 0)
                     *changed = 1;
                 if (strstr(text, "Thinking enabled") != NULL) {
@@ -124,18 +130,20 @@ static void tui_process_backend(struct tui_protocol *protocol,
                         thinking_effort[i] = '\0';
                     }
                 }
+                free(text);
             }
         } else if (strcmp(type, "permission_request") == 0) {
-            if (tui_protocol_field(line, "text", permission_text,
-                                   permission_text_cap) == 0) {
-                //BLAME-IMPACT(vector): cli/main.c:160 — 定长请求缓冲
-                char request_text[4300];
-                int written = snprintf(request_text, sizeof(request_text),
-                                       "Tool request\n  %s",
-                                       permission_text);
-                if (written > 0 && (size_t)written < sizeof(request_text))
-                    if (tui_messages_add(messages, TUI_MSG_SYSTEM, request_text) == 0)
+            char *ptext = ccode_json_get_string_dup(line, "text");
+            if (ptext) {
+                struct ccode_buf request_text;
+                ccode_buf_init(&request_text);
+                if (ccode_buf_append(&request_text, "Tool request\n  ") == 0 &&
+                    ccode_buf_append(&request_text, ptext) == 0)
+                    if (tui_messages_add(messages, TUI_MSG_SYSTEM,
+                                         request_text.data) == 0)
                         *changed = 1;
+                ccode_buf_free(&request_text);
+                free(ptext);
                 *permission_pending = 1;
                 *changed = 1;
             }
@@ -234,8 +242,6 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
     int streaming = 0;
     int thinking_enabled = config->thinking_enabled;
     char thinking_effort[16] = "medium";
-    //BLAME-IMPACT(vector): cli/main.c:160 — 定长权限文本
-    char permission_text[4096] = "";
     const char *workspace = config->workspace ? config->workspace : ".";
     const char *backend = tui_find_backend(backend_path);
 
@@ -295,27 +301,32 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
         if (!backend_eof)
             tui_process_backend(&protocol, &messages, &dirty,
                                 &permission_pending,
-                                permission_text, sizeof(permission_text),
                                 &streaming, &thinking_enabled, thinking_effort,
                                 sizeof(thinking_effort), &backend_eof);
         if (backend_eof && !backend_noted) {
             int exit_code = -1;
-            //BLAME-IMPACT(vector): cli/main.c:160 — 定长 note
-            char note[4200];
+            struct ccode_buf note;
+            ccode_buf_init(&note);
             backend_noted = 1;
             if (tui_protocol_exited(&protocol, &exit_code) == 1 &&
-                exit_code == 127)
-                snprintf(note, sizeof(note),
-                         "backend could not be started: %s (build ccode-cli "
-                         "alongside ccode, or set CCODE_BACKEND)", backend);
-            else if (exit_code >= 0)
-                snprintf(note, sizeof(note),
-                         "backend exited unexpectedly (code %d): %s",
-                         exit_code, backend);
-            else
-                snprintf(note, sizeof(note),
-                         "backend connection lost: %s", backend);
-            tui_messages_add(&messages, TUI_MSG_SYSTEM, note);
+                exit_code == 127) {
+                ccode_buf_append(&note, "backend could not be started: ");
+                ccode_buf_append(&note, backend);
+                ccode_buf_append(&note, " (build ccode-cli alongside ccode, "
+                                       "or set CCODE_BACKEND)");
+            } else if (exit_code >= 0) {
+                char code[48];
+                snprintf(code, sizeof(code),
+                         "backend exited unexpectedly (code %d): ", exit_code);
+                ccode_buf_append(&note, code);
+                ccode_buf_append(&note, backend);
+            } else {
+                ccode_buf_append(&note, "backend connection lost: ");
+                ccode_buf_append(&note, backend);
+            }
+            tui_messages_add(&messages, TUI_MSG_SYSTEM,
+                             note.data ? note.data : "");
+            ccode_buf_free(&note);
             dirty = 1;
         }
         if (permission_pending) {
@@ -376,7 +387,6 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
                     tui_messages_add(&messages, TUI_MSG_SYSTEM, decision);
                 }
                 permission_pending = 0;
-                permission_text[0] = '\0';
                 if (key == 3) break;
                 dirty = 1;
             }
@@ -473,8 +483,7 @@ struct tui_inproc_ctx {
     /* Session chaining: when session_path is set, each turn resumes this
      * session file and saves back to it, so conversation context persists
      * across turns (same semantics as the CLI JSON backend). */
-    //BLAME-IMPACT(vector): cli/main.c:428 — 定长路径，同 cli/main.c session_path
-    char session_path[4096];
+    struct ccode_buf session_path;
     const char *base_save;
     /* Disambiguates re-minted chain names after /clear: auto-<time>-<pid>
      * would collide with the previous (still existing) file within the
@@ -566,22 +575,21 @@ static void inproc_run_agent(struct ccode_agent_config *cfg, const char *prompt,
                              struct tui_inproc_ctx *ctx) {
     cfg->prompt = prompt;
     if (ctx->config->session_auto_save &&
-        !ctx->session_path[0] && !ctx->base_save) {
+        ctx->session_path.len == 0 && !ctx->base_save) {
         /* Default: lazily mint an auto-named session chain so consecutive
          * turns share conversation context (same as the line-based REPL).
          * Suppressed by CCODE_SESSION_AUTO_SAVE=0. /clear or /session new
          * starts a fresh chain on the next turn. */
-        if (!ccode_session_mint_auto(ctx->session_path,
-                                     sizeof(ctx->session_path),
-                                     ctx->chain_seq++))
-            ctx->session_path[0] = '\0';
+        if (!ccode_session_mint_auto_buf(&ctx->session_path, ctx->chain_seq++))
+            ccode_buf_clear(&ctx->session_path);
     }
-    if (ctx->session_path[0]) {
+    if (ctx->session_path.len > 0) {
         /* Only resume once the file exists: the first turn of a fresh chain
          * starts an empty conversation and creates the file on save. */
-        cfg->resume_session =
-            access(ctx->session_path, F_OK) == 0 ? ctx->session_path : NULL;
-        cfg->save_session = ctx->session_path;
+        cfg->resume_session = access(ctx->session_path.data, F_OK) == 0
+                                  ? ctx->session_path.data
+                                  : NULL;
+        cfg->save_session = ctx->session_path.data;
     } else {
         /* Explicit --save-session: chain onto the file so consecutive turns
          * share context. The TUI rebuilds the conversation from the file on
@@ -633,28 +641,14 @@ static void inproc_history_add(struct tui_inproc_ctx *ctx, const char *text) {
     if (ctx->history[ctx->history_count]) ctx->history_count++;
 }
 
-/* /models [search K | info NAME]: the shared renderer in models.c keeps
- * the output identical to the CLI REPL. */
-static void inproc_list_models(struct tui_inproc_ctx *ctx, const char *cmd) {
-    const char *keyword = NULL;
-    const char *info = NULL;
-    char *text;
-    if (strncmp(cmd, "/models search ", 15) == 0) {
-        keyword = cmd + 15;
-        if (keyword[0] == '\0') {
-            inproc_msg(ctx, "Usage: /models search <keyword>");
-            return;
-        }
-    } else if (strncmp(cmd, "/models info ", 13) == 0) {
-        info = cmd + 13;
-        if (info[0] == '\0') {
-            inproc_msg(ctx, "Usage: /models info <name>");
-            return;
-        }
-    }
-    text = ccode_models_render(ctx->config->api_base, ctx->config->api_key,
-                               keyword, info,
-                               ctx->config->model ? ctx->config->model : "");
+/* /models: the shared renderer in models.c keeps the output identical to the
+ * CLI REPL. keyword/info are already parsed by the command dispatcher. */
+static void inproc_list_models(struct tui_inproc_ctx *ctx, const char *keyword,
+                               const char *info) {
+    char *text = ccode_models_render(ctx->config->api_base,
+                                     ctx->config->api_key, keyword, info,
+                                     ctx->config->model ? ctx->config->model
+                                                        : "");
     if (!text) {
         inproc_msg(ctx, "Could not fetch model list.");
         return;
@@ -736,245 +730,265 @@ static int inproc_session_path(const char *name, char *path, size_t cap) {
     return 0;
 }
 
-/* Handle a slash command in-process. Returns 1 if the TUI should exit. */
-//BLAME-IMPACT(dispatch): agent.c:1622 — 第三张命令分派表(AUDIT #4)，与 CLI/REPL 漂移
-static int inproc_handle_command(struct tui_inproc_ctx *ctx, const char *cmd) {
+/* ─ Slash-command vtable for the in-process TUI ──
+ * Routing lives in commands.c; these methods own the TUI's storage and its
+ * message-list output (errors are shown inline like any system message). */
+
+static void tbe_emit(void *self, const char *text) {
+    inproc_msg(self, text);
+}
+
+static void tbe_emit_error(void *self, const char *text) {
+    inproc_msg(self, text);
+}
+
+static int tbe_exit(void *self) {
+    (void)self;
+    return 1;
+}
+
+static void tbe_clear(void *self) {
+    struct tui_inproc_ctx *ctx = self;
+    tui_messages_clear(ctx->messages);
+    ccode_agent_summary_cache_reset();
+    *ctx->scroll_offset = 0;
+    *ctx->follow_bottom = 1;
+    /* Start a fresh chain on the next turn but keep the file the user
+     * pointed at with --save-session: deleting it would destroy the
+     * conversation transcript the CLI REPL preserves on /clear. */
+    ccode_buf_clear(&ctx->session_path);
+    ctx->skip_resume_once = 1;
+    inproc_msg(ctx, "Conversation cleared.");
+}
+
+static void tbe_compact(void *self) {
+    struct tui_inproc_ctx *ctx = self;
+    const char *chain = ctx->session_path.len > 0 ? ctx->session_path.data
+                                                  : ctx->base_save;
+    ccode_agent_summary_cache_reset();
+    if (!chain || access(chain, F_OK) != 0) {
+        inproc_msg(ctx, "Nothing to compact yet.");
+    } else if (ccode_session_compact_file(chain, ctx->model,
+                                          ctx->workspace) == 0) {
+        inproc_msg(ctx, "Conversation compacted.");
+    } else {
+        inproc_msg(ctx, "Could not compact the conversation.");
+    }
+}
+
+static void tbe_show_model(void *self) {
+    struct tui_inproc_ctx *ctx = self;
+    char msg[300];
+    snprintf(msg, sizeof(msg), "Current model: %s",
+             ctx->config->model ? ctx->config->model : "(none)");
+    inproc_msg(ctx, msg);
+}
+
+static void tbe_set_model(void *self, const char *name) {
+    struct tui_inproc_ctx *ctx = self;
+    char msg[300];
+    ctx->config->model = ctx->model_buf;
+    ctx->model = ctx->model_buf;
+    snprintf(ctx->model_buf, sizeof(ctx->model_buf), "%.*s",
+             (int)sizeof(ctx->model_buf) - 1, name);
+    snprintf(msg, sizeof(msg), "Model switched to: %s", ctx->config->model);
+    inproc_msg(ctx, msg);
+}
+
+static void tbe_show_default_model(void *self) {
+    struct tui_inproc_ctx *ctx = self;
+    const char *cur = getenv("CCODE_MODEL");
+    char msg[300];
+    snprintf(msg, sizeof(msg), "Default model: %s", cur ? cur : "(not set)");
+    inproc_msg(ctx, msg);
+}
+
+static void tbe_set_default_model(void *self, const char *name) {
+    struct tui_inproc_ctx *ctx = self;
+    char msg[300];
+    setenv("CCODE_MODEL", name, 1);
+    snprintf(msg, sizeof(msg), "Default model set to: %.270s", name);
+    inproc_msg(ctx, msg);
+}
+
+static void tbe_list_models(void *self, const char *keyword,
+                            const char *info) {
+    inproc_list_models(self, keyword, info);
+}
+
+static void tbe_show_thinking(void *self) {
+    struct tui_inproc_ctx *ctx = self;
     char msg[512];
-    if (strcmp(cmd, "/exit") == 0 || strcmp(cmd, "/quit") == 0) return 1;
-    if (strcmp(cmd, "/clear") == 0) {
-        tui_messages_clear(ctx->messages);
-        ccode_agent_summary_cache_reset();
-        *ctx->scroll_offset = 0;
-        *ctx->follow_bottom = 1;
-        /* Start a fresh chain on the next turn but keep the file the user
-         * pointed at with --save-session: deleting it would destroy the
-         * conversation transcript the CLI REPL preserves on /clear. */
-        ctx->session_path[0] = '\0';
-        ctx->skip_resume_once = 1;
-        inproc_msg(ctx, "Conversation cleared.");
-        return 0;
+    snprintf(msg, sizeof(msg), "Thinking: %s",
+             ctx->thinking_enabled ? "on" : "off");
+    tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, msg);
+}
+
+static void tbe_set_thinking(void *self, int on) {
+    struct tui_inproc_ctx *ctx = self;
+    ctx->thinking_enabled = on;
+    tui_messages_add(ctx->messages, TUI_MSG_SYSTEM,
+                     on ? "Thinking enabled." : "Thinking disabled.");
+}
+
+static void tbe_show_reasoning(void *self) {
+    struct tui_inproc_ctx *ctx = self;
+    char msg[512];
+    snprintf(msg, sizeof(msg), "Reasoning: %s (effort: %s)",
+             ctx->thinking_effort[0] ? "on" : "off",
+             ctx->thinking_effort[0] ? ctx->thinking_effort : "medium");
+    tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, msg);
+}
+
+static void tbe_set_reasoning(void *self, int on) {
+    struct tui_inproc_ctx *ctx = self;
+    if (on) {
+        if (!ctx->thinking_effort[0])
+            snprintf(ctx->thinking_effort, sizeof(ctx->thinking_effort),
+                     "high");
+        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, "Reasoning enabled.");
+    } else {
+        ctx->thinking_effort[0] = '\0';
+        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, "Reasoning disabled.");
     }
-    if (strcmp(cmd, "/help") == 0) {
-        inproc_msg(ctx,
-                   "Commands: /help /clear /exit /history /compact\n"
-                   "  /model [NAME] | /model default [NAME]\n"
-                   "  /models [search KEYWORD | info NAME]\n"
-                   "  /sessions [delete NAME | rename OLD NEW | export NAME [FORMAT]]\n"
-                   "    (aliases: /session list, /resume --list)\n"
-                   "  /resume [NAME]\n"
-                   "  /session new [NAME] | /session switch NAME\n"
-                   "  /thinking on|off | /reasoning on|off|effort low|medium|high|xhigh|max");
-        return 0;
+}
+
+static void tbe_set_effort(void *self, const char *effort) {
+    struct tui_inproc_ctx *ctx = self;
+    char msg[512];
+    snprintf(ctx->thinking_effort, sizeof(ctx->thinking_effort), "%s",
+             effort);
+    snprintf(msg, sizeof(msg), "Reasoning effort set to: %s", effort);
+    tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, msg);
+}
+
+static void tbe_show_history(void *self) {
+    struct tui_inproc_ctx *ctx = self;
+    char header[64];
+    int i;
+    snprintf(header, sizeof(header), "Session history (%d prompts):",
+             ctx->history_count);
+    inproc_msg(ctx, header);
+    for (i = 0; i < ctx->history_count; i++) {
+        char line[64];
+        snprintf(line, sizeof(line), "  [%d] ", i + 1);
+        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, line);
+        tui_messages_append_last(ctx->messages, TUI_MSG_SYSTEM,
+                                 ctx->history[i]);
     }
-    if (strcmp(cmd, "/history") == 0) {
-        char header[64];
-        int i;
-        snprintf(header, sizeof(header), "Session history (%d prompts):",
-                 ctx->history_count);
-        inproc_msg(ctx, header);
-        for (i = 0; i < ctx->history_count; i++) {
-            char line[64];
-            snprintf(line, sizeof(line), "  [%d] ", i + 1);
-            tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, line);
-            tui_messages_append_last(ctx->messages, TUI_MSG_SYSTEM,
-                                     ctx->history[i]);
-        }
-        return 0;
-    }
-    if (strcmp(cmd, "/models") == 0 || strncmp(cmd, "/models ", 8) == 0) {
-        inproc_list_models(ctx, cmd);
-        return 0;
-    }
-    if (strcmp(cmd, "/model") == 0) {
-        char msg[300];
-        snprintf(msg, sizeof(msg), "Current model: %s",
-                 ctx->config->model ? ctx->config->model : "(none)");
-        inproc_msg(ctx, msg);
-        return 0;
-    }
-    if (strncmp(cmd, "/model default", 14) == 0 &&
-        (cmd[14] == '\0' || cmd[14] == ' ')) {
-        const char *def = cmd[14] == ' ' ? cmd + 15 : "";
-        if (def[0] == '\0') {
-            const char *cur = getenv("CCODE_MODEL");
-            char msg[300];
-            snprintf(msg, sizeof(msg), "Default model: %s",
-                     cur ? cur : "(not set)");
-            inproc_msg(ctx, msg);
-        } else {
-            char msg[300];
-            setenv("CCODE_MODEL", def, 1);
-            snprintf(msg, sizeof(msg), "Default model set to: %.270s", def);
-            inproc_msg(ctx, msg);
-        }
-        return 0;
-    }
-    if (strncmp(cmd, "/model ", 7) == 0 && cmd[7] != '\0') {
-        ctx->config->model = ctx->model_buf;
-        ctx->model = ctx->model_buf;
-        snprintf(ctx->model_buf, sizeof(ctx->model_buf), "%.*s",
-                 (int)sizeof(ctx->model_buf) - 1, cmd + 7);
-        {
-            char msg[300];
-            snprintf(msg, sizeof(msg), "Model switched to: %s",
-                     ctx->config->model);
-            inproc_msg(ctx, msg);
-        }
-        return 0;
-    }
-    if (strcmp(cmd, "/sessions") == 0 || strcmp(cmd, "/session list") == 0) {
+}
+
+static void tbe_sessions(void *self, const char *arg) {
+    struct tui_inproc_ctx *ctx = self;
+
+    if (*arg == '\0' || strcmp(arg, "list") == 0) {
         inproc_list_sessions(ctx);
-        return 0;
+        return;
     }
-    if (strncmp(cmd, "/sessions delete ", 17) == 0) {
-        if (cmd[17] == '\0' || ccode_session_delete(cmd + 17) != 0)
+    if (strncmp(arg, "delete ", 7) == 0) {
+        if (arg[7] == '\0' || ccode_session_delete(arg + 7) != 0)
             inproc_msg(ctx, "Usage: /sessions delete NAME");
         else
             inproc_msg(ctx, "Session deleted.");
-        return 0;
+        return;
     }
-    if (strncmp(cmd, "/sessions rename ", 17) == 0) {
+    if (strncmp(arg, "rename ", 7) == 0) {
         char old_n[256], new_n[256];
-        if (sscanf(cmd + 17, "%255s %255s", old_n, new_n) != 2 ||
-            ccode_session_rename(old_n, new_n) != 0)
+        if (sscanf(arg + 7, "%255s %255s", old_n, new_n) != 2 ||
+            ccode_session_rename(old_n, new_n) != 0) {
             inproc_msg(ctx, "Usage: /sessions rename OLD NEW");
-        else {
+        } else {
             char msg[600];
-            snprintf(msg, sizeof(msg), "Session renamed: %s -> %s",
-                     old_n, new_n);
+            snprintf(msg, sizeof(msg), "Session renamed: %s -> %s", old_n,
+                     new_n);
             inproc_msg(ctx, msg);
         }
-        return 0;
+        return;
     }
-    if (strncmp(cmd, "/sessions export ", 17) == 0) {
-        inproc_export_session(ctx, cmd + 17);
-        return 0;
+    if (strncmp(arg, "export ", 7) == 0) {
+        inproc_export_session(ctx, arg + 7);
+        return;
     }
-    if (strcmp(cmd, "/resume --list") == 0) {
-        inproc_list_sessions(ctx);
-        return 0;
-    }
-    if (strncmp(cmd, "/resume", 7) == 0 &&
-        (cmd[7] == '\0' || cmd[7] == ' ')) {
-        const char *name = cmd[7] == ' ' ? cmd + 8 : "";
-        char recent[CCODE_SESSION_NAME_MAX];
-        char path[4096];
-        if (name[0] == '\0' &&
-            ccode_session_most_recent(recent, sizeof(recent)) == 0)
-            name = recent;
-        if (name[0] == '\0') {
-            inproc_msg(ctx, "No saved sessions found.");
-        } else if (inproc_session_path(name, path, sizeof(path)) != 0) {
-            inproc_msg(ctx, "Invalid session name.");
-        } else {
-            snprintf(ctx->session_path, sizeof(ctx->session_path), "%s",
-                     path);
-            inproc_msg(ctx,
-                       "Session resumed (takes effect on the next message).");
-        }
-        return 0;
-    }
-    if (strncmp(cmd, "/session new", 12) == 0 &&
-        (cmd[12] == '\0' || cmd[12] == ' ')) {
-        const char *name = cmd[12] == ' ' ? cmd + 13 : "";
+    if (strncmp(arg, "new", 3) == 0 && (arg[3] == '\0' || arg[3] == ' ')) {
+        const char *name = arg[3] == ' ' ? arg + 4 : "";
         size_t nl = strlen(name);
         char path[4096];
         if (name[0] == '\0') {
             ctx->base_save = NULL;
-            ctx->session_path[0] = '\0';
+            ccode_buf_clear(&ctx->session_path);
             inproc_msg(ctx, "New unnamed session started.");
         } else if (nl < 6 || strcmp(name + nl - 5, ".json") != 0 ||
                    inproc_session_path(name, path, sizeof(path)) != 0) {
             inproc_msg(ctx, "Invalid session name.");
         } else {
-            snprintf(ctx->session_path, sizeof(ctx->session_path), "%s",
-                     path);
+            ccode_buf_clear(&ctx->session_path);
+            ccode_buf_append(&ctx->session_path, path);
             inproc_msg(ctx, "New session started.");
         }
-        return 0;
+        return;
     }
-    if (strncmp(cmd, "/session switch ", 16) == 0) {
-        const char *name = cmd + 16;
+    if (strncmp(arg, "switch ", 7) == 0) {
+        const char *name = arg + 7;
         size_t nl = strlen(name);
         char path[4096];
         if (nl < 6 || strcmp(name + nl - 5, ".json") != 0 ||
             inproc_session_path(name, path, sizeof(path)) != 0) {
             inproc_msg(ctx, "Invalid session name.");
         } else {
-            snprintf(ctx->session_path, sizeof(ctx->session_path), "%s",
-                     path);
+            ccode_buf_clear(&ctx->session_path);
+            ccode_buf_append(&ctx->session_path, path);
             inproc_msg(ctx, "Session switched.");
         }
-        return 0;
+        return;
     }
-    if (strcmp(cmd, "/compact") == 0) {
-        const char *chain = ctx->session_path[0] ? ctx->session_path
-                                                 : ctx->base_save;
-        ccode_agent_summary_cache_reset();
-        if (!chain || access(chain, F_OK) != 0) {
-            inproc_msg(ctx, "Nothing to compact yet.");
-        } else if (ccode_session_compact_file(chain, ctx->model,
-                                              ctx->workspace) == 0) {
-            inproc_msg(ctx, "Conversation compacted.");
-        } else {
-            inproc_msg(ctx, "Could not compact the conversation.");
-        }
-        return 0;
+    inproc_msg(ctx,
+               "Usage: /sessions [list|delete NAME|rename OLD NEW|export NAME [FORMAT]]");
+}
+
+static void tbe_resume(void *self, const char *name) {
+    struct tui_inproc_ctx *ctx = self;
+    char recent[CCODE_SESSION_NAME_MAX];
+    char path[4096];
+
+    if (name[0] == '\0' &&
+        ccode_session_most_recent(recent, sizeof(recent)) == 0)
+        name = recent;
+    if (name[0] == '\0') {
+        inproc_msg(ctx, "No saved sessions found.");
+    } else if (inproc_session_path(name, path, sizeof(path)) != 0) {
+        inproc_msg(ctx, "Invalid session name.");
+    } else {
+        ccode_buf_clear(&ctx->session_path);
+        ccode_buf_append(&ctx->session_path, path);
+        inproc_msg(ctx,
+                   "Session resumed (takes effect on the next message).");
     }
-    if (strcmp(cmd, "/thinking") == 0) {
-        snprintf(msg, sizeof(msg), "Thinking: %s",
-                 ctx->thinking_enabled ? "on" : "off");
-        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, msg);
-        return 0;
-    }
-    if (strcmp(cmd, "/thinking on") == 0) {
-        ctx->thinking_enabled = 1;
-        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, "Thinking enabled.");
-        return 0;
-    }
-    if (strcmp(cmd, "/thinking off") == 0) {
-        ctx->thinking_enabled = 0;
-        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, "Thinking disabled.");
-        return 0;
-    }
-    if (strcmp(cmd, "/reasoning") == 0) {
-        snprintf(msg, sizeof(msg), "Reasoning: %s (effort: %s)",
-                 ctx->thinking_effort[0] ? "on" : "off",
-                 ctx->thinking_effort[0] ? ctx->thinking_effort : "medium");
-        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, msg);
-        return 0;
-    }
-    if (strcmp(cmd, "/reasoning on") == 0) {
-        if (!ctx->thinking_effort[0])
-            snprintf(ctx->thinking_effort, sizeof(ctx->thinking_effort), "high");
-        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, "Reasoning enabled.");
-        return 0;
-    }
-    if (strcmp(cmd, "/reasoning off") == 0) {
-        ctx->thinking_effort[0] = '\0';
-        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, "Reasoning disabled.");
-        return 0;
-    }
-    if (strncmp(cmd, "/reasoning effort ", 18) == 0 ||
-        strncmp(cmd, "/thinking effort ", 17) == 0) {
-        const char *eff = strncmp(cmd, "/reasoning effort ", 18) == 0
-                              ? ccode_normalize_thinking_effort(cmd + 18)
-                              : ccode_normalize_thinking_effort(cmd + 17);
-        if (!eff) {
-            inproc_msg(ctx,
-                       "Usage: /reasoning effort low|medium|high|xhigh|max");
-            return 0;
-        }
-        snprintf(ctx->thinking_effort, sizeof(ctx->thinking_effort), "%s",
-                 eff);
-        snprintf(msg, sizeof(msg), "Reasoning effort set to: %s", eff);
-        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, msg);
-        return 0;
-    }
-    snprintf(msg, sizeof(msg), "Unknown command: %.*s",
-             (int)sizeof(msg) - 20, cmd);
-    tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, msg);
-    return 0;
+}
+
+/* Handle a slash command in-process. Returns 1 if the TUI should exit. */
+static int inproc_handle_command(struct tui_inproc_ctx *ctx, const char *cmd) {
+    struct ccode_cmd_ctx c;
+    memset(&c, 0, sizeof(c));
+    c.self = ctx;
+    c.emit = tbe_emit;
+    c.emit_error = tbe_emit_error;
+    c.do_exit = tbe_exit;
+    c.do_clear = tbe_clear;
+    c.do_compact = tbe_compact;
+    c.show_model = tbe_show_model;
+    c.set_model = tbe_set_model;
+    c.show_default_model = tbe_show_default_model;
+    c.set_default_model = tbe_set_default_model;
+    c.list_models = tbe_list_models;
+    c.show_thinking = tbe_show_thinking;
+    c.set_thinking = tbe_set_thinking;
+    c.show_reasoning = tbe_show_reasoning;
+    c.set_reasoning = tbe_set_reasoning;
+    c.set_effort = tbe_set_effort;
+    c.show_history = tbe_show_history;
+    c.sessions = tbe_sessions;
+    c.resume = tbe_resume;
+    return ccode_command_dispatch(&c, cmd);
 }
 
 int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
@@ -1018,7 +1032,7 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
                  config->thinking_effort);
     ctx.config = config;
     ctx.base_save = config->save_session;
-    ctx.session_path[0] = '\0';
+    ccode_buf_init(&ctx.session_path);
     /* An explicit --save-session starts a fresh conversation (REPL parity):
      * turn one must not resume the file's previous content. */
     ctx.skip_resume_once =
@@ -1032,8 +1046,8 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
     }
     /* An explicit --resume starts the chain from that session file. */
     if (config->resume_session) {
-        snprintf(ctx.session_path, sizeof(ctx.session_path), "%s",
-                 config->resume_session);
+        ccode_buf_clear(&ctx.session_path);
+        ccode_buf_append(&ctx.session_path, config->resume_session);
     }
     /* Own the model string so /model can switch it in place. */
     if (config->model) {
@@ -1133,6 +1147,7 @@ inproc_exit:
         for (i = 0; i < ctx.history_count; i++) free(ctx.history[i]);
         free(ctx.history);
     }
+    ccode_buf_free(&ctx.session_path);
     return 0;
 }
 #endif /* CCODE_COMBINED */

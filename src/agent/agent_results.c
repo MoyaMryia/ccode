@@ -15,6 +15,7 @@
 
 #include "agent_internal.h"
 #include "../fdio.h"
+#include "../vec.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,7 @@
 
 int ccode_result_tail_append(struct ccode_result_tail *t,
                              const char *p, size_t n) {
+    struct ccode_buf b;
     size_t needed;
     if (!t || n == 0) return 0;
     if (t->overflow) return 0;
@@ -35,24 +37,13 @@ int ccode_result_tail_append(struct ccode_result_tail *t,
         t->overflow = 1;
         return 0;
     }
-    if (needed > t->cap) {
-        //BLAME-IMPACT(vector): message.c:21 — 结果 blob 自增，统一 vector
-        size_t new_cap = t->cap ? t->cap : 8192;
-        char *grown;
-        while (new_cap < needed) {
-            if (new_cap > CCODE_RESULT_BLOB_MAX / 2) {
-                new_cap = CCODE_RESULT_BLOB_MAX;
-                break;
-            }
-            new_cap *= 2;
-        }
-        grown = realloc(t->data, new_cap);
-        if (!grown) return -1;
-        t->data = grown;
-        t->cap = new_cap;
-    }
-    memcpy(t->data + t->len, p, n);
-    t->len += n;
+    b.data = t->data;
+    b.len = t->len;
+    b.cap = t->cap;
+    if (ccode_buf_append_n(&b, p, n) != 0) return -1;
+    t->data = b.data;
+    t->len = b.len;
+    t->cap = b.cap;
     return 0;
 }
 

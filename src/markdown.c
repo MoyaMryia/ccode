@@ -1,6 +1,7 @@
 #include "markdown.h"
 
 #include "json.h"
+#include "vec.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -22,14 +23,9 @@
  * and bidirectional override code points are escaped rather than passed
  * to the terminal. Decoding and the bidi set come from json.h. */
 
-#define md_is_bidi_control(cp) ccode_cp_is_bidi_control(cp)
-
 /* Emit a bounded text run with control/bidi characters escaped. ANSI
  * sequences are emitted by callers directly and therefore never reach this
  * function or consume the visible-column budget. */
-//BLAME: 这段代码我好像在哪见过
-
-//BLAME-IMPACT(json): markdown.c:30 — 转义逻辑与 permissions.c 重复
 static void emit_text(struct ccode_md_renderer *r, const char *data, size_t len) {
     FILE *out = r->out;
     const unsigned char *s = (const unsigned char *)data;
@@ -44,49 +40,40 @@ static void emit_text(struct ccode_md_renderer *r, const char *data, size_t len)
 
         /* Columns the emitted form occupies: control/bidi bytes are escaped
          * to \xNN / \uXXXX (4-6 columns), real characters take their
-         * terminal display width (2 for CJK). */
-        if (length == 1 && cp < 0x20U) emit_width = cp == '\t' ? 1 : 4;
-        else if (md_is_bidi_control(cp)) emit_width = 6;
-        else if (length == 1 && cp >= 0x7fU) emit_width = 4;
-        else if (cp >= 0x80U && cp <= 0x9fU) emit_width = 6;
-        else emit_width = ccode_utf8_cp_width(cp);
+         * terminal display width (2 for CJK). The escape decision is shared
+         * with the permission sanitizer (ccode_cp_safe_escape). */
+        {
+            int esc_width = 0;
+            int visible;
+            const char *esc = ccode_cp_safe_escape(cp, length, &esc_width);
 
-        if (r->max_cols > 0 &&
-            r->cols_written + emit_width > r->max_cols) {
-            if (r->output_line < 0) fputc('\n', out);
-            r->cols_written = 0;
-            r->visual_line++;
-        }
+            if (length == 1 && cp < 0x20U) emit_width = cp == '\t' ? 1 : 4;
+            else if (esc) emit_width = esc_width;
+            else emit_width = ccode_utf8_cp_width(cp);
 
-        if (length == 1 && cp < 0x20U) {
-            if (cp == '\t') {
-                if (r->output_line < 0 || r->visual_line == r->output_line)
-                    fputc('\t', out);
-                r->cols_written++;
-            } else {
-                if (r->output_line < 0 || r->visual_line == r->output_line)
-                    fprintf(out, "\\x%02X", cp);
-                r->cols_written += 4;
+            if (r->max_cols > 0 &&
+                r->cols_written + emit_width > r->max_cols) {
+                if (r->output_line < 0) fputc('\n', out);
+                r->cols_written = 0;
+                r->visual_line++;
             }
-        } else if ((length == 1 && cp >= 0x7fU) ||
-                   (cp >= 0x80U && cp <= 0x9fU)) {
-            if (length == 1) {
-                if (r->output_line < 0 || r->visual_line == r->output_line)
-                    fprintf(out, "\\x%02X", cp);
-                r->cols_written += 4;
+
+            visible = (r->output_line < 0 || r->visual_line == r->output_line);
+            if (length == 1 && cp < 0x20U) {
+                if (cp == '\t') {
+                    if (visible) fputc('\t', out);
+                    r->cols_written++;
+                } else {
+                    if (visible) fprintf(out, "\\x%02X", cp);
+                    r->cols_written += 4;
+                }
+            } else if (esc) {
+                if (visible) fputs(esc, out);
+                r->cols_written += esc_width;
             } else {
-                if (r->output_line < 0 || r->visual_line == r->output_line)
-                    fprintf(out, "\\u%04X", cp);
-                r->cols_written += 6;
+                if (visible) fwrite(s + offset, 1, length, out);
+                r->cols_written += emit_width;
             }
-        } else if (md_is_bidi_control(cp)) {
-            if (r->output_line < 0 || r->visual_line == r->output_line)
-                fprintf(out, "\\u%04X", cp);
-            r->cols_written += 6;
-        } else {
-            if (r->output_line < 0 || r->visual_line == r->output_line)
-                fwrite(s + offset, 1, length, out);
-            r->cols_written += emit_width;
         }
         offset += length;
     }
@@ -540,26 +527,19 @@ void ccode_md_render(struct ccode_md_renderer *r, const char *fragment) {
 
     /* Append fragment to the line buffer. */
     {
-        size_t flen = strlen(fragment);
-        size_t need = r->line_len + flen + 1;
-        if (need > r->line_cap) {
-            //BLAME-IMPACT(vector): message.c:21 — line_buf 自增，统一 vector
-            size_t ncap = r->line_cap ? r->line_cap * 2 : 256;
-            char *nb;
-            while (ncap < need) ncap *= 2;
-            nb = (char *)realloc(r->line_buf, ncap);
-            if (!nb) {
-                /* Allocation failure: fall back to raw emission so output
-                 * is never silently dropped. */
-                ccode_md_render_raw(r->out, fragment);
-                return;
-            }
-            r->line_buf = nb;
-            r->line_cap = ncap;
+        struct ccode_buf line;
+        line.data = r->line_buf;
+        line.len = r->line_len;
+        line.cap = r->line_cap;
+        if (ccode_buf_append(&line, fragment) != 0) {
+            /* Allocation failure: fall back to raw emission so output
+             * is never silently dropped. */
+            ccode_md_render_raw(r->out, fragment);
+            return;
         }
-        memcpy(r->line_buf + r->line_len, fragment, flen);
-        r->line_len += flen;
-        r->line_buf[r->line_len] = '\0';
+        r->line_buf = line.data;
+        r->line_len = line.len;
+        r->line_cap = line.cap;
     }
 
     /* Render every complete line. */

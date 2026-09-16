@@ -677,6 +677,7 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     size_t stderr_len = 0;
     struct timespec deadline;
     int timed_out = 0;
+    pid_t child_pgid = -1;
     int truncated_out = 0;
     int truncated_err = 0;
     int stdout_binary = 0;
@@ -799,6 +800,10 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
         ccode_cancel_child_unregister();
         return ccode_strdup("{\"error\":\"Could not isolate command process group\"}");
     }
+    /* Capture the pgid now, while the child is alive: once waitpid() reaps
+     * it, getpgid() returns -1 and escaped-descendant detection degenerates
+     * to a no-op. */
+    child_pgid = getpgid(child);
     if (fcntl(stdout_pipe[0], F_SETFL, fcntl(stdout_pipe[0], F_GETFL) | O_NONBLOCK) != 0 ||
         fcntl(stderr_pipe[0], F_SETFL, fcntl(stderr_pipe[0], F_GETFL) | O_NONBLOCK) != 0) {
         int reaped = terminate_command_group(child, NULL);
@@ -845,6 +850,11 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
                     exited = 1;
                 if (exited) break;
                 if (timed_out) {
+                    /* Detect escaped descendants while the child still exists:
+                     * getpgid(child) is invalid (and its pgid is gone) once
+                     * waitpid() reaps it, which made this a dead probe. */
+                    incomplete_cleanup =
+                        ccode_platform_detect_escaped(child, child_pgid);
                     waitpid(child, &child_status, 0);
                     exited = 1;
                     break;
@@ -896,9 +906,6 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     if (stdout_pipe[0] >= 0) close(stdout_pipe[0]);
     if (stderr_pipe[0] >= 0) close(stderr_pipe[0]);
     ccode_cancel_child_unregister();
-    if (timed_out)
-        //BLAME-IMPACT(proc): platform_linux.c:54 — waitpid 后调用，Linux 上恒 -1 死探测
-        incomplete_cleanup = ccode_platform_detect_escaped(child);
     stdout_buf[stdout_len] = '\0';
     stderr_buf[stderr_len] = '\0';
 

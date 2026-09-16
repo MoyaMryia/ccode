@@ -18,7 +18,6 @@
 #include <unistd.h>
 #include <limits.h>
 #include <dirent.h>
-//BLAME: 讨论一个思路，手写一个cpp vector算了，我看不定长数组的实现看力竭了
 /* Defined with the session helpers below; used by save() to create the
  * session directory on first write. */
 int mkdir_p(const char *path);
@@ -60,21 +59,22 @@ void ccode_conversation_destroy(struct ccode_conversation *conv) {
 }
 
 static int add_message(struct ccode_conversation *conv) {
+    struct ccode_vec v;
     if (conv->count >= conv->max_capacity) return -1;
     if (conv->count >= conv->capacity) {
-        //BLAME-IMPACT(vector): message.c:21 — 会话增长，统一 vector
-        size_t new_cap = conv->capacity ? conv->capacity * 2
-                                        : CCODE_INITIAL_MESSAGES;
-        struct ccode_message *grown;
-        if (new_cap > conv->max_capacity) new_cap = conv->max_capacity;
-        if (new_cap <= conv->capacity) return -1;
-        grown = realloc(conv->messages,
-                        new_cap * sizeof(struct ccode_message));
-        if (!grown) return -1;
-        memset(grown + conv->capacity, 0,
-               (new_cap - conv->capacity) * sizeof(struct ccode_message));
-        conv->messages = grown;
-        conv->capacity = new_cap;
+        size_t old_cap = conv->capacity;
+        v.data = conv->messages;
+        v.len = conv->capacity;
+        v.cap = conv->capacity;
+        v.elem = sizeof(struct ccode_message);
+        if (ccode_vec_reserve_capped(&v, conv->count + 1,
+                                     conv->max_capacity) != 0)
+            return -1;
+        if (v.cap <= old_cap) return -1;
+        memset((char *)v.data + old_cap * sizeof(struct ccode_message), 0,
+               (v.cap - old_cap) * sizeof(struct ccode_message));
+        conv->messages = v.data;
+        conv->capacity = v.cap;
     }
     memset(&conv->messages[conv->count], 0, sizeof(struct ccode_message));
     conv->count++;
@@ -186,11 +186,13 @@ int ccode_conversation_add_tool_call(struct ccode_conversation *conv,
     if (msg->tool_call_count >= CCODE_MAX_TOOL_CALLS) goto fail;
 
     {
-        //BLAME-IMPACT(vector): message.c:21 — tool_calls 增长，统一 vector
-        struct ccode_tool_call *new_tc = realloc(msg->tool_calls,
-            (msg->tool_call_count + 1) * sizeof(struct ccode_tool_call));
-        if (!new_tc) goto fail;
-        msg->tool_calls = new_tc;
+        struct ccode_vec v;
+        v.data = msg->tool_calls;
+        v.len = msg->tool_call_count;
+        v.cap = msg->tool_call_count;
+        v.elem = sizeof(struct ccode_tool_call);
+        if (ccode_vec_reserve(&v, msg->tool_call_count + 1) != 0) goto fail;
+        msg->tool_calls = (struct ccode_tool_call *)v.data;
         tc = &msg->tool_calls[msg->tool_call_count];
         memset(tc, 0, sizeof(*tc));
         tc->id = id_copy;
@@ -529,10 +531,8 @@ static void ccode_message_cleanup(struct ccode_message *msg) {
  * Appends a summary entry to the output buffer. The body is parsed as JSON
  * rather than substring-matched so key order, whitespace and escaped values
  * cannot break the scan. */
-//BLAME-IMPACT(json): jsmn.c:6 — 裸 ccode_jsmn_parse；与 ccode_json_parse 入口不统一
 static void scan_tool_result(const char *body,
                               char *out, size_t out_cap, size_t *pos) {
-    ccode_jsmn_parser parser;
     ccode_jsmntok_t tokens[64];
     int num_tokens;
     ccode_jsmntok_t *tok;
@@ -540,8 +540,7 @@ static void scan_tool_result(const char *body,
     int n;
 
     if (!body || body[0] == '\0') return;
-    ccode_jsmn_init(&parser);
-    num_tokens = ccode_jsmn_parse(&parser, body, strlen(body), tokens, 64);
+    num_tokens = ccode_json_parse(body, strlen(body), tokens, 64);
     if (num_tokens <= 0 || tokens[0].type != CCODE_JSMN_OBJECT) return;
 
     tok = ccode_json_find_key(tokens, num_tokens, 0, body, "error");
@@ -851,11 +850,9 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
     f = fdopen(fd, "wb");
     if (!f) { close(fd); unlink(temp_path); free(temp_path); return -1; }
 
-    //BLAME-IMPACT(json): json.c:10 — 手搓会话 JSON 构建，统一构建器
     fputs("{\"version\":5,\"messages\":[", f);
     for (i = 0; i < conv->count; i++) {
         const char *role;
-        char *esc;
 
         if (++persisted_count > CCODE_MAX_MESSAGES) goto done;
         if (conv->messages[i].content &&
@@ -866,9 +863,8 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
         first = 0;
         role = role_to_str(conv->messages[i].role);
         if (!role) goto done;
-        fputs("{\"role\":\"", f);
-        fputs(role, f);
-        fputc('"', f);
+        fputs("{\"role\":", f);
+        if (ccode_json_fprint_string(f, role) != 0) goto done;
 
         {
             /* Preserve the NULL / "" distinction for assistant messages so a
@@ -877,23 +873,17 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
             if (c == NULL && conv->messages[i].role == CCODE_ROLE_ASSISTANT) {
                 fputs(",\"content\":null", f);
             } else {
-                esc = ccode_json_escape(c ? c : "");
-                if (!esc) goto done;
-                fputs(",\"content\":\"", f);
-                fputs(esc, f);
-                fputc('"', f);
-                free(esc);
+                fputs(",\"content\":", f);
+                if (ccode_json_fprint_string(f, c ? c : "") != 0) goto done;
             }
         }
 
         if (conv->messages[i].role == CCODE_ROLE_ASSISTANT &&
             conv->messages[i].reasoning_content) {
-            esc = ccode_json_escape(conv->messages[i].reasoning_content);
-            if (!esc) goto done;
-            fputs(",\"reasoning_content\":\"", f);
-            fputs(esc, f);
-            fputc('"', f);
-            free(esc);
+            fputs(",\"reasoning_content\":", f);
+            if (ccode_json_fprint_string(
+                    f, conv->messages[i].reasoning_content) != 0)
+                goto done;
         }
 
         if (conv->messages[i].tool_call_count > 0) {
@@ -901,32 +891,26 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
             for (j = 0; j < conv->messages[i].tool_call_count; j++) {
                 struct ccode_tool_call *tc =
                     &conv->messages[i].tool_calls[j];
-                char *e_id, *e_name, *e_args;
                 if (j > 0) fputc(',', f);
-                fputs("{\"id\":\"", f);
-                e_id = ccode_json_escape(tc->id ? tc->id : "");
-                if (!e_id) goto done;
-                fputs(e_id, f); free(e_id);
-                fputs("\",\"type\":\"function\",\"function\":{\"name\":\"", f);
-                e_name = ccode_json_escape(tc->name ? tc->name : "");
-                if (!e_name) goto done;
-                fputs(e_name, f); free(e_name);
-                fputs("\",\"arguments\":\"", f);
-                e_args = ccode_json_escape(tc->arguments ? tc->arguments : "{}");
-                if (!e_args) goto done;
-                fputs(e_args, f); free(e_args);
-                fputs("\"}}", f);
+                fputs("{\"id\":", f);
+                if (ccode_json_fprint_string(f, tc->id ? tc->id : "") != 0)
+                    goto done;
+                fputs(",\"type\":\"function\",\"function\":{\"name\":", f);
+                if (ccode_json_fprint_string(f, tc->name ? tc->name : "") != 0)
+                    goto done;
+                fputs(",\"arguments\":", f);
+                if (ccode_json_fprint_string(
+                        f, tc->arguments ? tc->arguments : "{}") != 0)
+                    goto done;
+                fputs("}}", f);
             }
             fputc(']', f);
         }
 
         if (conv->messages[i].tool_call_id) {
-            char *e_tcid;
-            fputs(",\"tool_call_id\":\"", f);
-            e_tcid = ccode_json_escape(conv->messages[i].tool_call_id);
-            if (!e_tcid) goto done;
-            fputs(e_tcid, f); free(e_tcid);
-            fputc('"', f);
+            fputs(",\"tool_call_id\":", f);
+            if (ccode_json_fprint_string(f,
+                    conv->messages[i].tool_call_id) != 0) goto done;
         }
 
         if (conv->messages[i].result_blob ||
@@ -934,25 +918,20 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
             int first_rr = 1;
             fputs(",\"result_ref\":{", f);
             if (conv->messages[i].result_blob) {
-                char *e_blob = ccode_json_escape(conv->messages[i].result_blob);
-                if (!e_blob) goto done;
-                fputs("\"blob\":\"", f);
-                fputs(e_blob, f);
-                fprintf(f, "\",\"total_bytes\":%lu",
+                fputs("\"blob\":", f);
+                if (ccode_json_fprint_string(
+                        f, conv->messages[i].result_blob) != 0) goto done;
+                fprintf(f, ",\"total_bytes\":%lu",
                         (unsigned long)conv->messages[i].result_total_bytes);
-                free(e_blob);
                 first_rr = 0;
             }
             if (conv->messages[i].result_blob_err) {
-                char *e_blob =
-                    ccode_json_escape(conv->messages[i].result_blob_err);
-                if (!e_blob) goto done;
                 if (!first_rr) fputc(',', f);
-                fputs("\"stderr_blob\":\"", f);
-                fputs(e_blob, f);
-                fprintf(f, "\",\"stderr_total_bytes\":%lu",
+                fputs("\"stderr_blob\":", f);
+                if (ccode_json_fprint_string(
+                        f, conv->messages[i].result_blob_err) != 0) goto done;
+                fprintf(f, ",\"stderr_total_bytes\":%lu",
                         (unsigned long)conv->messages[i].result_err_total_bytes);
-                free(e_blob);
             }
             fputc('}', f);
         }
@@ -1045,32 +1024,11 @@ static int token_subtree(ccode_jsmntok_t *toks, int num_tokens, int idx) {
 
 /* Find a value token by key name within an object. Returns the value token
  * index or -1 if not found. Does not detect duplicates (caller must check). */
-//BLAME-IMPACT(json): jsmn.c:6 — 自研 find_key 走查，重复 json.c find_key_in
 static int obj_find_val(ccode_jsmntok_t *toks, int num_tokens,
                         int obj_idx, const char *js, const char *key) {
-    int expect_key;
-    int i;
-    int obj_end = toks[obj_idx].end >= 0 ? toks[obj_idx].end
-                                         : toks[obj_idx].start + 1;
-    i = obj_idx + 1;
-    expect_key = 1;
-    while (i < num_tokens && toks[i].start < obj_end) {
-        if (expect_key) {
-            if (toks[i].type == CCODE_JSMN_STRING &&
-                ccode_jsmn_token_streq(js, &toks[i], key) &&
-                i + 1 < num_tokens)
-                return i + 1;
-            expect_key = 0;
-            i++;
-        } else {
-            int val_end = toks[i].end >= 0 ? toks[i].end
-                                           : toks[i].start + 1;
-            i++;
-            while (i < num_tokens && toks[i].start < val_end) i++;
-            expect_key = 1;
-        }
-    }
-    return -1;
+    ccode_jsmntok_t *val = ccode_json_find_key(toks, num_tokens, obj_idx,
+                                               js, key);
+    return val ? (int)(val - toks) : -1;
 }
 
 /* Check that an object has no duplicate keys. Returns 0 if OK, -1 if dup. */
@@ -1148,34 +1106,26 @@ static int obj_check_known_keys(ccode_jsmntok_t *toks, int num_tokens,
 /* Parse `js` into a token array, doubling the buffer when jsmn runs out.
  * On success *toks_out is a malloc'd array (caller frees) and the token count
  * is returned; on failure -1 with *toks_out NULL. */
-//BLAME-IMPACT(vector): message.c:21 — token 数组增长，统一 vector
-//BLAME-IMPACT(json): jsmn.c:6 — 裸 ccode_jsmn_parse + 自增 token 数组
 static int parse_tokens_growable(const char *js, size_t len,
                                  ccode_jsmntok_t **toks_out) {
-    size_t cap = 8192;
+    struct ccode_vec toks;
     const size_t cap_max = (size_t)1 << 20; /* ~16MB of tokens */
-    ccode_jsmntok_t *toks = malloc(cap * sizeof(*toks));
-    ccode_jsmn_parser parser;
     int n;
 
     *toks_out = NULL;
-    if (!toks) return -1;
+    ccode_vec_init(&toks, sizeof(ccode_jsmntok_t));
+    if (ccode_vec_reserve(&toks, 8192) != 0) return -1;
     for (;;) {
-        ccode_jsmn_init(&parser);
-        n = ccode_jsmn_parse(&parser, js, len, toks, (unsigned int)cap);
+        n = ccode_json_parse(js, len, (ccode_jsmntok_t *)toks.data,
+                             (int)toks.cap);
         if (n >= 0) {
-            *toks_out = toks;
+            *toks_out = (ccode_jsmntok_t *)toks.data;
             return n;
         }
-        if (cap >= cap_max) break;
-        cap *= 2;
-        {
-            ccode_jsmntok_t *grown = realloc(toks, cap * sizeof(*toks));
-            if (!grown) break;
-            toks = grown;
-        }
+        if (toks.cap >= cap_max) break;
+        if (ccode_vec_reserve(&toks, toks.cap * 2) != 0) break;
     }
-    free(toks);
+    ccode_vec_free(&toks);
     return -1;
 }
 
@@ -1886,13 +1836,18 @@ int ccode_session_prune(void) {
         mtime = (long long)st.st_mtime;
 
         if (count == cap) {
-            //BLAME-IMPACT(vector): message.c:21 — sessions 列表增长，统一 vector
-            size_t new_cap = cap == 0 ? 32 : cap * 2;
-            struct session_entry *tmp =
-                realloc(entries, new_cap * sizeof(*entries));
-            if (!tmp) { free(entries); closedir(d); return -1; }
-            entries = tmp;
-            cap = new_cap;
+            struct ccode_vec v;
+            v.data = entries;
+            v.len = cap;
+            v.cap = cap;
+            v.elem = sizeof(*entries);
+            if (ccode_vec_reserve(&v, count + 1) != 0) {
+                free(entries);
+                closedir(d);
+                return -1;
+            }
+            entries = (struct session_entry *)v.data;
+            cap = v.cap;
         }
         memcpy(entries[count].name, entry->d_name, elen + 1);
         entries[count].mtime = mtime;
@@ -1932,21 +1887,37 @@ int ccode_session_prune(void) {
  * 0 keeps the historical auto-<time>-<pid>.json shape (single-chain
  * callers), a positive value appends -<seq>. Returns buf, or NULL when
  * the session directory is unusable or buf is too small. */
+static int session_auto_name(char *name, size_t cap, int seq) {
+    int n;
+    if (seq > 0)
+        n = snprintf(name, cap, "auto-%ld-%d-%d.json",
+                     (long)time(NULL), (int)getpid(), seq);
+    else
+        n = snprintf(name, cap, "auto-%ld-%d.json",
+                     (long)time(NULL), (int)getpid());
+    return (n <= 0 || (size_t)n >= cap) ? -1 : 0;
+}
+
 char *ccode_session_mint_auto(char *buf, size_t cap, int seq) {
     const char *dir = ccode_session_dir();
     char name[96];
-    int n;
     if (!buf || cap == 0) return NULL;
     if (!dir || ccode_session_ensure_dir() != 0) return NULL;
-    if (seq > 0)
-        n = snprintf(name, sizeof(name), "auto-%ld-%d-%d.json",
-                     (long)time(NULL), (int)getpid(), seq);
-    else
-        n = snprintf(name, sizeof(name), "auto-%ld-%d.json",
-                     (long)time(NULL), (int)getpid());
-    if (n <= 0 || (size_t)n >= sizeof(name)) return NULL;
+    if (session_auto_name(name, sizeof(name), seq) != 0) return NULL;
     if (snprintf(buf, cap, "%s/%s", dir, name) >= (int)cap) return NULL;
     return buf;
+}
+
+char *ccode_session_mint_auto_buf(struct ccode_buf *out, int seq) {
+    const char *dir = ccode_session_dir();
+    char name[96];
+    if (!out || !dir || ccode_session_ensure_dir() != 0) return NULL;
+    if (session_auto_name(name, sizeof(name), seq) != 0) return NULL;
+    ccode_buf_clear(out);
+    if (ccode_buf_append(out, dir) != 0 ||
+        ccode_buf_append_c(out, '/') != 0 ||
+        ccode_buf_append(out, name) != 0) return NULL;
+    return out->data;
 }
 
 char *ccode_session_list(void) {

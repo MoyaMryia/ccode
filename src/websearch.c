@@ -94,18 +94,19 @@ static size_t ws_html_to_text(const char *in, size_t len, char *out,
     return o;
 }
 
-/* Append a JSON-escaped quoted field to the growable result buffer.
- * Returns -1 on allocation failure. */
-//BLAME-IMPACT(json): json.c:10 — 私有 JSON 字符串拼接，统一构建器
+/* Append a JSON string value (quoted + escaped) to the growable result
+ * buffer. Returns -1 on allocation failure. */
 static int ws_append_json_string(char **out, size_t *pos, size_t *cap,
                                  const char *s) {
-    char *escaped = ccode_json_escape(s ? s : "");
-    int rc = -1;
-    if (!escaped) return -1;
-    if (ccode_append_cstr(out, pos, cap, "\"") == 0 &&
-        ccode_append_cstr(out, pos, cap, escaped) == 0)
-        rc = ccode_append_cstr(out, pos, cap, "\"");
-    free(escaped);
+    struct ccode_buf b;
+    int rc;
+    b.data = *out;
+    b.len = *pos;
+    b.cap = *cap;
+    rc = ccode_json_append_quoted(&b, s);
+    *out = b.data;
+    *pos = b.len;
+    *cap = b.cap;
     return rc;
 }
 
@@ -237,7 +238,6 @@ char *ccode_web_search(const char *query) {
     char url[4096];
     char encoded[WS_QUERY_MAX * 3 + 1];
     char *result;
-    const char *content_start;
     char *html_text = NULL;
     char *out = NULL;
 
@@ -267,53 +267,9 @@ char *ccode_web_search(const char *query) {
     result = ccode_web_fetch(&opts);
     if (!result) return ccode_strdup("{\"error\":\"Search failed\"}");
 
-    //BLAME-IMPACT(json): cli/main.c:55 — strstr + 手扫字符串，改走 token 树
-    content_start = strstr(result, "\"content\":");
-    if (!content_start) {
-        /* web_fetch returned an error payload; pass it through. */
-        free(result);
-        return ccode_strdup("{\"error\":\"Search failed\"}");
-    }
-    content_start += 10;
-    if (*content_start == '"') content_start++;
-    {
-        /* Extract the content string value (JSON-escaped). */
-        const char *p = content_start;
-        size_t len = 0;
-        char *buf = NULL;
-        while (*p && *p != '"') {
-            if (*p == '\\' && p[1] != '\0') {
-                p += 2;
-                len++;
-            } else {
-                p++;
-                len++;
-            }
-        }
-        if (*p == '"') {
-            buf = malloc(len + 1);
-            if (buf) {
-                size_t o = 0;
-                p = content_start;
-                while (*p && *p != '"') {
-                    if (*p == '\\' && p[1] != '\0') {
-                        p++;
-                        switch (*p) {
-                        case 'n': buf[o++] = '\n'; break;
-                        case 'r': buf[o++] = '\r'; break;
-                        case 't': buf[o++] = '\t'; break;
-                        default:  buf[o++] = *p; break;
-                        }
-                        p++;
-                    } else {
-                        buf[o++] = *p++;
-                    }
-                }
-                buf[o] = '\0';
-                html_text = buf;
-            }
-        }
-    }
+    /* web_fetch returns {"content":"<html>",...}; pull the field through the
+     * shared token tree instead of scanning for a substring. */
+    html_text = ccode_json_get_string_dup(result, "content");
     free(result);
     if (!html_text) return ccode_strdup("{\"error\":\"Search failed\"}");
 

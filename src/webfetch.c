@@ -38,6 +38,7 @@
 #include <polarssl/net.h>
 #include <polarssl/ssl.h>
 #include <polarssl/x509_crt.h>
+#include "tls_polarssl_transport.h"
 #endif
 
 #define CCODE_WF_CONNECT_TIMEOUT_MS 15000
@@ -460,22 +461,11 @@ static int wf_tls_wait(struct wf_transport *transport, int tls_result,
 #if CCODE_TLS_BACKEND == CCODE_TLS_POLARSSL
 static int wf_polarssl_send(void *context, const unsigned char *data,
                             size_t length) {
-    const int *fd = context;
-    ssize_t sent = send(*fd, data, length, ccode_platform_send_flags());
-    if (sent >= 0) return (int)sent;
-    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-        return POLARSSL_ERR_NET_WANT_WRITE;
-    return POLARSSL_ERR_NET_SEND_FAILED;
+    return ccode_polarssl_transport_send(context, data, length);
 }
 
-//BLAME-IMPACT(dup): markdown.c:30 — 与 http.c polarssl_recv 逐字重复(AUDIT #1)
 static int wf_polarssl_recv(void *context, unsigned char *data, size_t length) {
-    const int *fd = context;
-    ssize_t got = recv(*fd, data, length, 0);
-    if (got >= 0) return (int)got;
-    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-        return POLARSSL_ERR_NET_WANT_READ;
-    return POLARSSL_ERR_NET_RECV_FAILED;
+    return ccode_polarssl_transport_recv(context, data, length);
 }
 #endif
 
@@ -1317,25 +1307,29 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
         }
         truncated = truncated || content_cut;
 
-        /* Build result JSON. One snprintf plus a checked return keeps this
-         * overflow-proof: the fixed scaffolding, the status digits and the
-         * optional truncation suffix must all fit the margin. */
+        /* Build result JSON from pre-escaped parts. A growable buffer removes
+         * the header/footer margin arithmetic the old snprintf needed. */
         {
-            size_t rcap = strlen(escaped) + strlen(esc_url) +
-                          strlen(esc_ct) + 128;
-            result = malloc(rcap);
-            if (result) {
-                int n = snprintf(result, rcap,
-                    //BLAME-IMPACT(json): json.c:10 — snprintf 拼 JSON，统一构建器
-                    "{\"content\":\"%s\",\"content_type\":\"%s\","
-                    "\"status\":%d,\"url\":\"%s\"%s}",
-                    escaped, esc_ct, status, esc_url,
-                    truncated ? ",\"truncated\":true" : "");
-                if (n < 0 || (size_t)n >= rcap) {
-                    free(result);
-                    result = ccode_strdup("{\"error\":\"Result too large\"}");
-                }
-            }
+            struct ccode_buf rb;
+            char statusbuf[32];
+            ccode_buf_init(&rb);
+            snprintf(statusbuf, sizeof(statusbuf), "%d", status);
+            if (ccode_buf_append(&rb, "{\"content\":\"") == 0 &&
+                ccode_buf_append(&rb, escaped) == 0 &&
+                ccode_buf_append(&rb, "\",\"content_type\":\"") == 0 &&
+                ccode_buf_append(&rb, esc_ct) == 0 &&
+                ccode_buf_append(&rb, "\",\"status\":") == 0 &&
+                ccode_buf_append(&rb, statusbuf) == 0 &&
+                ccode_buf_append(&rb, ",\"url\":\"") == 0 &&
+                ccode_buf_append(&rb, esc_url) == 0 &&
+                ccode_buf_append(&rb, "\"") == 0 &&
+                ccode_buf_append(&rb,
+                    truncated ? ",\"truncated\":true}" : "}") == 0)
+                result = ccode_buf_detach(&rb);
+            else
+                ccode_buf_free(&rb);
+            if (!result)
+                result = ccode_strdup("{\"error\":\"Out of memory\"}");
         }
         free(escaped);
         free(esc_url);

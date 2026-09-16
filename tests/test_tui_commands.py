@@ -87,7 +87,7 @@ def main():
 
         read_until("test-model")
         for cmd, marker in [
-            ("/help", "Commands: /help /clear /exit /history"),
+            ("/help", "Slash commands:"),
             ("/history", "Session history (0 prompts):"),
             ("/model", "Current model: test-model"),
             ("/model test-model-2", "Model switched to: test-model-2"),

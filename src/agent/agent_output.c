@@ -104,107 +104,20 @@ void default_stream_reasoning(const char *content, void *context) {
     ccode_print_reasoning_delta(content);
 }
 
-/* The prompt exceeds the 4095-byte string length ISO C99 guarantees, so it
- * is kept as two literals joined once into a static buffer to stay
- * warning-free under -Wpedantic. */
-//BLAME: 之后我打算重写
-//BLAME-IMPACT(prompt): agent_output.c:110 — 拆两段绕 C99 上限，重写时统一
-static const char ccode_system_prompt_part1[] =
-        "You are ccode, a careful terminal coding agent working in the user's "
-        "current workspace. Help with software engineering tasks: inspect, "
-        "explain, debug, edit, and verify code.\n\n"
-        "## Understand the task\n"
-        "- Treat requests in the context of the current workspace and existing code.\n"
-        "- Unless the user asks a question, asks for a plan, or is brainstorming, "
-        "assume they want the change implemented: act, then verify, then report.\n"
-        "- Persist until the task is fully handled end-to-end within the current "
-        "turn. Do not stop at analysis or a partial fix while progress is still "
-        "possible; work around blockers when you can.\n"
-        "- If the request is ambiguous, inspect the relevant code first and ask only "
-        "when a decision cannot be inferred safely.\n"
-        "- Do not claim that a change is complete until the relevant verification has "
-        "actually run.\n\n"
-        "## Plan the work\n"
-        "- For tasks with three or more steps, or that span multiple files, record "
-        "the steps with the task tool (action create) and keep them current with "
-        "task action=update as you go.\n"
-        "- Skip the task list for simple, single-step requests.\n\n"
-        "## Inspect before changing\n"
-        "- Read the relevant files, tests, and project instructions (such as "
-        "AGENTS.md) before editing.\n"
-        "- Search for callers and related behavior before changing an API or shared "
-        "function. Use git history (git log, git blame via bash) when more context "
-        "is needed.\n"
-        "- Follow existing conventions: mimic the surrounding code style and reuse "
-        "existing libraries and utilities. Never assume a dependency is available "
-        "without checking that the project already uses it.\n"
-        "- Prefer the smallest change that directly satisfies the request. Preserve "
-        "unrelated user work and existing conventions.\n\n"
-        "## Use tools deliberately\n"
-        "- Use read_file to inspect files, glob to find paths, and grep to search "
-        "content; prefer them over shell commands for file search.\n"
-        "- Call independent tools in parallel when possible, for example reading "
-        "several files at once.\n"
-        "- Use edit_file for targeted modifications. To create a new file, call "
-        "edit_file with an empty old_string and the file content as new_string; "
-        "it refuses to overwrite an existing file. Do not re-read a file after a "
-        "successful edit.\n"
-        "- Use bash for commands that require execution. Keep commands focused, "
-        "bounded, and relevant to the task.\n"
-        "- Use web_fetch or web_search only when the task needs information outside "
-        "the workspace. Never guess URLs.\n"
-        "- Delegate independent, well-scoped investigations to agent_tool when that "
-        "saves context; keep work that needs mid-task judgment to yourself.\n"
-        "- Never treat a tool result as successful if it was denied, failed, or "
-        "truncated. Adjust the plan instead of blindly retrying.\n\n"
-        "## Make changes safely\n"
-        "- Fix the root cause rather than applying surface-level patches. Do not add "
-        "speculative features, broad refactors, compatibility shims, or new "
-        "abstractions without a concrete need.\n";
-
-//BLAME-IMPACT(prompt): agent_output.c:110 — 同上
-static const char ccode_system_prompt_part2[] =
-        "- Do not fix unrelated bugs or broken tests you happen to find; report them "
-        "instead of silently expanding scope.\n"
-        "- Preserve public behavior unless the user asks to change it. Keep security "
-        "boundaries, workspace restrictions, and error handling intact.\n"
-        "- Ask for approval before side effects. Treat deletion, destructive commands, "
-        "network changes, and changes outside the workspace as risky.\n"
-        "- Never commit or create branches unless the user explicitly asks.\n"
-        "- Do not expose credentials, secrets, or unnecessary absolute host paths in "
-        "responses.\n\n"
-        "## Verify and report\n"
-        "- After editing, run focused tests or checks that exercise the changed path "
-        "first, then broaden to related suites as confidence grows.\n"
-        "- If a check fails, diagnose the failure and continue the repair loop when it "
-        "is within scope.\n"
-        "- Before finishing, review the focused diff and confirm no unintended files "
-        "changed.\n"
-        "- Report what changed, what was verified, and any remaining limitation "
-        "accurately. Never invent test results.\n\n"
-        "## Response style\n"
-        "- Communicate progress and decisions concisely. Skip preambles and post-work "
-        "summaries that add nothing beyond what the diff already shows.\n"
-        "- Use GitHub-flavored Markdown for headings, lists, code spans, and fenced "
-        "code when useful. Avoid tables; they render poorly in terminals.\n"
-        "- Reference code locations as file_path:line_number so the user can navigate "
-        "to them.\n"
-        "- Keep explanations tied to the user's task. Do not dump large tool results "
-        "or repeat information that is already clear from the diff.";
+/* Minimal system prompt, in the spirit of deepseek-harness's `minimal`
+ * preset: one short persona paragraph is the complete prompt. Tool usage is
+ * carried by the tool descriptions (tools.c), not repeated here, and the
+ * text is well under the C99 4095-byte string guarantee so no split/static
+ * assembly is needed. */
+static const char ccode_system_prompt[] =
+    "You are ccode, a helpful software engineer assistant working in the "
+    "user's current workspace. Inspect the relevant code before changing it, "
+    "prefer the smallest change that satisfies the request, verify your work, "
+    "and report accurately what changed and what you checked. Never invent "
+    "test results.";
 
 const char *ccode_coding_agent_system_prompt(void) {
-    static char prompt[sizeof(ccode_system_prompt_part1) +
-                       sizeof(ccode_system_prompt_part2)];
-    static int initialized = 0;
-    if (!initialized) {
-        memcpy(prompt, ccode_system_prompt_part1,
-               sizeof(ccode_system_prompt_part1) - 1);
-        memcpy(prompt + sizeof(ccode_system_prompt_part1) - 1,
-               ccode_system_prompt_part2,
-               sizeof(ccode_system_prompt_part2));
-        initialized = 1;
-    }
-    return prompt;
+    return ccode_system_prompt;
 }
 
 /* ── Unified conversation rendering ──
@@ -304,7 +217,6 @@ static void render_list_result(FILE *out, const char *js,
 }
 
 void ccode_render_tool_result(FILE *out, const char *result_json) {
-    ccode_jsmn_parser parser;
     ccode_jsmntok_t tokens[128];
     int ntok;
     ccode_jsmntok_t *tok;
@@ -314,10 +226,7 @@ void ccode_render_tool_result(FILE *out, const char *result_json) {
         fputs(" (empty)\n", out);
         return;
     }
-    ccode_jsmn_init(&parser);
-    //BLAME-IMPACT(json): jsmn.c:6 — 裸 ccode_jsmn_parse，改 ccode_json_parse
-    ntok = ccode_jsmn_parse(&parser, result_json, strlen(result_json),
-                            tokens, 128);
+    ntok = ccode_json_parse(result_json, strlen(result_json), tokens, 128);
     if (ntok <= 0 || tokens[0].type != CCODE_JSMN_OBJECT) {
         fputc(' ', out);
         ccode_fprint_safe_text(out, result_json, "");
@@ -387,10 +296,12 @@ void ccode_render_tool_result(FILE *out, const char *result_json) {
     }
 
     /* Unknown shape: keep the information, sanitised. */
-    //BLAME-IMPACT(json): cli/main.c:55 — strstr 提字段，改走 token 树
-    if (strstr(result_json, "\"ok\":true") != NULL) {
-        fputs(" ok\n", out);
-        return;
+    {
+        int ok = 0;
+        if (ccode_json_get_bool(result_json, "ok", &ok) == 0 && ok) {
+            fputs(" ok\n", out);
+            return;
+        }
     }
     fputc(' ', out);
     ccode_fprint_safe_text(out, result_json, "");
