@@ -36,6 +36,10 @@ void ccode_print_usage(const char *program) {
         "      --default          Fast start: interactive + read/write tools + thinking (never auto-approve)\n"
         "      --debug            --default plus raw tool-call JSON diagnostics\n"
         "      --auto-approve     Auto-approve all tool requests\n"
+        "      --allowdanger      DANGER: disable all tool-call security checks\n"
+        "                         (sensitive-path and destructive-command filters, write\n"
+        "                         sandbox, web_fetch blacklist/SSRF gate); implies\n"
+        "                         --auto-approve\n"
         "      --thinking         Send the thinking field (type: enabled; on by default)\n"
         "      --reasoning        Send the reasoning_effort field (default effort: high)\n"
         "      --reasoning-effort L  Reasoning effort: low, medium, high, xhigh, max\n"
@@ -108,6 +112,12 @@ static int opt_noop(struct ccode_config *c, const char *v) { (void)c; (void)v; r
 static int opt_backend(struct ccode_config *c, const char *v) { c->backend = v; return 0; }
 static int opt_json(struct ccode_config *c, const char *v) { (void)v; c->json = 1; c->interactive = 1; return 0; }
 static int opt_auto_approve(struct ccode_config *c, const char *v) { (void)v; c->auto_approve = 1; return 0; }
+static int opt_allow_danger(struct ccode_config *c, const char *v) {
+    (void)v;
+    c->allow_danger = 1;
+    c->auto_approve = 1;
+    return 0;
+}
 static int opt_thinking(struct ccode_config *c, const char *v) { (void)v; c->thinking_enabled = 1; return 0; }
 static int opt_reasoning(struct ccode_config *c, const char *v) {
     (void)v;
@@ -158,6 +168,7 @@ static const struct ccode_option ccode_options[] = {
     {"--backend", NULL, 1, opt_backend},
     {"--json", NULL, 0, opt_json},
     {"--auto-approve", NULL, 0, opt_auto_approve},
+    {"--allowdanger", NULL, 0, opt_allow_danger},
     {"--thinking", NULL, 0, opt_thinking},
     {"--reasoning", NULL, 0, opt_reasoning},
     {"--reasoning-effort", NULL, 1, opt_reasoning_effort},

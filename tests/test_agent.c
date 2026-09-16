@@ -78,6 +78,7 @@ int test_conversation_add_streamed_tool_call(struct ccode_conversation *conv,
 void ccode_atomic_fail_inject(int stage);
 void ccode_atomic_fail_inject_clear(void);
 void test_agent_context_init(void);
+int test_command_policy_refused(const char *cmd, int allow_danger);
 void test_change_log_reset(void);
 int test_change_log_count(void);
 const char *test_change_log_serialize(void);
@@ -3093,6 +3094,19 @@ static int test_bash_git_does_not_discover_parent_repository(void) {
     return 1;
 }
 
+static int test_allowdanger_disables_command_policy(void) {
+    /* Destructive command: refused normally, allowed under --allowdanger. */
+    ASSERT(test_command_policy_refused("rm -rf /", 0) == 1);
+    ASSERT(test_command_policy_refused("rm -rf /", 1) == 0);
+    /* Hard sensitive path (credential material). */
+    ASSERT(test_command_policy_refused("cat /etc/shadow", 0) == 1);
+    ASSERT(test_command_policy_refused("cat /etc/shadow", 1) == 0);
+    /* A benign command is never refused. */
+    ASSERT(test_command_policy_refused("ls -la", 0) == 0);
+    ASSERT(test_command_policy_refused("ls -la", 1) == 0);
+    return 1;
+}
+
 static int test_change_log_retains_truncation_and_denials(void) {
     const char *out;
 
@@ -5495,6 +5509,7 @@ int main(int argc, char **argv) {
     /* Additional argument parsing tests */
     TEST(new_tool_arguments_are_strict);
     TEST(task_results_escape_model_content);
+    TEST(allowdanger_disables_command_policy);
     TEST(change_log_retains_truncation_and_denials);
     TEST(bash_git_does_not_discover_parent_repository);
     TEST(scan_skips_vcs_directories);

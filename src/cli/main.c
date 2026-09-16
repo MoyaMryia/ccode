@@ -28,6 +28,7 @@ struct backend_options {
     int read_only_tools;
     int tools_enabled;
     int auto_approve;
+    int allow_danger;
     int allow_http;
     int thinking_enabled;
     const char *thinking_effort;
@@ -191,6 +192,7 @@ static int run_agent_prompt(const struct backend_options *options,
     config.tools_enabled = options->tools_enabled || (write_tools && write_tools[0] == '1');
     config.read_only_tools = options->read_only_tools || (read_only && read_only[0] == '1');
     config.auto_approve = options->auto_approve || (auto_approve && auto_approve[0] == '1');
+    config.allow_danger = options->allow_danger;
     config.allow_http = options->allow_http;
     config.thinking_enabled = options->thinking_enabled;
     config.thinking_effort = options->thinking_effort;
@@ -636,6 +638,7 @@ static int run_json_mode(const struct ccode_config *config) {
     state.options.read_only_tools = config->read_only_tools;
     state.options.tools_enabled = config->tools_enabled;
     state.options.auto_approve = config->auto_approve;
+    state.options.allow_danger = config->allow_danger;
     state.options.allow_http = config->allow_http;
     state.options.thinking_enabled = config->thinking_enabled;
     if (config->thinking_effort) {
@@ -765,6 +768,7 @@ int ccode_cli_main(int argc, char **argv) {
     agent.read_only_tools = config.read_only_tools;
     agent.interactive = config.interactive;
     agent.auto_approve = config.auto_approve;
+    agent.allow_danger = config.allow_danger;
     agent.allow_http = config.allow_http;
     agent.thinking_enabled = config.thinking_enabled;
     agent.thinking_effort = config.thinking_effort;

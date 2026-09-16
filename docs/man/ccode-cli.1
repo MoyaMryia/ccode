@@ -114,6 +114,13 @@ on stderr. Off by default.
 Approve all tool requests without prompting (also
 .BR CCODE_AUTO_APPROVE=1 ).
 .TP
+.B \-\-allowdanger
+DANGER: disable every tool-call security check \em sensitive-path and
+destructive-command filters, the Landlock write sandbox, and the web_fetch
+host blacklist / private-network (SSRF) gate \em and imply
+.BR \-\-auto-approve .
+Only for trusted or throwaway environments; a warning is printed at startup.
+.TP
 .B \-\-thinking
 Send the
 .B "thinking"

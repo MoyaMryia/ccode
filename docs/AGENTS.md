@@ -19,6 +19,7 @@
 - 允许 shell 字符串执行（`sh -c`，但内容过敏感路径/破坏性命令过滤）
 - 允许 `delete_file` / `move_file`（简单版，限工作区内）
 - 允许 `--auto-approve` 跳过审批
+- 允许 `--allowdanger` 关闭全部工具安全检查（命令敏感路径/破坏性过滤、Landlock 写沙箱、web_fetch 黑名单/私网门），并隐含 `--auto-approve`；显式 opt-in、启动打印警告，只给可信/一次性环境用
 - 不要求完整沙箱隔离（Landlock 不可用就退回命令过滤）
 
 ## 工作流程

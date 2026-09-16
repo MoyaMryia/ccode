@@ -47,6 +47,7 @@ char *command_policy_refuse(struct agent_context *ctx,
     const char *workspace;
 
     if (!prepared) return NULL;
+    if (ctx && ctx->allow_danger) return NULL;
     workspace = ctx && ctx->workspace_initialized ? ctx->workspace_root : NULL;
     if (prepared->kind == PREPARED_BASH) {
         if (ccode_command_is_sensitive_why(prepared->value, workspace,
@@ -271,7 +272,7 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
         return ccode_strdup("{\"error\":\"No command specified\"}");
     if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
-    {
+    if (!ctx->allow_danger) {
         char why[256];
         for (i = 0; i < argc; i++) {
             if (ccode_command_is_sensitive_why(argv[i], ctx->workspace_root,
@@ -719,7 +720,7 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
     (void)build_git_ceiling_env(ctx->workspace_root, ceiling_env,
                                 sizeof(ceiling_env));
-    {
+    if (!ctx->allow_danger) {
         char why[256];
         for (i = 0; i < argc; i++) {
             if (ccode_command_is_sensitive_why(argv[i], ctx->workspace_root,
@@ -788,8 +789,9 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
             _exit(127);
         /* Enforce the write sandbox before exec. When Landlock is
          * unavailable this is a no-op and the command filter above remains
-         * the only path protection. */
-        (void)ccode_platform_sandbox_apply(ctx->workspace_root);
+         * the only path protection. Skipped entirely under --allowdanger. */
+        if (!ctx->allow_danger)
+            (void)ccode_platform_sandbox_apply(ctx->workspace_root);
         for (i = 0; i < argc; i++) exec_argv[i] = argv[i];
         exec_argv[argc] = NULL;
         execve(executable, exec_argv, exec_env);
@@ -1102,13 +1104,15 @@ char *exec_bash_command(struct agent_context *ctx, const char *workspace,
     return exec_run_command_ex(ctx, workspace, argv, 3, timeout_ms);
 }
 
-char *exec_web_fetch(const struct prepared_tool *prepared) {
+char *exec_web_fetch(struct agent_context *ctx,
+                     const struct prepared_tool *prepared) {
     struct ccode_web_fetch_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.url = prepared->value;
     opts.method = prepared->content[0] ? prepared->content : NULL;
     opts.timeout_sec = prepared->web_timeout_sec;
     opts.max_size = prepared->web_max_size;
+    opts.allow_danger = ctx ? ctx->allow_danger : 0;
     return ccode_web_fetch(&opts);
 }
 

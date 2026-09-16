@@ -13,7 +13,7 @@
  * Bing: https://www.bing.com/search?q={query}). The fetch is routed through
  * ccode_web_fetch, so the blacklist and rate limit apply.
  */
-char *ccode_web_search(const char *query);
+char *ccode_web_search(const char *query, int allow_danger);
 
 /* Parse a search-result HTML page into the results JSON above. Exposed for
  * unit tests; never returns NULL (errors become {"error":"..."}).

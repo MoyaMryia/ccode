@@ -153,7 +153,7 @@ fail:
     return NULL;
 }
 
-char *ccode_web_search(const char *query) {
+char *ccode_web_search(const char *query, int allow_danger) {
     const char *tmpl = getenv("CCODE_WEB_SEARCH_URL");
     const char *marker;
     struct ccode_web_fetch_opts opts;
@@ -186,6 +186,7 @@ char *ccode_web_search(const char *query) {
     opts.timeout_sec = 20;
     opts.max_size = WS_BODY_MAX;
     opts.raw_html = 1;
+    opts.allow_danger = allow_danger;
 
     result = ccode_web_fetch(&opts);
     ccode_buf_free(&url);

@@ -616,7 +616,7 @@ static char *execute_prepared_tool(struct agent_context *ctx,
         return exec_move_file(ctx, workspace, prepared->value,
                               prepared->destination);
     if (prepared->kind == PREPARED_WEB_FETCH)
-        return exec_web_fetch(prepared);
+        return exec_web_fetch(ctx, prepared);
     if (prepared->kind == PREPARED_AGENT_TOOL) {
         if (!cfg)
             return ccode_strdup("{\"error\":\"Sub-agent not available\"}");
@@ -624,7 +624,7 @@ static char *execute_prepared_tool(struct agent_context *ctx,
                             prepared->read_only_subagent);
     }
     if (prepared->kind == PREPARED_WEB_SEARCH)
-        return ccode_web_search(prepared->value);
+        return ccode_web_search(prepared->value, ctx->allow_danger);
     if (prepared->kind == PREPARED_READ_TOOL_OUTPUT)
         return exec_read_tool_output(ctx, conv, prepared->value,
                                      prepared->content[0] ? prepared->content
@@ -1354,6 +1354,10 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
 
     ccode_agent_summary_cache_reset();
     ccode_agent_context_init(&agent_ctx);
+    agent_ctx.allow_danger = cfg->allow_danger;
+    if (agent_ctx.allow_danger)
+        fprintf(stderr, "WARNING: --allowdanger is on; all tool-call "
+                        "security checks are disabled.\n");
     reset_workspace_state(ctx);
     ccode_cancel_install();
     verify_model(cfg, model_fallback, sizeof(model_fallback));
@@ -1981,6 +1985,10 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
     current_session_path[0] = '\0';
     ccode_agent_summary_cache_reset();
     ccode_agent_context_init(&agent_ctx);
+    agent_ctx.allow_danger = cfg->allow_danger;
+    if (agent_ctx.allow_danger)
+        fprintf(stderr, "WARNING: --allowdanger is on; all tool-call "
+                        "security checks are disabled.\n");
     reset_workspace_state(&agent_ctx);
     ccode_cancel_install();
 
@@ -2250,6 +2258,23 @@ const char *test_prepare_tool_error(const char *name, const char *arguments) {
 }
 void test_agent_context_init(void) { ccode_agent_context_init(&agent_ctx); }
 void test_change_log_reset(void) { change_log_reset(&agent_ctx); }
+/* Returns 1 when the command policy would refuse `cmd` with the given
+ * allow_danger setting. Restores the previous setting before returning. */
+int test_command_policy_refused(const char *cmd, int allow_danger) {
+    struct prepared_tool prepared;
+    char *refusal;
+    int refused;
+    int saved = agent_ctx.allow_danger;
+    memset(&prepared, 0, sizeof(prepared));
+    prepared.kind = PREPARED_BASH;
+    prepared.value = (char *)cmd;
+    agent_ctx.allow_danger = allow_danger;
+    refusal = command_policy_refuse(&agent_ctx, &prepared);
+    refused = refusal != NULL;
+    free(refusal);
+    agent_ctx.allow_danger = saved;
+    return refused;
+}
 int test_change_log_count(void) { return (int)agent_ctx.change_log.len; }
 const char *test_change_log_serialize(void) { return change_log_serialize(&agent_ctx); }
 void test_change_log_add_command_full(const char *cmd, int exit_code,

@@ -28,6 +28,8 @@ struct ccode_agent_config {
     int read_only_tools;
     int interactive;
     int auto_approve;
+    /* DANGER: disable all tool-call policy checks + imply approval. */
+    int allow_danger;
     /* Suppress per-turn status output. Set for delegate sub-agents whose
      * intermediate chatter must not leak into the parent's transcript. */
     int quiet;

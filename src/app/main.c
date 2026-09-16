@@ -16,6 +16,7 @@ static void tui_fill_agent(struct ccode_agent_config *agent_cfg,
     agent_cfg->read_only_tools = config->read_only_tools;
     agent_cfg->interactive = config->interactive;
     agent_cfg->auto_approve = config->auto_approve;
+    agent_cfg->allow_danger = config->allow_danger;
     agent_cfg->allow_http = config->allow_http;
     agent_cfg->thinking_enabled = config->thinking_enabled;
     agent_cfg->thinking_effort = config->thinking_effort;

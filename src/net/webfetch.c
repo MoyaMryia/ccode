@@ -942,7 +942,7 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             goto done;
         }
 
-        if (wf_host_blacklisted(url.host)) {
+        if (!opts->allow_danger && wf_host_blacklisted(url.host)) {
             size_t host_len = strlen(url.host);
             result = malloc(96 + host_len);
             if (result)
@@ -956,7 +956,7 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
                 snprintf(result, 64, "{\"error\":\"Web fetch rate limit exceeded\"}");
             goto done;
         }
-        if (wf_host_is_private(url.host)) {
+        if (!opts->allow_danger && wf_host_is_private(url.host)) {
             size_t host_len = strlen(url.host);
             result = malloc(160 + host_len);
             if (result)

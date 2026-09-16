@@ -82,6 +82,7 @@ struct agent_context {
     size_t workspace_root_len;
     int workspace_dir_fd;
     int workspace_initialized;
+    int allow_danger;
     struct ccode_vec change_log;  /* element: struct ccode_change (cap CCODE_MAX_CHANGES) */
     struct ccode_vec task_list;   /* element: struct ccode_task (cap CCODE_MAX_TASKS) */
     int task_next_id;
@@ -275,7 +276,8 @@ char *exec_run_command(struct agent_context *ctx, const char *workspace,
                              int timeout_ms);
 char *exec_bash_command(struct agent_context *ctx, const char *workspace,
                              const char *command, int timeout_ms);
-char *exec_web_fetch(const struct prepared_tool *prepared);
+char *exec_web_fetch(struct agent_context *ctx,
+                     const struct prepared_tool *prepared);
 void default_stream_reasoning(const char *content, void *context);
 
 #ifdef CCODE_UNIT_TEST

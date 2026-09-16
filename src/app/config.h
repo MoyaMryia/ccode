@@ -13,6 +13,11 @@ struct ccode_config {
     int json;
     const char *backend;
     int auto_approve;
+    /* DANGER: disable every tool-call policy check (sensitive-path and
+     * destructive-command filters, Landlock write sandbox, web_fetch host
+     * blacklist / private-network gate) and imply --auto-approve. Only for
+     * trusted, sandboxed or throwaway environments. */
+    int allow_danger;
     int thinking_enabled;
     const char *thinking_effort;
     const char *save_session;

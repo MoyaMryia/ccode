@@ -60,6 +60,7 @@
 - Landlock 写沙箱（Linux 可用时自动启用，否则退回命令过滤）；沙箱只放行 `/dev` 下已有设备的 `WRITE_FILE`（如 `/dev/null`），不放开设备节点创建/删除，避免 `git` 等常规命令被误伤
 - 密钥文件要求 0600 权限 + 单硬链接
 - http 策略：远程明文 http 需显式放行（`--allow-http` 为请求级标志，不再借 `setenv` 传参；`CCODE_ALLOW_HTTP=1` 仅作环境默认值）
+- `--allowdanger`：DANGER，关闭全部工具调用安全检查（敏感路径/破坏性命令过滤、Landlock 写沙箱、web_fetch 主机黑名单与私网 SSRF 门），并隐含 `--auto-approve`；启动时向 stderr 打印警告。只给可信/一次性环境用
 
 ### 跨平台
 
