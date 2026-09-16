@@ -70,6 +70,106 @@ void ccode_print_usage(const char *program) {
         program);
 }
 
+/* ─ Command-line option table ──
+ * One row per flag; the parser below is a generic lookup + dispatch, so
+ * adding a flag no longer means adding another strcmp branch. Handlers return
+ * 0 on success, -1 on an invalid value, or 1 to request usage + exit. */
+typedef int (*ccode_option_fn)(struct ccode_config *config, const char *value);
+
+struct ccode_option {
+    const char *long_name;
+    const char *short_name;   /* NULL when there is no short form */
+    int takes_value;
+    ccode_option_fn apply;
+};
+
+static int opt_prompt(struct ccode_config *c, const char *v) { c->prompt = v; return 0; }
+static int opt_api_base(struct ccode_config *c, const char *v) { c->api_base = v; return 0; }
+static int opt_api_key(struct ccode_config *c, const char *v) { c->api_key = v; return 0; }
+static int opt_model(struct ccode_config *c, const char *v) { c->model = v; return 0; }
+static int opt_read_only(struct ccode_config *c, const char *v) { (void)v; c->read_only_tools = 1; return 0; }
+static int opt_write(struct ccode_config *c, const char *v) { (void)v; c->tools_enabled = 1; return 0; }
+static int opt_default(struct ccode_config *c, const char *v) {
+    (void)v;
+    c->interactive = 1;
+    c->tools_enabled = 1;
+    c->thinking_enabled = 1;
+    c->thinking_effort = "high";
+    return 0;
+}
+static int opt_debug(struct ccode_config *c, const char *v) {
+    opt_default(c, v);
+    c->print_raw_json = 1;
+    return 0;
+}
+static int opt_interactive(struct ccode_config *c, const char *v) { (void)v; c->interactive = 1; return 0; }
+static int opt_tui(struct ccode_config *c, const char *v) { (void)v; c->interactive = 1; c->tui = 1; return 0; }
+static int opt_noop(struct ccode_config *c, const char *v) { (void)c; (void)v; return 0; }
+static int opt_backend(struct ccode_config *c, const char *v) { c->backend = v; return 0; }
+static int opt_json(struct ccode_config *c, const char *v) { (void)v; c->json = 1; c->interactive = 1; return 0; }
+static int opt_auto_approve(struct ccode_config *c, const char *v) { (void)v; c->auto_approve = 1; return 0; }
+static int opt_thinking(struct ccode_config *c, const char *v) { (void)v; c->thinking_enabled = 1; return 0; }
+static int opt_reasoning(struct ccode_config *c, const char *v) {
+    (void)v;
+    if (!c->thinking_effort) c->thinking_effort = "high";
+    return 0;
+}
+static int opt_reasoning_effort(struct ccode_config *c, const char *v) {
+    if (strcmp(v, "low") != 0 && strcmp(v, "medium") != 0 &&
+        strcmp(v, "high") != 0 && strcmp(v, "xhigh") != 0 &&
+        strcmp(v, "max") != 0) {
+        fprintf(stderr,
+                "Invalid reasoning effort: %s (expected: low, medium, high, xhigh, max)\n",
+                v);
+        return -1;
+    }
+    c->thinking_effort = v;
+    return 0;
+}
+static int opt_allow_http(struct ccode_config *c, const char *v) { (void)v; c->allow_http = 1; return 0; }
+static int opt_no_markdown(struct ccode_config *c, const char *v) { (void)v; c->markdown = 0; return 0; }
+static int opt_context_tokens(struct ccode_config *c, const char *v) {
+    long n = atol(v);
+    if (n < 0) {
+        fprintf(stderr, "Invalid --context-tokens value: %s\n", v);
+        return -1;
+    }
+    c->context_tokens = (size_t)n;
+    return 0;
+}
+static int opt_save_session(struct ccode_config *c, const char *v) { c->save_session = v; return 0; }
+static int opt_resume(struct ccode_config *c, const char *v) { c->resume_session = v; return 0; }
+static int opt_session_dir(struct ccode_config *c, const char *v) { c->session_dir = v; return 0; }
+static int opt_help(struct ccode_config *c, const char *v) { (void)c; (void)v; return 1; }
+
+static const struct ccode_option ccode_options[] = {
+    {"--help", "-h", 0, opt_help},
+    {"--prompt", "-p", 1, opt_prompt},
+    {"--api-base", NULL, 1, opt_api_base},
+    {"--api-key", NULL, 1, opt_api_key},
+    {"--model", NULL, 1, opt_model},
+    {"--read-only", NULL, 0, opt_read_only},
+    {"--write", NULL, 0, opt_write},
+    {"--default", NULL, 0, opt_default},
+    {"--debug", NULL, 0, opt_debug},
+    {"--interactive", "-i", 0, opt_interactive},
+    {"--tui", NULL, 0, opt_tui},
+    {"--no-tui", NULL, 0, opt_noop},
+    {"--backend", NULL, 1, opt_backend},
+    {"--json", NULL, 0, opt_json},
+    {"--auto-approve", NULL, 0, opt_auto_approve},
+    {"--thinking", NULL, 0, opt_thinking},
+    {"--reasoning", NULL, 0, opt_reasoning},
+    {"--reasoning-effort", NULL, 1, opt_reasoning_effort},
+    {"--thinking-effort", NULL, 1, opt_reasoning_effort},
+    {"--allow-http", NULL, 0, opt_allow_http},
+    {"--no-markdown", NULL, 0, opt_no_markdown},
+    {"--context-tokens", NULL, 1, opt_context_tokens},
+    {"--save-session", NULL, 1, opt_save_session},
+    {"--resume", NULL, 1, opt_resume},
+    {"--session-dir", NULL, 1, opt_session_dir},
+};
+
 int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
     int i;
 
@@ -187,145 +287,33 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
         }
     }
     config->session_dir = getenv("CCODE_SESSION_DIR");
-    //Blame: 这里该有个更好的写法
-    //写个option table
-    //BLAME-IMPACT(config): config.c:190 — 长 strcmp 链，改 option table
     for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+        const struct ccode_option *opt = NULL;
+        const char *value = NULL;
+        size_t k;
+        int rc;
+
+        for (k = 0; k < sizeof(ccode_options) / sizeof(ccode_options[0]); k++) {
+            if (strcmp(argv[i], ccode_options[k].long_name) == 0 ||
+                (ccode_options[k].short_name &&
+                 strcmp(argv[i], ccode_options[k].short_name) == 0)) {
+                opt = &ccode_options[k];
+                break;
+            }
+        }
+        if (!opt || (opt->takes_value && i + 1 >= argc)) {
+            fprintf(stderr, "Unknown or incomplete option: %s\n", argv[i]);
+            ccode_print_usage(argv[0]);
+            return -1;
+        }
+        if (opt->takes_value) value = argv[++i];
+
+        rc = opt->apply(config, value);
+        if (rc == 1) {
             ccode_print_usage(argv[0]);
             return 1;
         }
-        if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--prompt") == 0) && i + 1 < argc) {
-            config->prompt = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--api-base") == 0 && i + 1 < argc) {
-            config->api_base = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--api-key") == 0 && i + 1 < argc) {
-            config->api_key = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--model") == 0 && i + 1 < argc) {
-            config->model = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--read-only") == 0) {
-            config->read_only_tools = 1;
-            continue;
-        }
-        if (strcmp(argv[i], "--write") == 0) {
-            config->tools_enabled = 1;
-            continue;
-        }
-        if (strcmp(argv[i], "--default") == 0) {
-            /* Fast-start preset: interactive REPL + read/write tools +
-             * thinking. Never touches auto_approve (interactive
-             * confirmation stays on). */
-            config->interactive = 1;
-            config->tools_enabled = 1;
-            config->thinking_enabled = 1;
-            config->thinking_effort = "high";
-            continue;
-        }
-        if (strcmp(argv[i], "--debug") == 0) {
-            /* --default plus raw tool-call JSON diagnostics. */
-            config->interactive = 1;
-            config->tools_enabled = 1;
-            config->thinking_enabled = 1;
-            config->thinking_effort = "high";
-            config->print_raw_json = 1;
-            continue;
-        }
-        if (strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--interactive") == 0) {
-            config->interactive = 1;
-            continue;
-        }
-        if (strcmp(argv[i], "--tui") == 0) {
-            config->interactive = 1;
-            config->tui = 1;
-            continue;
-        }
-        if (strcmp(argv[i], "--no-tui") == 0) {
-            /* Escape hatch (mainly the Windows build): force the line-based
-             * REPL when a bare invocation would start the TUI. */
-            continue;
-        }
-        if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
-            config->backend = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--json") == 0) {
-            config->json = 1;
-            config->interactive = 1;
-            continue;
-        }
-        if (strcmp(argv[i], "--auto-approve") == 0) {
-            config->auto_approve = 1;
-            continue;
-        }
-        if (strcmp(argv[i], "--thinking") == 0) {
-            config->thinking_enabled = 1;
-            continue;
-        }
-        if (strcmp(argv[i], "--reasoning") == 0) {
-            /* Send the reasoning_effort field; default to high when no
-             * explicit level was given. Independent of --thinking. */
-            if (!config->thinking_effort)
-                config->thinking_effort = "high";
-            continue;
-        }
-        if ((strcmp(argv[i], "--reasoning-effort") == 0 ||
-             strcmp(argv[i], "--thinking-effort") == 0) && i + 1 < argc) {
-            const char *effort = argv[++i];
-            if (strcmp(effort, "low") != 0 &&
-                strcmp(effort, "medium") != 0 &&
-                strcmp(effort, "high") != 0 &&
-                strcmp(effort, "xhigh") != 0 &&
-                strcmp(effort, "max") != 0) {
-                fprintf(stderr, "Invalid reasoning effort: %s (expected: low, medium, high, xhigh, max)\n", effort);
-                return -1;
-            }
-            /* Setting a level implies sending the field. */
-            config->thinking_effort = effort;
-            continue;
-        }
-        if (strcmp(argv[i], "--allow-http") == 0) {
-            /* Explicit request-scoped flag: no setenv bridge into http.c. */
-            config->allow_http = 1;
-            continue;
-        }
-        if (strcmp(argv[i], "--no-markdown") == 0) {
-            config->markdown = 0;
-            continue;
-        }
-        if (strcmp(argv[i], "--context-tokens") == 0 && i + 1 < argc) {
-            long n = atol(argv[++i]);
-            if (n < 0) {
-                fprintf(stderr, "Invalid --context-tokens value: %s\n",
-                        argv[i]);
-                return -1;
-            }
-            config->context_tokens = n;
-            continue;
-        }
-        if (strcmp(argv[i], "--save-session") == 0 && i + 1 < argc) {
-            config->save_session = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--resume") == 0 && i + 1 < argc) {
-            config->resume_session = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "--session-dir") == 0 && i + 1 < argc) {
-            config->session_dir = argv[++i];
-            continue;
-        }
-
-        fprintf(stderr, "Unknown or incomplete option: %s\n", argv[i]);
-        ccode_print_usage(argv[0]);
-        return -1;
+        if (rc != 0) return -1;
     }
 
     if (!config->api_base || !config->api_key || !config->model) {
