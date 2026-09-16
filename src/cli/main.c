@@ -58,58 +58,37 @@ struct json_session_state {
      * collide with the previous (still existing) file. */
     int chain_seq;
 };
-//BLAME: 拆走json处理部分
-//BLAME-IMPACT(json): cli/main.c:55 — 私有 JSON 字段提取，改走 json.c token 树 + ccode_json_unescape
 static int field(const char *line, const char *name, char *out, size_t cap) {
-    char needle[64];
-    const char *start, *end;
-    snprintf(needle, sizeof(needle), "\"%s\":\"", name);
-    start = strstr(line, needle);
-    if (!start) return -1;
-    start += strlen(needle);
-    /* Walk to the closing quote, skipping backslash-escaped pairs so a
-     * literal \" inside the value does not terminate the field early. */
-    end = start;
-    while (*end && *end != '"') {
-        if (*end == '\\' && end[1]) end += 2;
-        else end++;
-    }
-    if (*end != '"' || (size_t)(end - start) >= cap) return -1;
-    return ccode_json_unescape(start, end, out, cap);
+    return ccode_json_get_string(line, name, out, cap);
 }
 
-//BLAME-IMPACT(json): cli/main.c:55 — 手搓布尔字段，同上
 static int boolean_field(const char *line, const char *name, int *value) {
-    char needle[64];
-    const char *start;
-    if (!line || !name || !value) return -1;
-    snprintf(needle, sizeof(needle), "\"%s\":", name);
-    start = strstr(line, needle);
-    if (!start) return -1;
-    start += strlen(needle);
-    if (strncmp(start, "true", 4) == 0) *value = 1;
-    else if (strncmp(start, "false", 5) == 0) *value = 0;
-    else return -1;
-    return 0;
+    return ccode_json_get_bool(line, name, value);
+}
+
+/* Set when a JSON event write fails (broken pipe / closed frontend). Further
+ * events are pointless, so they are dropped instead of spamming stderr. */
+static int json_output_failed = 0;
+
+static void json_emit(int fd, const char *type, const char *text) {
+    char *event;
+    size_t event_length;
+    if (json_output_failed) return;
+    if (ccode_json_build_event(type, text, &event, &event_length) != 0) return;
+    if (ccode_fd_write_all(fd, event, event_length) != 0) {
+        json_output_failed = 1;
+        fprintf(stderr, "backend: could not write output event: %s\n",
+                strerror(errno));
+    }
+    free(event);
 }
 
 static void json_print(const char *type, const char *text) {
-    char *event;
-    size_t event_length;
-    if (ccode_json_build_event(type, text, &event, &event_length) == 0) {
-        //BLAME-IMPACT(fdio): fdio.c:8 — 丢弃 write_all 的返回码
-        (void)ccode_fd_write_all(STDOUT_FILENO, event, event_length);
-        free(event);
-    }
+    json_emit(STDOUT_FILENO, type, text);
 }
 
 static void json_print_fd(int fd, const char *type, const char *text) {
-    char *event;
-    size_t event_length;
-    if (ccode_json_build_event(type, text, &event, &event_length) != 0) return;
-    //BLAME-IMPACT(fdio): fdio.c:8 — 丢弃 write_all 的返回码
-    (void)ccode_fd_write_all(fd, event, event_length);
-    free(event);
+    json_emit(fd, type, text);
 }
 
 static void json_stream_content(const char *content, void *context) {
