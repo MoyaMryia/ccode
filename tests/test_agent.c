@@ -77,6 +77,7 @@ int test_conversation_add_streamed_tool_call(struct ccode_conversation *conv,
 #define CCODE_FI_POLL_EINTR 11
 void ccode_atomic_fail_inject(int stage);
 void ccode_atomic_fail_inject_clear(void);
+void test_agent_context_init(void);
 void test_change_log_reset(void);
 int test_change_log_count(void);
 const char *test_change_log_serialize(void);
@@ -3140,27 +3141,29 @@ static int test_agent_context_isolation(void) {
     ccode_agent_context_init(&parent);
     ASSERT(parent.workspace_dir_fd == -1);
     change_log_add(&parent, "write", "a.txt", 0, 0);
-    ASSERT(parent.change_count == 1);
+    ASSERT(parent.change_log.len == 1);
 
     sub = parent;
     sub.last_change_summary = NULL;
     sub.last_task_summary = NULL;
+    ASSERT(agent_context_copy_lists(&sub, &parent) == 0);
     change_log_add(&sub, "command", "echo hi", 0, 0);
-    ASSERT(sub.change_count == 2);
-    ASSERT(parent.change_count == 1);
+    ASSERT(sub.change_log.len == 2);
+    ASSERT(parent.change_log.len == 1);
     ASSERT(strstr(change_log_serialize(&parent), "a.txt") != NULL);
     ASSERT(strstr(change_log_serialize(&parent), "echo hi") == NULL);
     ASSERT(strstr(change_log_serialize(&sub), "echo hi") != NULL);
 
     task_list_reset(&parent);
-    parent.task_count = 0;
     parent.task_next_id = 1;
     {
         char *r = exec_task_create(&sub, "subtask");
         free(r);
-        ASSERT(sub.task_count == 1);
-        ASSERT(parent.task_count == 0);
+        ASSERT(sub.task_list.len == 1);
+        ASSERT(parent.task_list.len == 0);
     }
+    agent_context_free_lists(&parent);
+    agent_context_free_lists(&sub);
     return 1;
 }
 
@@ -5290,6 +5293,7 @@ int main(int argc, char **argv) {
     /* Loopback HTTP mock servers (webfetch tests) need the private-network
      * gate opened; the SSRF test closes it again around its own asserts. */
     setenv("CCODE_WEB_FETCH_ALLOW_PRIVATE", "1", 1);
+    test_agent_context_init();
 
     if (argc == 2 && strcmp(argv[1], "--fuzz-probe") == 0) {
         /* Framed probe for tests/fuzz_tool_args.py: read <len><tool><len><args>

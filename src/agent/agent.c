@@ -136,13 +136,18 @@ static char *run_subagent(struct agent_context *ctx,
     sub_ctx.subagent_depth = ctx->subagent_depth + 1;
     sub_ctx.last_change_summary = NULL;
     sub_ctx.last_task_summary = NULL;
-
-    if (ccode_conversation_init(&sub, CCODE_MAX_MESSAGES) != 0)
+    if (agent_context_copy_lists(&sub_ctx, ctx) != 0)
         return ccode_strdup("{\"error\":\"Out of memory\"}");
+
+    if (ccode_conversation_init(&sub, CCODE_MAX_MESSAGES) != 0) {
+        agent_context_free_lists(&sub_ctx);
+        return ccode_strdup("{\"error\":\"Out of memory\"}");
+    }
     if (ccode_conversation_add(&sub, CCODE_ROLE_SYSTEM,
                                subagent_system_prompt()) != 0 ||
         ccode_conversation_add(&sub, CCODE_ROLE_USER, task) != 0) {
         ccode_conversation_destroy(&sub);
+        agent_context_free_lists(&sub_ctx);
         return ccode_strdup("{\"error\":\"Out of memory\"}");
     }
 
@@ -180,6 +185,7 @@ static char *run_subagent(struct agent_context *ctx,
 
     free(sub_ctx.last_change_summary);
     free(sub_ctx.last_task_summary);
+    agent_context_free_lists(&sub_ctx);
 
     if (rc == 130) {
         free(answer);
@@ -789,8 +795,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
          * bleed into the next assistant message. */
         ccode_print_content_reset();
         if ((cfg->tools_enabled || cfg->read_only_tools) && turn > 0) {
-            const char *ch = ctx->change_count > 0 ? change_log_serialize(&agent_ctx) : NULL;
-            const char *tasks = (cfg->tools_enabled && ctx->task_count > 0)
+            const char *ch = (int)ctx->change_log.len > 0 ? change_log_serialize(&agent_ctx) : NULL;
+            const char *tasks = (cfg->tools_enabled && (int)ctx->task_list.len > 0)
                                 ? task_list_serialize(ctx) : NULL;
             if (append_summary_if_changed(conv, ch, &ctx->last_change_summary) != 0 ||
                 append_summary_if_changed(conv, tasks, &ctx->last_task_summary) != 0) {
@@ -827,7 +833,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         "elapsed=%lds" CCODE_ANSI("0") "\n",
                         turn + 1, mode_label, ctx->workspace_root[0] ? ctx->workspace_root
                                                                  : "(none)",
-                        ctx->change_count, el) == 0) {
+                        (int)ctx->change_log.len, el) == 0) {
                     fwrite(line.data, 1, line.len, stderr);
                 }
                 ccode_buf_free(&line);
@@ -847,8 +853,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
             if (over_tokens || over_capacity) {
                 const char *ch = NULL;
                 const char *tk = NULL;
-                if (ctx->change_count > 0) ch = change_log_serialize(&agent_ctx);
-                if (ctx->task_count > 0) tk = task_list_serialize(ctx);
+                if ((int)ctx->change_log.len > 0) ch = change_log_serialize(&agent_ctx);
+                if ((int)ctx->task_list.len > 0) tk = task_list_serialize(ctx);
                 ccode_conversation_compact(conv, ch, tk);
             }
         }
@@ -1406,56 +1412,56 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
     {
         int i;
         putchar('\n');
-        if (ctx->change_count > 0) {
+        if ((int)ctx->change_log.len > 0) {
             printf("" CCODE_ANSI("1") "Session summary:" CCODE_ANSI("0") "\n");
-            for (i = 0; i < ctx->change_count; i++) {
-                if (strcmp(ctx->change_log[i].type, "command") == 0) {
+            for (i = 0; i < (int)ctx->change_log.len; i++) {
+                if (strcmp((*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).type, "command") == 0) {
                     struct ccode_buf extra;
                     ccode_buf_init(&extra);
                     fputs("  command: ", stdout);
-                    ccode_fprint_safe(stdout, ctx->change_log[i].target, "");
-                    if (ctx->change_log[i].timed_out)
+                    ccode_fprint_safe(stdout, (*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).target, "");
+                    if ((*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).timed_out)
                         ccode_buf_append(&extra, ", timed out");
-                    if (ctx->change_log[i].stdout_truncated)
+                    if ((*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).stdout_truncated)
                         ccode_buf_append(&extra, ", stdout truncated");
-                    if (ctx->change_log[i].stderr_truncated)
+                    if ((*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).stderr_truncated)
                         ccode_buf_append(&extra, ", stderr truncated");
-                    if (ctx->change_log[i].denied)
+                    if ((*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).denied)
                         ccode_buf_append(&extra, ", denied");
-                    fprintf(stdout, " (exit=%d%s)\n", ctx->change_log[i].exit_code,
+                    fprintf(stdout, " (exit=%d%s)\n", (*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).exit_code,
                             extra.data ? extra.data : "");
                     ccode_buf_free(&extra);
                 } else {
                     struct ccode_buf extra;
                     ccode_buf_init(&extra);
-                    if (ctx->change_log[i].denied)
+                    if ((*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).denied)
                         ccode_buf_append(&extra, " (denied)");
                     fputs("  ", stdout);
-                    ccode_fprint_safe(stdout, ctx->change_log[i].type, "");
+                    ccode_fprint_safe(stdout, (*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).type, "");
                     fputs(": ", stdout);
-                    ccode_fprint_safe(stdout, ctx->change_log[i].target, "");
+                    ccode_fprint_safe(stdout, (*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).target, "");
                     fputs(extra.data ? extra.data : "", stdout);
                     fputc('\n', stdout);
                     ccode_buf_free(&extra);
                 }
             }
         }
-        if (ctx->task_count > 0) {
+        if ((int)ctx->task_list.len > 0) {
             printf("" CCODE_ANSI("1") "Tasks:" CCODE_ANSI("0") "\n");
-            for (i = 0; i < ctx->task_count; i++) {
+            for (i = 0; i < (int)ctx->task_list.len; i++) {
                 fputs("  [", stdout);
-                ccode_fprint_safe(stdout, ctx->task_list[i].status, "");
+                ccode_fprint_safe(stdout, (*(struct ccode_task *)ccode_vec_at(&ctx->task_list, i)).status, "");
                 fputs("] ", stdout);
-                ccode_fprint_safe(stdout, ctx->task_list[i].id, "");
+                ccode_fprint_safe(stdout, (*(struct ccode_task *)ccode_vec_at(&ctx->task_list, i)).id, "");
                 fputs(": ", stdout);
-                ccode_fprint_safe(stdout, ctx->task_list[i].content, "");
+                ccode_fprint_safe(stdout, (*(struct ccode_task *)ccode_vec_at(&ctx->task_list, i)).content, "");
                 fputc('\n', stdout);
             }
         }
     }
     if (cfg->save_session) {
-        const char *ch = ctx->change_count > 0 ? change_log_serialize(&agent_ctx) : NULL;
-        const char *tk = ctx->task_count > 0 ? task_list_serialize(ctx) : NULL;
+        const char *ch = (int)ctx->change_log.len > 0 ? change_log_serialize(&agent_ctx) : NULL;
+        const char *tk = (int)ctx->task_list.len > 0 ? task_list_serialize(ctx) : NULL;
         struct ccode_session_metadata meta;
         ccode_session_meta_init(&meta, cfg->model, ctx->workspace_root);
         if (ccode_conversation_save(&conv, cfg->save_session, tk, ch, &meta) != 0)
@@ -1564,8 +1570,8 @@ static void repl_clear(void *self) {
 static void repl_compact(void *self) {
     struct repl_cmd *c = self;
     const char *ch =
-        c->ctx->change_count > 0 ? change_log_serialize(c->ctx) : NULL;
-    const char *tk = c->ctx->task_count > 0 ? task_list_serialize(c->ctx) : NULL;
+        (int)c->ctx->change_log.len > 0 ? change_log_serialize(c->ctx) : NULL;
+    const char *tk = (int)c->ctx->task_list.len > 0 ? task_list_serialize(c->ctx) : NULL;
     ccode_conversation_compact(c->conv, ch, tk);
     ccode_agent_summary_cache_reset();
     fputs("  Conversation compacted.\n", stderr);
@@ -2095,8 +2101,8 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
 
         /* Auto-save after each turn if we have a session path. */
         if (have_session_path && conv_initialized) {
-            const char *ch = ctx->change_count > 0 ? change_log_serialize(&agent_ctx) : NULL;
-            const char *tk = ctx->task_count > 0 ? task_list_serialize(ctx) : NULL;
+            const char *ch = (int)ctx->change_log.len > 0 ? change_log_serialize(&agent_ctx) : NULL;
+            const char *tk = (int)ctx->task_list.len > 0 ? task_list_serialize(ctx) : NULL;
             struct ccode_session_metadata meta;
             ccode_session_meta_init(&meta, cfg->model, ctx->workspace_root);
             if (ccode_conversation_save(&conv, current_session_path, tk, ch,
@@ -2108,34 +2114,34 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
 cleanup:
     {
         int i;
-        if (ctx->change_count > 0) {
+        if ((int)ctx->change_log.len > 0) {
             putchar('\n');
             printf("" CCODE_ANSI("1") "Session summary:" CCODE_ANSI("0") "\n");
-            for (i = 0; i < ctx->change_count; i++) {
-                if (strcmp(ctx->change_log[i].type, "command") == 0) {
+            for (i = 0; i < (int)ctx->change_log.len; i++) {
+                if (strcmp((*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).type, "command") == 0) {
                     struct ccode_buf extra;
                     ccode_buf_init(&extra);
                     fputs("  command: ", stdout);
-                    ccode_fprint_safe(stdout, ctx->change_log[i].target, "");
-                    if (ctx->change_log[i].timed_out)
+                    ccode_fprint_safe(stdout, (*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).target, "");
+                    if ((*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).timed_out)
                         ccode_buf_append(&extra, ", timed out");
-                    if (ctx->change_log[i].stdout_truncated)
+                    if ((*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).stdout_truncated)
                         ccode_buf_append(&extra, ", stdout truncated");
-                    if (ctx->change_log[i].stderr_truncated)
+                    if ((*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).stderr_truncated)
                         ccode_buf_append(&extra, ", stderr truncated");
-                    if (ctx->change_log[i].denied)
+                    if ((*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).denied)
                         ccode_buf_append(&extra, ", denied");
-                    fprintf(stdout, " (exit=%d%s)\n", ctx->change_log[i].exit_code, extra.data ? extra.data : "");
+                    fprintf(stdout, " (exit=%d%s)\n", (*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).exit_code, extra.data ? extra.data : "");
                     ccode_buf_free(&extra);
                 } else {
                     struct ccode_buf extra;
                     ccode_buf_init(&extra);
-                    if (ctx->change_log[i].denied)
+                    if ((*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).denied)
                         ccode_buf_append(&extra, " (denied)");
                     fputs("  ", stdout);
-                    ccode_fprint_safe(stdout, ctx->change_log[i].type, "");
+                    ccode_fprint_safe(stdout, (*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).type, "");
                     fputs(": ", stdout);
-                    ccode_fprint_safe(stdout, ctx->change_log[i].target, "");
+                    ccode_fprint_safe(stdout, (*(struct ccode_change *)ccode_vec_at(&ctx->change_log, i)).target, "");
                     fputs(extra.data ? extra.data : "", stdout);
                     fputc('\n', stdout);
                     ccode_buf_free(&extra);
@@ -2151,8 +2157,8 @@ cleanup:
         if (!save_path && have_session_path && conv.count > 1)
             save_path = current_session_path;
         if (save_path && conv_initialized) {
-            const char *ch = ctx->change_count > 0 ? change_log_serialize(&agent_ctx) : NULL;
-            const char *tk = ctx->task_count > 0 ? task_list_serialize(ctx) : NULL;
+            const char *ch = (int)ctx->change_log.len > 0 ? change_log_serialize(&agent_ctx) : NULL;
+            const char *tk = (int)ctx->task_list.len > 0 ? task_list_serialize(ctx) : NULL;
             struct ccode_session_metadata meta;
             ccode_session_meta_init(&meta, cfg->model, ctx->workspace_root);
             if (ccode_conversation_save(&conv, save_path, tk, ch, &meta) != 0)
@@ -2242,8 +2248,9 @@ const char *test_prepare_tool_error(const char *name, const char *arguments) {
     prepared_tool_free(&prepared);
     return err;
 }
+void test_agent_context_init(void) { ccode_agent_context_init(&agent_ctx); }
 void test_change_log_reset(void) { change_log_reset(&agent_ctx); }
-int test_change_log_count(void) { return agent_ctx.change_count; }
+int test_change_log_count(void) { return (int)agent_ctx.change_log.len; }
 const char *test_change_log_serialize(void) { return change_log_serialize(&agent_ctx); }
 void test_change_log_add_command_full(const char *cmd, int exit_code,
                                        int timed_out,

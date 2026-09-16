@@ -82,10 +82,8 @@ struct agent_context {
     size_t workspace_root_len;
     int workspace_dir_fd;
     int workspace_initialized;
-    struct ccode_change change_log[CCODE_MAX_CHANGES];
-    int change_count;
-    struct ccode_task task_list[CCODE_MAX_TASKS];
-    int task_count;
+    struct ccode_vec change_log;  /* element: struct ccode_change (cap CCODE_MAX_CHANGES) */
+    struct ccode_vec task_list;   /* element: struct ccode_task (cap CCODE_MAX_TASKS) */
     int task_next_id;
     int respect_gitignore_loaded;
     int respect_gitignore;
@@ -138,6 +136,15 @@ char *ccode_results_read(struct agent_context *ctx, const char *id,
  * and marks the workspace as uninitialized). Pointer fields (the summary
  * caches) are left untouched by this function. */
 void ccode_agent_context_init(struct agent_context *ctx);
+
+/* Deep-copy the growable per-context lists (change log + task list) into a
+ * freshly derived context, so the copy owns its own storage instead of
+ * aliasing the parent. Returns 0 on success, -1 on allocation failure. */
+int agent_context_copy_lists(struct agent_context *dst,
+                             const struct agent_context *src);
+
+/* Release the growable lists owned by a derived context. */
+void agent_context_free_lists(struct agent_context *ctx);
 
 /* Create path and any missing parents (mkdir -p). Defined in message.c. */
 int mkdir_p(const char *path);

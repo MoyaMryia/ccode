@@ -305,25 +305,24 @@ fail:
 /* ── Change tracking ── */
 
 void change_log_reset(struct agent_context *ctx) {
-    ctx->change_count = 0;
+    ccode_vec_clear(&ctx->change_log);
 }
 
 void change_log_add_ex(struct agent_context *ctx, const char *type,
                               const char *target, int exit_code,
                               int timed_out, int denied,
                               int stdout_truncated, int stderr_truncated) {
-    if (ctx->change_count >= CCODE_MAX_CHANGES) return;
-    snprintf(ctx->change_log[ctx->change_count].type, sizeof(ctx->change_log[ctx->change_count].type),
-             "%s", type);
-    snprintf(ctx->change_log[ctx->change_count].target,
-             sizeof(ctx->change_log[ctx->change_count].target), "%s",
-             target ? target : "");
-    ctx->change_log[ctx->change_count].exit_code = exit_code;
-    ctx->change_log[ctx->change_count].timed_out = timed_out;
-    ctx->change_log[ctx->change_count].denied = denied;
-    ctx->change_log[ctx->change_count].stdout_truncated = stdout_truncated;
-    ctx->change_log[ctx->change_count].stderr_truncated = stderr_truncated;
-    ctx->change_count++;
+    struct ccode_change *ch;
+    if (ctx->change_log.len >= CCODE_MAX_CHANGES) return;
+    ch = ccode_vec_push(&ctx->change_log);
+    if (!ch) return;
+    snprintf(ch->type, sizeof(ch->type), "%s", type);
+    snprintf(ch->target, sizeof(ch->target), "%s", target ? target : "");
+    ch->exit_code = exit_code;
+    ch->timed_out = timed_out;
+    ch->denied = denied;
+    ch->stdout_truncated = stdout_truncated;
+    ch->stderr_truncated = stderr_truncated;
 }
 
 void change_log_add(struct agent_context *ctx, const char *type,
@@ -337,32 +336,33 @@ void change_log_add_denied(struct agent_context *ctx, const char *tool_name) {
 
 const char *change_log_serialize(struct agent_context *ctx) {
     static struct ccode_buf buf;
-    int i;
+    size_t i;
     ccode_buf_clear(&buf);
     if (ccode_buf_append(&buf, "{\"changes\":[") != 0)
         return "{\"changes\":[]}";
-    for (i = 0; i < ctx->change_count; i++) {
+    for (i = 0; i < ctx->change_log.len; i++) {
+        const struct ccode_change *ch = ccode_vec_at(&ctx->change_log, i);
         size_t entry_start = buf.len;
         int truncated = 0;
         if (i > 0 && ccode_buf_append_c(&buf, ',') != 0)
             return "{\"changes\":[]}";
         if (ccode_buf_append(&buf, "{\"op\":") != 0 ||
-            ccode_json_append_quoted(&buf, ctx->change_log[i].type) != 0 ||
+            ccode_json_append_quoted(&buf, ch->type) != 0 ||
             ccode_buf_append(&buf, ",\"target\":") != 0 ||
-            ccode_json_append_quoted(&buf, ctx->change_log[i].target) != 0)
+            ccode_json_append_quoted(&buf, ch->target) != 0)
             truncated = 1;
-        if (!truncated && strcmp(ctx->change_log[i].type, "command") == 0) {
+        if (!truncated && strcmp(ch->type, "command") == 0) {
             if (ccode_buf_append(&buf, ",\"exit_code\":") != 0 ||
-                ccode_json_append_int(&buf, ctx->change_log[i].exit_code) != 0 ||
-                (ctx->change_log[i].timed_out &&
+                ccode_json_append_int(&buf, ch->exit_code) != 0 ||
+                (ch->timed_out &&
                  ccode_buf_append(&buf, ",\"timed_out\":true") != 0) ||
-                (ctx->change_log[i].stdout_truncated &&
+                (ch->stdout_truncated &&
                  ccode_buf_append(&buf, ",\"stdout_truncated\":true") != 0) ||
-                (ctx->change_log[i].stderr_truncated &&
+                (ch->stderr_truncated &&
                  ccode_buf_append(&buf, ",\"stderr_truncated\":true") != 0))
                 truncated = 1;
         }
-        if (!truncated && ctx->change_log[i].denied &&
+        if (!truncated && ch->denied &&
             ccode_buf_append(&buf, ",\"denied\":true") != 0)
             truncated = 1;
         if (!truncated && ccode_buf_append(&buf, "}") != 0)
@@ -382,7 +382,7 @@ const char *change_log_serialize(struct agent_context *ctx) {
 /* ── In-memory task list ── */
 
 void task_list_reset(struct agent_context *ctx) {
-    ctx->task_count = 0;
+    ccode_vec_clear(&ctx->task_list);
     ctx->task_next_id = 1;
 }
 
@@ -391,14 +391,15 @@ const char *task_list_serialize(struct agent_context *ctx) {
     size_t i;
     ccode_buf_clear(&buf);
     if (ccode_buf_append(&buf, "{\"tasks\":[") != 0) return "{\"tasks\":[]}";
-    for (i = 0; i < (size_t)ctx->task_count; i++) {
+    for (i = 0; i < ctx->task_list.len; i++) {
+        const struct ccode_task *t = ccode_vec_at(&ctx->task_list, i);
         if ((i > 0 && ccode_buf_append(&buf, ",") != 0) ||
             ccode_buf_append(&buf, "{\"id\":") != 0 ||
-            ccode_json_append_quoted(&buf, ctx->task_list[i].id) != 0 ||
+            ccode_json_append_quoted(&buf, t->id) != 0 ||
             ccode_buf_append(&buf, ",\"content\":") != 0 ||
-            ccode_json_append_quoted(&buf, ctx->task_list[i].content) != 0 ||
+            ccode_json_append_quoted(&buf, t->content) != 0 ||
             ccode_buf_append(&buf, ",\"status\":") != 0 ||
-            ccode_json_append_quoted(&buf, ctx->task_list[i].status) != 0 ||
+            ccode_json_append_quoted(&buf, t->status) != 0 ||
             ccode_buf_append(&buf, "}") != 0)
             return "{\"tasks\":[]}";
     }
@@ -407,23 +408,22 @@ const char *task_list_serialize(struct agent_context *ctx) {
 }
 
 char *exec_task_create(struct agent_context *ctx, const char *content) {
-    if (ctx->task_count >= CCODE_MAX_TASKS)
+    struct ccode_task *t;
+    if (ctx->task_list.len >= CCODE_MAX_TASKS)
         return ccode_strdup("{\"error\":\"Task list full\"}");
     if (!content || content[0] == '\0')
         return ccode_strdup("{\"error\":\"Missing task content\"}");
-    snprintf(ctx->task_list[ctx->task_count].id, sizeof(ctx->task_list[ctx->task_count].id),
-             "%d", ctx->task_next_id++);
-    snprintf(ctx->task_list[ctx->task_count].content,
-             sizeof(ctx->task_list[ctx->task_count].content), "%.*s",
-             (int)sizeof(ctx->task_list[ctx->task_count].content) - 1, content);
-    snprintf(ctx->task_list[ctx->task_count].status,
-             sizeof(ctx->task_list[ctx->task_count].status), "%s", "pending");
-    ctx->task_count++;
+    t = ccode_vec_push(&ctx->task_list);
+    if (!t) return ccode_strdup("{\"error\":\"Out of memory\"}");
+    snprintf(t->id, sizeof(t->id), "%d", ctx->task_next_id++);
+    snprintf(t->content, sizeof(t->content), "%.*s",
+             (int)sizeof(t->content) - 1, content);
+    snprintf(t->status, sizeof(t->status), "%s", "pending");
     {
         struct ccode_buf result;
         ccode_buf_init(&result);
         if (ccode_buf_printf(&result, "{\"ok\":true,\"id\":\"%s\"}",
-                             ctx->task_list[ctx->task_count - 1].id) != 0) {
+                             t->id) != 0) {
             ccode_buf_free(&result);
             return ccode_strdup("{\"error\":\"Out of memory\"}");
         }
@@ -435,15 +435,16 @@ char *exec_task_update(struct agent_context *ctx, const char *id,
                              const char *status) {
     int i;
     if (!id || !status) return ccode_strdup("{\"error\":\"Missing arguments\"}");
-    for (i = 0; i < ctx->task_count; i++) {
-        if (strcmp(ctx->task_list[i].id, id) == 0) {
+    for (i = 0; i < (int)ctx->task_list.len; i++) {
+        struct ccode_task *t = ccode_vec_at(&ctx->task_list, i);
+        if (strcmp(t->id, id) == 0) {
             if (strcmp(status, "pending") != 0 &&
                 strcmp(status, "in_progress") != 0 &&
                 strcmp(status, "completed") != 0 &&
                 strcmp(status, "blocked") != 0)
                 return ccode_strdup("{\"error\":\"Invalid status\"}");
-            snprintf(ctx->task_list[i].status, sizeof(ctx->task_list[i].status),
-                     "%.*s", (int)sizeof(ctx->task_list[i].status) - 1, status);
+            snprintf(t->status, sizeof(t->status),
+                     "%.*s", (int)sizeof(t->status) - 1, status);
             return ccode_strdup("{\"ok\":true}");
         }
     }
@@ -471,6 +472,35 @@ void reset_workspace_state(struct agent_context *ctx) {
 void ccode_agent_context_init(struct agent_context *ctx) {
     memset(ctx, 0, sizeof(*ctx));
     ctx->workspace_dir_fd = -1;
+    ccode_vec_init(&ctx->change_log, sizeof(struct ccode_change));
+    ccode_vec_init(&ctx->task_list, sizeof(struct ccode_task));
+}
+
+/* Deep-copy the growable lists so a derived context owns its own storage
+ * instead of aliasing the parent (sub-agent isolation). */
+int agent_context_copy_lists(struct agent_context *dst,
+                             const struct agent_context *src) {
+    size_t i;
+    ccode_vec_init(&dst->change_log, sizeof(struct ccode_change));
+    ccode_vec_init(&dst->task_list, sizeof(struct ccode_task));
+    for (i = 0; i < src->change_log.len; i++) {
+        struct ccode_change *d = ccode_vec_push(&dst->change_log);
+        if (!d) return -1;
+        *d = *(const struct ccode_change *)ccode_vec_at(
+            (struct ccode_vec *)&src->change_log, i);
+    }
+    for (i = 0; i < src->task_list.len; i++) {
+        struct ccode_task *d = ccode_vec_push(&dst->task_list);
+        if (!d) return -1;
+        *d = *(const struct ccode_task *)ccode_vec_at(
+            (struct ccode_vec *)&src->task_list, i);
+    }
+    return 0;
+}
+
+void agent_context_free_lists(struct agent_context *ctx) {
+    ccode_vec_free(&ctx->change_log);
+    ccode_vec_free(&ctx->task_list);
 }
 
 static int open_absolute_directory(const char *path) {
