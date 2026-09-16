@@ -33,6 +33,21 @@ static void tui_handle_signal(int signo) {
     tui_stop = 1;
 }
 
+/* Prompt history shared by both TUI loops: Up/Down walk it (oldest-first),
+ * PageUp/PageDown page the transcript. Each loop owns its own array. */
+#define TUI_HISTORY_MAX 64
+
+static void tui_history_store(char **items, int *count, const char *text) {
+    if (!text || !text[0]) return;
+    if (*count >= TUI_HISTORY_MAX) {
+        free(items[0]);
+        memmove(items, items + 1, sizeof(char *) * (TUI_HISTORY_MAX - 1));
+        (*count)--;
+    }
+    items[*count] = ccode_strdup(text);
+    if (items[*count]) (*count)++;
+}
+
 #ifndef _WIN32
 static const char *tui_find_backend(const char *requested) {
     static char same_dir[PATH_MAX];
@@ -242,9 +257,14 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
     int streaming = 0;
     int thinking_enabled = config->thinking_enabled;
     char thinking_effort[16] = "medium";
+    char *history[TUI_HISTORY_MAX];
+    int history_count = 0;
+    struct tui_history hist_nav;
     const char *workspace = config->workspace ? config->workspace : ".";
     const char *backend = tui_find_backend(backend_path);
 
+    memset(history, 0, sizeof(history));
+    tui_history_init(&hist_nav);
     tui_stop = 0;
     tui_resize_pending = 0;
     if (config->thinking_effort) {
@@ -341,17 +361,26 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
         }
         key = tui_term_read_key(16);
         if (key < 0) continue;
-        if (key == TUI_KEY_UP || key == TUI_KEY_PAGE_UP ||
-            key == TUI_KEY_DOWN || key == TUI_KEY_PAGE_DOWN) {
+        if (key == TUI_KEY_PAGE_UP || key == TUI_KEY_PAGE_DOWN) {
             int viewport = term.rows - 5;
-            int step = key == TUI_KEY_PAGE_UP || key == TUI_KEY_PAGE_DOWN
-                     ? (viewport > 1 ? viewport - 1 : 1) : 1;
-            if (key == TUI_KEY_UP || key == TUI_KEY_PAGE_UP) scroll_offset -= step;
+            int step = viewport > 1 ? viewport - 1 : 1;
+            if (key == TUI_KEY_PAGE_UP) scroll_offset -= step;
             else scroll_offset += step;
             if (scroll_offset < 0) scroll_offset = 0;
             if (scroll_offset > tui_messages_max_scroll(&messages, viewport, term.cols))
                 scroll_offset = tui_messages_max_scroll(&messages, viewport, term.cols);
             follow_bottom = scroll_offset >= tui_messages_max_scroll(&messages, viewport, term.cols);
+            dirty = 1;
+            continue;
+        }
+        if (key == TUI_KEY_UP || key == TUI_KEY_DOWN) {
+            const char *recalled;
+            tui_history_set(&hist_nav, history, (size_t)history_count);
+            recalled = key == TUI_KEY_UP
+                     ? tui_history_prev(&hist_nav, input.text)
+                     : tui_history_next(&hist_nav);
+            if (recalled && strcmp(recalled, input.text) != 0)
+                tui_input_set(&input, recalled);
             dirty = 1;
             continue;
         }
@@ -425,9 +454,12 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
                 tui_protocol_send_command(&protocol, input.text);
             } else {
                 tui_messages_add(&messages, TUI_MSG_USER, input.text);
+                tui_history_store(history, &history_count, input.text);
                 tui_protocol_send_input(&protocol, input.text);
             }
             tui_input_clear(&input);
+            tui_history_set(&hist_nav, history, (size_t)history_count);
+            tui_history_reset(&hist_nav);
             follow_bottom = 1;
             scroll_offset = tui_messages_max_scroll(&messages, term.rows - 5, term.cols);
             tui_draw(&term, &messages, &input, config->model, workspace,
@@ -448,6 +480,11 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
     sigaction(SIGHUP, &old_hup, NULL);
     sigaction(SIGQUIT, &old_quit, NULL);
     sigaction(SIGPIPE, &old_pipe, NULL);
+    tui_history_free(&hist_nav);
+    {
+        int i;
+        for (i = 0; i < history_count; i++) free(history[i]);
+    }
     tui_term_cleanup(&term);
     tui_protocol_stop(&protocol);
     tui_messages_clear(&messages);
@@ -637,21 +674,12 @@ static void inproc_run_agent(struct ccode_agent_config *cfg, const char *prompt,
              0, ctx->thinking_enabled, ctx->thinking_effort, *ctx->scroll_offset);
 }
 
-#define INPROC_HISTORY_MAX 64
-
 static void inproc_msg(struct tui_inproc_ctx *ctx, const char *text) {
     tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, text);
 }
 
 static void inproc_history_add(struct tui_inproc_ctx *ctx, const char *text) {
-    if (ctx->history_count >= INPROC_HISTORY_MAX) {
-        free(ctx->history[0]);
-        memmove(ctx->history, ctx->history + 1,
-                sizeof(char *) * (size_t)(INPROC_HISTORY_MAX - 1));
-        ctx->history_count = INPROC_HISTORY_MAX - 1;
-    }
-    ctx->history[ctx->history_count] = ccode_strdup(text);
-    if (ctx->history[ctx->history_count]) ctx->history_count++;
+    tui_history_store(ctx->history, &ctx->history_count, text);
 }
 
 /* /models: the shared renderer in models.c keeps the output identical to the
@@ -1039,6 +1067,7 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
     struct tui_messages messages;
     struct tui_input input;
     struct tui_inproc_ctx ctx;
+    struct tui_history hist_nav;
     int key;
     int dirty = 1;
     int scroll_offset = 0;
@@ -1058,6 +1087,7 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
     }
     tui_messages_init(&messages);
     tui_input_init(&input);
+    tui_history_init(&hist_nav);
 
     memset(&ctx, 0, sizeof(ctx));
     ctx.term = &term;
@@ -1080,7 +1110,7 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
     ctx.skip_resume_once =
         (config->save_session && !config->resume_session) ? 1 : 0;
     ctx.history_count = 0;
-    ctx.history = calloc(INPROC_HISTORY_MAX, sizeof(char *));
+    ctx.history = calloc(TUI_HISTORY_MAX, sizeof(char *));
     if (!ctx.history) {
         tui_term_cleanup(&term);
         fprintf(stderr, "Out of memory.\n");
@@ -1127,17 +1157,26 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
         key = tui_term_read_key(16);
         if (key < 0) continue;
         if (key == TUI_KEY_RESIZE) { tui_resize_pending = 1; continue; }
-        if (key == TUI_KEY_UP || key == TUI_KEY_PAGE_UP ||
-            key == TUI_KEY_DOWN || key == TUI_KEY_PAGE_DOWN) {
+        if (key == TUI_KEY_PAGE_UP || key == TUI_KEY_PAGE_DOWN) {
             int viewport = term.rows - 5;
-            int step = key == TUI_KEY_PAGE_UP || key == TUI_KEY_PAGE_DOWN
-                     ? (viewport > 1 ? viewport - 1 : 1) : 1;
-            if (key == TUI_KEY_UP || key == TUI_KEY_PAGE_UP) scroll_offset -= step;
+            int step = viewport > 1 ? viewport - 1 : 1;
+            if (key == TUI_KEY_PAGE_UP) scroll_offset -= step;
             else scroll_offset += step;
             if (scroll_offset < 0) scroll_offset = 0;
             if (scroll_offset > tui_messages_max_scroll(&messages, viewport, term.cols))
                 scroll_offset = tui_messages_max_scroll(&messages, viewport, term.cols);
             follow_bottom = scroll_offset >= tui_messages_max_scroll(&messages, viewport, term.cols);
+            dirty = 1;
+            continue;
+        }
+        if (key == TUI_KEY_UP || key == TUI_KEY_DOWN) {
+            const char *recalled;
+            tui_history_set(&hist_nav, ctx.history, (size_t)ctx.history_count);
+            recalled = key == TUI_KEY_UP
+                     ? tui_history_prev(&hist_nav, input.text)
+                     : tui_history_next(&hist_nav);
+            if (recalled && strcmp(recalled, input.text) != 0)
+                tui_input_set(&input, recalled);
             dirty = 1;
             continue;
         }
@@ -1172,6 +1211,8 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
                 inproc_run_agent(config, input.text, &ctx);
             }
             tui_input_clear(&input);
+            tui_history_set(&hist_nav, ctx.history, (size_t)ctx.history_count);
+            tui_history_reset(&hist_nav);
             follow_bottom = 1;
             scroll_offset = tui_messages_max_scroll(&messages, term.rows - 5, term.cols);
             dirty = 1;
@@ -1184,6 +1225,7 @@ int ccode_tui_run_inprocess(struct ccode_agent_config *config, int argc,
 inproc_exit:
     tui_term_cleanup(&term);
     tui_messages_clear(&messages);
+    tui_history_free(&hist_nav);
     {
         int i;
         for (i = 0; i < ctx.history_count; i++) free(ctx.history[i]);

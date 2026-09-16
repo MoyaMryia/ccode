@@ -124,6 +124,27 @@ def main():
         if "tui_cmd_test.json" not in buf:
             failures.append("/resume --list missing session")
 
+        # Up/Down recall prompt history: two Ups reach "hello", Enter
+        # resubmits it and the provider answers again. Slash commands are not
+        # recorded, so the history is exactly [hello, again].
+        mark = len(buf)
+        os.write(fd, b"\x1b[A\x1b[A")
+        time.sleep(0.2)
+        os.write(fd, b"\r")
+        deadline = time.time() + TIMEOUT
+        while time.time() < deadline and "You said: hello" not in buf[mark:]:
+            r, _, _ = select.select([fd], [], [], 0.2)
+            if r:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk.decode("utf-8", "replace")
+        if "You said: hello" not in buf[mark:]:
+            failures.append("Up/Down history did not recall the older prompt")
+
         os.write(fd, b"/exit\r")
         exited = False
         deadline = time.time() + TIMEOUT

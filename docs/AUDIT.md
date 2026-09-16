@@ -230,6 +230,11 @@ CLI 交互 REPL 增加 Up/Down 历史：`tui_input` 内核新增 `struct tui_his
 `struct ccode_lineedit_history` 视图，`agent.c` 把 `repl` 里既有的 history vec
 直接传进去（命令 `/xxx` 不入历史，只存真实 prompt）。
 
+两个 TUI 前端（fork 后端与合并进程内）同样把 Up/Down 改成 prompt 历史，
+PageUp/PageDown 保留翻页（两个循环各自持有 `TUI_HISTORY_MAX` 条历史，
+共用 `tui_history_store`）。`tests/test_tui_commands.py` 会在 `/resume --list`
+后按两次 Up 回放 `hello` 并提交验证。
+
 ### 已全部收敛（2026-09-13）
 
 所有 `//BLAME` / `//BLAME-IMPACT` 注释已从源码删除，无需再 grep 追踪。
