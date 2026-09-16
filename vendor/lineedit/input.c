@@ -1,6 +1,6 @@
 #include "input.h"
 
-#include "../../vendor/json/json.h"
+#include "../json/json.h"
 
 #include <string.h>
 

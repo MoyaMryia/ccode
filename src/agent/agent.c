@@ -6,7 +6,7 @@
 
 #include "agent.h"
 #include "message.h"
-#include "../text/lineedit.h"
+#include "../../vendor/lineedit/lineedit.h"
 #include "../net/http.h"
 #include "../../vendor/json/json.h"
 #include "../../vendor/vec/vec.h"

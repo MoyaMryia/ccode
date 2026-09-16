@@ -53,8 +53,6 @@ src/
 │   ├── models.c/h       # API 模型列表查询
 │   ├── webfetch.c/h     # web_fetch 工具
 │   └── websearch.c/h    # web_search 工具
-├── text/                # 终端文本处理
-│   └── lineedit.c/h     # 最小 raw-mode 行编辑器
 ├── security/            # 安全边界
 │   ├── sandbox.c/h      # 写沙箱 + 命令级过滤
 │   └── permissions.c/h  # 工具执行前的权限审批
@@ -76,7 +74,6 @@ src/
     ├── tui.c/h          # 事件循环、前后端进程管理
     ├── term.c/h         # raw mode、窗口大小、备用屏幕
     ├── render.c/h       # 脏区检测、双缓冲、ANSI 输出
-    ├── input.c/h        # 输入框（编辑、历史、补全）
     ├── messages.c/h     # 消息列表（虚拟滚动、流式追加）
     ├── status.c/h       # 状态栏
     ├── theme.c/h        # 颜色主题、Unicode 符号
@@ -86,6 +83,8 @@ vendor/
 ├── vec/                 # 通用可增长容器（ccode_buf / ccode_vec）
 ├── fdio/                # fd 全量写入
 ├── markdown/            # Markdown → ANSI 流式渲染
+├── html/                # HTML → 文本（web_fetch / web_search 共用）
+├── lineedit/            # 行编辑内核（lineedit + tui_input）
 ├── mbedtls/             # mbedTLS 2.28.9（现代宿主默认 TLS 后端）
 ├── musl-regex/          # Windows 构建的 fnmatch/regex 实现
 └── polarssl-1.3.9/      # PolarSSL 1.3.9（retro 构建的 TLS 后端）

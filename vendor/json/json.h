@@ -92,6 +92,11 @@ int ccode_json_append_quoted(struct ccode_buf *out, const char *s);
 /* Append a decimal integer. Returns 0 on success, -1 on allocation failure. */
 int ccode_json_append_int(struct ccode_buf *out, long v);
 
+/* Build the canonical {"error":"..."} JSON object (message escaped), or
+ * NULL on allocation failure. Every module's error reply should use this so
+ * the wire shape stays identical. */
+char *ccode_json_error(const char *message);
+
 /* Write a quoted, escaped JSON string to a stream. Returns 0 on success, -1
  * on allocation or write failure. The stream counterpart of
  * ccode_json_append_quoted (used by the session serializer). */

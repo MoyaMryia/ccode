@@ -125,9 +125,9 @@ ifneq ($(findstring mingw,$(HOST_MACH)),)
 PLATFORM_SRC = src/platform/platform_win32.c
 endif
 AGENT_SRC = vendor/fdio/fdio.c src/app/commands.c src/agent/agent.c src/agent/agent_cancel.c src/agent/agent_fs.c src/agent/agent_args.c src/agent/agent_prepare.c src/agent/agent_exec.c src/agent/agent_output.c src/agent/agent_results.c src/agent/message.c
-SRC = vendor/fdio/fdio.c src/app/commands.c src/app/main.c src/app/config.c src/tui/tui.c src/tui/term.c src/tui/render.c src/tui/input.c src/tui/messages.c src/tui/status.c src/tui/theme.c src/tui/protocol.c vendor/markdown/markdown.c vendor/json/json.c $(PLATFORM_SRC)
+SRC = vendor/fdio/fdio.c src/app/commands.c src/app/main.c src/app/config.c src/tui/tui.c src/tui/term.c src/tui/render.c vendor/lineedit/input.c src/tui/messages.c src/tui/status.c src/tui/theme.c src/tui/protocol.c vendor/markdown/markdown.c vendor/json/json.c $(PLATFORM_SRC)
 TEST_JSON_SRC = tests/test_json.c vendor/json/json.c $(RETRO_SRC)
-TEST_AGENT_SRC = tests/test_agent.c $(AGENT_SRC) vendor/json/json.c src/net/http.c src/net/webfetch.c src/net/websearch.c src/security/sandbox.c src/net/models.c src/tools/tools.c src/security/permissions.c vendor/markdown/markdown.c src/tui/input.c src/text/lineedit.c $(PLATFORM_SRC) $(RETRO_SRC)
+TEST_AGENT_SRC = tests/test_agent.c $(AGENT_SRC) vendor/json/json.c src/net/http.c src/net/webfetch.c src/net/websearch.c vendor/html/html.c src/security/sandbox.c src/net/models.c src/tools/tools.c src/security/permissions.c vendor/markdown/markdown.c vendor/lineedit/input.c vendor/lineedit/lineedit.c $(PLATFORM_SRC) $(RETRO_SRC)
 TEST_PERMISSIONS_SRC = $(wildcard tests/test_permissions.c)
 TEST_TUI_SRC = tests/test_tui.c vendor/fdio/fdio.c
 TEST_MD_SRC = tests/test_markdown.c vendor/markdown/markdown.c vendor/json/json.c $(RETRO_SRC)
@@ -235,7 +235,7 @@ TUI_BIN = $(OBJDIR)/ccode-tui.exe
 CLI_BIN = $(OBJDIR)/ccode-cli.exe
 COMBINED_BIN = $(OBJDIR)/ccode.exe
 endif
-CLI_SRC = src/cli/main.c src/app/config.c src/net/http.c vendor/json/json.c src/net/webfetch.c src/net/websearch.c src/security/sandbox.c src/net/models.c $(AGENT_SRC) src/tools/tools.c src/security/permissions.c vendor/markdown/markdown.c src/tui/input.c src/text/lineedit.c $(PLATFORM_SRC)
+CLI_SRC = src/cli/main.c src/app/config.c src/net/http.c vendor/json/json.c src/net/webfetch.c src/net/websearch.c vendor/html/html.c src/security/sandbox.c src/net/models.c $(AGENT_SRC) src/tools/tools.c src/security/permissions.c vendor/markdown/markdown.c vendor/lineedit/input.c vendor/lineedit/lineedit.c $(PLATFORM_SRC)
 ifeq ($(WIN32),1)
 CLI_SRC += $(WIN32_PORT_SRC)
 endif
@@ -431,7 +431,7 @@ ifneq ($(TEST_PERMISSIONS_SRC),)
 test-permissions: tests/test_permissions
 	./tests/test_permissions
 
-tests/test_permissions: tests/test_permissions.c src/security/permissions.c vendor/json/json.c src/text/lineedit.c src/tui/input.c $(RETRO_SRC)
+tests/test_permissions: tests/test_permissions.c src/security/permissions.c vendor/json/json.c vendor/lineedit/lineedit.c vendor/lineedit/input.c $(RETRO_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 endif
 
@@ -441,7 +441,7 @@ test-http: ccode-cli
 test-tui: tests/test_tui
 	./tests/test_tui
 
-tests/test_tui: $(TEST_TUI_SRC) src/tui/input.c src/tui/messages.c src/tui/render.c src/tui/protocol.c vendor/markdown/markdown.c vendor/json/json.c $(RETRO_SRC)
+tests/test_tui: $(TEST_TUI_SRC) vendor/lineedit/input.c src/tui/messages.c src/tui/render.c src/tui/protocol.c vendor/markdown/markdown.c vendor/json/json.c $(RETRO_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 
 # 单体 ccode 的进程内 TUI slash 命令（pty 驱动，需要 Python3）。

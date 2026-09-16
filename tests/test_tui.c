@@ -1,4 +1,4 @@
-#include "../src/tui/input.h"
+#include "../vendor/lineedit/input.h"
 #include "../src/tui/messages.h"
 #include "../src/tui/protocol.h"
 #include "../src/tui/render.h"

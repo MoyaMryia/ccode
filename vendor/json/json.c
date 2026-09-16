@@ -344,6 +344,20 @@ int ccode_json_append_int(struct ccode_buf *out, long v) {
     return ccode_buf_append(out, num);
 }
 
+char *ccode_json_error(const char *message) {
+    struct ccode_buf b;
+    char *out;
+    ccode_buf_init(&b);
+    if (ccode_buf_append(&b, "{\"error\":") != 0 ||
+        ccode_json_append_quoted(&b, message ? message : "") != 0 ||
+        ccode_buf_append(&b, "}") != 0) {
+        ccode_buf_free(&b);
+        return NULL;
+    }
+    out = ccode_buf_detach(&b);
+    return out;
+}
+
 int ccode_json_fprint_string(FILE *out, const char *s) {
     char *escaped = ccode_json_escape(s ? s : "");
     int rc;

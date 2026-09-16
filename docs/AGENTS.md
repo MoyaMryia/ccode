@@ -47,11 +47,12 @@ cli/main.c             ccode-cli 入口（JSON Lines 协议 + 交互/单次）
 app/config.c/h         CLI 和环境变量配置
 app/commands.c/h       slash 命令注册表与分发
 net/http.c/h           URL 校验、socket/TLS/HTTP/SSE 传输
-vendor/json/*   流式解析服务商响应（含 zserge/jsmn 分词器 fork，MIT）
-vendor/vec/*    通用可增长容器（ccode_buf / ccode_vec）
-vendor/fdio/*   fd 全量写入
-vendor/markdown/* 行式 markdown→ANSI（含控制字符/双向覆盖符消毒）
-text/lineedit.c/h      最小 raw-mode 行编辑器
+vendor/json/*         流式解析服务商响应（含 zserge/jsmn 分词器 fork，MIT）
+vendor/vec/*          通用可增长容器（ccode_buf / ccode_vec）
+vendor/fdio/*         fd 全量写入
+vendor/markdown/*     行式 markdown→ANSI（含控制字符/双向覆盖符消毒）
+vendor/html/*         HTML→文本（web_fetch / web_search 共用）
+vendor/lineedit/*     最小 raw-mode 行编辑器 + tui_input 编辑内核
 agent/message.c/h      对话所有权、请求序列化
 agent/agent_results.c  超长工具结果存档（<session>.results/，内容寻址）与 read_tool_output 取回
 agent/agent.c/h        agent 循环、工具校验、本地执行、工作区、渲染开关

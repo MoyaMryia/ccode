@@ -30,6 +30,7 @@
 #include "../src/agent/agent.h"
 #include "../src/agent/agent_internal.h"
 #include "../vendor/json/json.h"
+#include "../vendor/html/html.h"
 #include "../src/net/webfetch.h"
 #include "../src/net/websearch.h"
 #include "../src/net/models.h"
@@ -4775,6 +4776,54 @@ static int test_command_sandbox_enforced(void) {
     return 1;
 }
 
+static int test_html_to_text(void) {
+    char out[64];
+    const char *in;
+
+    /* Entities decoded, tags stripped (web_search mode: no collapsing). */
+    in = "a &amp; b &lt;c&gt; &quot;d&quot; &#39;e&#39; &nbsp;f";
+    ccode_html_to_text(in, strlen(in), out, sizeof(out), 0);
+    ASSERT(strcmp(out, "a & b <c> \"d\" 'e'  f") == 0);
+
+    /* Collapse mode folds whitespace runs and drops tabs/newlines. */
+    in = "  hello\n\t world  ";
+    ccode_html_to_text(in, strlen(in), out, sizeof(out),
+                       CCODE_HTML_COLLAPSE_WS);
+    ASSERT(strcmp(out, "hello world ") == 0);
+
+    /* Whitespace around tags is collapsed to a single space. */
+    in = "a   <b>   c   </b>   d";
+    ccode_html_to_text(in, strlen(in), out, sizeof(out),
+                       CCODE_HTML_COLLAPSE_WS);
+    ASSERT(strcmp(out, "a c d") == 0);
+
+    /* <script>/<style> blocks are dropped only with the flag. */
+    in = "x <script>bad()</script> y <style>z{}</style> w";
+    ccode_html_to_text(in, strlen(in), out, sizeof(out),
+                       CCODE_HTML_COLLAPSE_WS | CCODE_HTML_SKIP_SCRIPT);
+    ASSERT(strcmp(out, "x y w") == 0);
+    ccode_html_to_text(in, strlen(in), out, sizeof(out), 0);
+    ASSERT(strstr(out, "bad()") != NULL);
+    ASSERT(strstr(out, "z{}") != NULL);
+
+    /* Numeric refs above ASCII stay literal (single-byte output). */
+    in = "&#233;";
+    ccode_html_to_text(in, strlen(in), out, sizeof(out), 0);
+    ASSERT(strcmp(out, "&#233;") == 0);
+
+    /* Bounded output never overflows and stays NUL-terminated. */
+    {
+        char small[8];
+        ccode_html_to_text("0123456789abcdef", 16, small, sizeof(small), 0);
+        ASSERT(strlen(small) == 7);
+        ccode_html_to_text("0123456789abcdef", 16, small, sizeof(small),
+                           CCODE_HTML_COLLAPSE_WS);
+        ASSERT(strlen(small) == 7);
+    }
+
+    return 1;
+}
+
 static int test_web_search_parse_html(void) {
     char *r;
     const char *html =
@@ -5509,6 +5558,7 @@ int main(int argc, char **argv) {
     TEST(web_fetch_method_restricted);
     TEST(web_fetch_crlf_rejected);
     TEST(agent_tool_prepare);
+    TEST(html_to_text);
     TEST(web_search_parse_html);
     TEST(web_search_prepare);
 

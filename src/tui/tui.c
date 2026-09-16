@@ -1,5 +1,5 @@
 #include "tui.h"
-#include "input.h"
+#include "../../vendor/lineedit/input.h"
 #include "messages.h"
 #ifndef _WIN32
 #include "protocol.h"

@@ -12,7 +12,7 @@
 #include "../../vendor/json/json.h"
 #include "../../vendor/vec/vec.h"
 #include "../app/commands.h"
-#include "../text/lineedit.h"
+#include "../../vendor/lineedit/lineedit.h"
 #include "../security/permissions.h"
 #include "../net/models.h"
 #include "../platform/platform.h"

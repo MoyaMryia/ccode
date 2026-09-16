@@ -9,7 +9,7 @@
 #include <termios.h>
 #include <unistd.h>
 
-#include "../tui/input.h"
+#include "input.h"
 
 /* The tty's canonical-mode erase is column/byte based, so backspacing over a
  * double-width CJK glyph leaves half a glyph on screen while the buffer is

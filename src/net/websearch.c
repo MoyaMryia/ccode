@@ -1,6 +1,7 @@
 #include "websearch.h"
 #include "webfetch.h"
 #include "../../vendor/json/json.h"
+#include "../../vendor/html/html.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,85 +30,6 @@ static size_t ws_url_encode(const char *in, char *out, size_t out_size) {
     }
     out[o] = '\0';
     return o;
-}
-
-/* Decode a bounded span of HTML: strip tags and decode common entities.
- * Writes into out (NUL-terminated) and returns the byte count written. */
-static size_t ws_html_to_text(const char *in, size_t len, char *out,
-                              size_t out_size) {
-    size_t o = 0;
-    size_t i = 0;
-    if (out_size == 0) return 0;
-    while (i < len && o + 1 < out_size) {
-        char c = in[i];
-        if (c == '<') {
-            while (i < len && in[i] != '>') i++;
-            i++;
-            continue;
-        }
-        if (c == '&') {
-            if (len - i >= 5 && strncmp(in + i, "&amp;", 5) == 0) {
-                out[o++] = '&'; i += 5; continue;
-            }
-            if (len - i >= 4 && strncmp(in + i, "&lt;", 4) == 0) {
-                out[o++] = '<'; i += 4; continue;
-            }
-            if (len - i >= 4 && strncmp(in + i, "&gt;", 4) == 0) {
-                out[o++] = '>'; i += 4; continue;
-            }
-            if (len - i >= 6 && strncmp(in + i, "&quot;", 6) == 0) {
-                out[o++] = '"'; i += 6; continue;
-            }
-            if (len - i >= 5 && strncmp(in + i, "&#39;", 5) == 0) {
-                out[o++] = '\''; i += 5; continue;
-            }
-            if (len - i >= 6 && strncmp(in + i, "&nbsp;", 6) == 0) {
-                out[o++] = ' '; i += 6; continue;
-            }
-            if (len - i >= 6 && strncmp(in + i, "&ensp;", 6) == 0) {
-                out[o++] = ' '; i += 6; continue;
-            }
-            if (len - i >= 6 && strncmp(in + i, "&emsp;", 6) == 0) {
-                out[o++] = ' '; i += 6; continue;
-            }
-            if (len - i >= 3 && in[i + 1] == '#' &&
-                in[i + 2] >= '0' && in[i + 2] <= '9') {
-                size_t j = i + 2;
-                unsigned int cp = 0;
-                while (j < len && in[j] >= '0' && in[j] <= '9') {
-                    cp = cp * 10U + (unsigned int)(in[j] - '0');
-                    if (cp > 0x7F) break;
-                    j++;
-                }
-                if (j < len && in[j] == ';' && cp <= 0x7F) {
-                    out[o++] = (char)cp;
-                    i = j + 1;
-                    continue;
-                }
-            }
-        }
-        if (c == '\r') { i++; continue; }
-        out[o++] = c;
-        i++;
-    }
-    out[o] = '\0';
-    return o;
-}
-
-/* Append a JSON string value (quoted + escaped) to the growable result
- * buffer. Returns -1 on allocation failure. */
-static int ws_append_json_string(char **out, size_t *pos, size_t *cap,
-                                 const char *s) {
-    struct ccode_buf b;
-    int rc;
-    b.data = *out;
-    b.len = *pos;
-    b.cap = *cap;
-    rc = ccode_json_append_quoted(&b, s);
-    *out = b.data;
-    *pos = b.len;
-    *cap = b.cap;
-    return rc;
 }
 
 /* Scan for the next b_algo result block and parse one result. Advances the
@@ -164,8 +86,8 @@ static int ws_next_result(const char **scan, size_t *remaining,
     }
     title_end = strstr(title_start, "</a>");
     if (!title_end || title_end >= h2_end) title_end = h2_end;
-    ws_html_to_text(title_start, (size_t)(title_end - title_start),
-                    title, WS_MAX_FIELD);
+    ccode_html_to_text(title_start, (size_t)(title_end - title_start),
+                       title, WS_MAX_FIELD, 0);
 
     cap = strstr(block, "b_caption");
     if (!cap || cap >= block_end) cap = block_end;
@@ -177,8 +99,8 @@ static int ws_next_result(const char **scan, size_t *remaining,
                 snip_start++;
                 snip_end = strstr(snip_start, "</p>");
                 if (!snip_end || snip_end > block_end) snip_end = block_end;
-                ws_html_to_text(snip_start, (size_t)(snip_end - snip_start),
-                                snippet, WS_MAX_FIELD);
+                ccode_html_to_text(snip_start, (size_t)(snip_end - snip_start),
+                                   snippet, WS_MAX_FIELD, 0);
             }
         }
     }
@@ -195,14 +117,13 @@ static int ws_next_result(const char **scan, size_t *remaining,
 char *ccode_web_search_parse_html(const char *html, size_t length) {
     const char *scan = html;
     size_t remaining = length;
-    char *out = NULL;
-    size_t cap = 0;
-    size_t pos = 0;
+    struct ccode_buf out;
     int count = 0;
     int first = 1;
 
-    if (ccode_append_cstr(&out, &pos, &cap, "{\"results\":[") != 0) {
-        free(out);
+    ccode_buf_init(&out);
+    if (ccode_buf_append(&out, "{\"results\":[") != 0) {
+        ccode_buf_free(&out);
         return NULL;
     }
 
@@ -214,21 +135,21 @@ char *ccode_web_search_parse_html(const char *html, size_t length) {
             break;
         if (title[0] == '\0' && url[0] == '\0') continue;
         count++;
-        if (!first && ccode_append_cstr(&out, &pos, &cap, ",") != 0) goto fail;
-        first = 0;
-        if (ccode_append_cstr(&out, &pos, &cap, "{\"title\":") != 0 ||
-            ws_append_json_string(&out, &pos, &cap, title) != 0 ||
-            ccode_append_cstr(&out, &pos, &cap, ",\"url\":") != 0 ||
-            ws_append_json_string(&out, &pos, &cap, url) != 0 ||
-            ccode_append_cstr(&out, &pos, &cap, ",\"snippet\":") != 0 ||
-            ws_append_json_string(&out, &pos, &cap, snippet) != 0 ||
-            ccode_append_cstr(&out, &pos, &cap, "}") != 0)
+        if ((!first && ccode_buf_append(&out, ",") != 0) ||
+            ccode_buf_append(&out, "{\"title\":") != 0 ||
+            ccode_json_append_quoted(&out, title) != 0 ||
+            ccode_buf_append(&out, ",\"url\":") != 0 ||
+            ccode_json_append_quoted(&out, url) != 0 ||
+            ccode_buf_append(&out, ",\"snippet\":") != 0 ||
+            ccode_json_append_quoted(&out, snippet) != 0 ||
+            ccode_buf_append(&out, "}") != 0)
             goto fail;
+        first = 0;
     }
-    if (ccode_append_cstr(&out, &pos, &cap, "]}") != 0) goto fail;
-    return out;
+    if (ccode_buf_append(&out, "]}") != 0) goto fail;
+    return ccode_buf_detach(&out);
 fail:
-    free(out);
+    ccode_buf_free(&out);
     return NULL;
 }
 
@@ -242,7 +163,7 @@ char *ccode_web_search(const char *query) {
     char *out = NULL;
 
     if (!query || query[0] == '\0' || strlen(query) > WS_QUERY_MAX)
-        return ccode_strdup("{\"error\":\"Invalid search query\"}");
+        return ccode_json_error("Invalid search query");
 
     ws_url_encode(query, encoded, sizeof(encoded));
     if (!tmpl || strstr(tmpl, "{query}") == NULL)
@@ -251,7 +172,7 @@ char *ccode_web_search(const char *query) {
         const char *marker = strstr(tmpl, "{query}");
         size_t head = (size_t)(marker - tmpl);
         if (head + strlen(encoded) + strlen(marker + 7) >= sizeof(url))
-            return ccode_strdup("{\"error\":\"Search endpoint too long\"}");
+            return ccode_json_error("Search endpoint too long");
         memcpy(url, tmpl, head);
         memcpy(url + head, encoded, strlen(encoded) + 1);
         strncat(url, marker + 7, sizeof(url) - strlen(url) - 1);
@@ -265,13 +186,13 @@ char *ccode_web_search(const char *query) {
     opts.raw_html = 1;
 
     result = ccode_web_fetch(&opts);
-    if (!result) return ccode_strdup("{\"error\":\"Search failed\"}");
+    if (!result) return ccode_json_error("Search failed");
 
     /* web_fetch returns {"content":"<html>",...}; pull the field through the
      * shared token tree instead of scanning for a substring. */
     html_text = ccode_json_get_string_dup(result, "content");
     free(result);
-    if (!html_text) return ccode_strdup("{\"error\":\"Search failed\"}");
+    if (!html_text) return ccode_json_error("Search failed");
 
     out = ccode_web_search_parse_html(html_text, strlen(html_text));
     free(html_text);
