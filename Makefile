@@ -1,6 +1,9 @@
 CC ?= cc
 CPPFLAGS ?=
-CFLAGS ?= -Os -std=c99 -Wall -Wextra -Wpedantic
+# The tree builds warning-free; treat any diagnostic as a hard error. Vendored
+# third-party code (mbedTLS, PolarSSL, musl-regex) is compiled with its own -w
+# flags via the per-library *_CFLAGS rules below.
+CFLAGS ?= -Os -std=c99 -Wall -Wextra -Wpedantic -Werror
 LDFLAGS ?=
 override CPPFLAGS += -D_POSIX_C_SOURCE=200112L
 
@@ -291,8 +294,12 @@ endif
 
 # Vendored PolarSSL 1.3.9 (retro TLS backend; see
 # vendor/polarssl-1.3.9/README.ccode.md). Compiled into the binary via the
-# generic rule below; only non-empty in the retro / host-polarssl modes.
-POLARSSL_SRC = $(wildcard vendor/polarssl-1.3.9/library/*.c)
+# dedicated rule below; only non-empty in the retro / host-polarssl modes.
+POLARSSL_DIR = vendor/polarssl-1.3.9
+POLARSSL_SRC = $(wildcard $(POLARSSL_DIR)/library/*.c)
+# Third-party code: compile quiet and without -Werror, but keep the arch
+# baseline from CFLAGS so -m32 (RETRO) and x86-64 pinning still apply.
+POLARSSL_CFLAGS = $(filter-out -Wall -Wextra -Wpedantic -Werror,$(CFLAGS)) -w $(SIZE_CFLAGS)
 
 ifeq ($(BUILD_MODE),https)
 # Vendored mbedTLS library sources, compiled into the binary (no -lmbedtls).
@@ -346,6 +353,18 @@ $(TUI_BIN): $(OBJ) $(RETRO_COMPAT_OBJ) $(MBEDTLS_OBJ) $(POLARSSL_OBJ)
 $(OBJDIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SIZE_CFLAGS) -c -o $@ $<
+
+# PolarSSL objects keep their own relaxed flags (see POLARSSL_CFLAGS).
+$(OBJDIR)/$(POLARSSL_DIR)/%.o: $(POLARSSL_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(POLARSSL_CFLAGS) -c -o $@ $<
+
+# Vendored musl regex (Win32 port) is third-party code: relaxed flags too.
+MUSL_REGEX_DIR = vendor/musl-regex
+MUSL_REGEX_CFLAGS = $(filter-out -Wall -Wextra -Wpedantic -Werror,$(CFLAGS)) -w $(SIZE_CFLAGS)
+$(OBJDIR)/$(MUSL_REGEX_DIR)/%.o: $(MUSL_REGEX_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(MUSL_REGEX_CFLAGS) -c -o $@ $<
 
 ifeq ($(BUILD_MODE),https)
 $(OBJDIR)/$(MBEDTLS_DIR)/%.o: $(MBEDTLS_DIR)/%.c
@@ -518,11 +537,11 @@ clean:
 # -O2 (ASan works best with -O0 or -O1) and inject the sanitizer flags.
 # X86_GNU_FLAGS is empty on non-Linux-x86 hosts so the build stays portable.
 asan: clean
-	@$(MAKE) HTTP_ONLY=1 SIZE_CFLAGS= SIZE_LDFLAGS= CFLAGS="-O1 -std=c99 -Wall -Wextra -Wpedantic $(X86_GNU_FLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer -g" LDFLAGS="$(if $(X86_GNU_FLAGS),-m64) -fsanitize=address,undefined"
+	@$(MAKE) HTTP_ONLY=1 SIZE_CFLAGS= SIZE_LDFLAGS= CFLAGS="-O1 -std=c99 -Wall -Wextra -Wpedantic -Werror $(X86_GNU_FLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer -g" LDFLAGS="$(if $(X86_GNU_FLAGS),-m64) -fsanitize=address,undefined"
 	@echo "ASan/UBSan binary ready. Run individual test targets to exercise."
 
 # Reproducible build: honour SOURCE_DATE_EPOCH and strip unstable paths.
 repro: clean
-	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 SIZE_CFLAGS= SIZE_LDFLAGS= CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic $(X86_GNU_FLAGS) -ffile-prefix-map=$(PWD)=."
+	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 SIZE_CFLAGS= SIZE_LDFLAGS= CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic -Werror $(X86_GNU_FLAGS) -ffile-prefix-map=$(PWD)=."
 
 .PHONY: ccode ccode-tui ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-markdown test-tui-commands test-tui-real test-tty test-e2e test-streaming retro-test asan repro test-sandbox fuzz-tool-args fuzz-tool-args-asan fuzz-command-paths fuzz-paths mutate

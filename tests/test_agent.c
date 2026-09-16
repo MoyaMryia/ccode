@@ -2955,10 +2955,10 @@ static int test_scan_skips_vcs_directories(void) {
  * directories that sort later are still scanned. */
 static int test_scan_continues_past_big_directory(void) {
     char big[256];
-    char inner[256];
-    char late[256];
-    char leaf[300];
-    char name[64];
+    char inner[300];
+    char late[300];
+    char leaf[512];
+    char name[512];
     int i;
     char *r;
 
@@ -4462,7 +4462,7 @@ static int test_read_file_sanitizes_invalid_utf8(void) {
                        "{\"file_path\":\"x\"}");
     free(r);
     {
-        char args[128];
+        char args[512];
         char *rr;
         snprintf(args, sizeof(args),
                  "{\"file_path\":\"%s\"}", path + strlen("fixtures/"));

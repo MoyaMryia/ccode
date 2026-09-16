@@ -396,7 +396,9 @@ int ccode_cp_is_bidi_control(unsigned int cp) {
 const char *ccode_cp_safe_escape(unsigned int cp, size_t raw_len, int *width) {
     static char buf[8];
     if (raw_len == 1 && cp >= 0x7fU) {
-        snprintf(buf, sizeof(buf), "\\x%02X", cp);
+        /* raw_len == 1 means cp came from a single byte, so it fits in
+         * 8 bits; masking keeps %02X (and the buffer size) provably safe. */
+        snprintf(buf, sizeof(buf), "\\x%02X", cp & 0xffU);
         if (width) *width = 4;
         return buf;
     }

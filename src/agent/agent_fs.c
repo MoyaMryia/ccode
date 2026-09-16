@@ -1643,7 +1643,7 @@ char *exec_glob(struct agent_context *ctx, const char *workspace, const char *pa
     int first = 1;
     int count = 0;
     int root_fd;
-    struct scan_budget budget = {0, 0, 0};
+    struct scan_budget budget = {0};
     const char *rel_dir = "";
 
     if (!pattern)
@@ -1989,7 +1989,7 @@ char *exec_grep(struct agent_context *ctx, const char *workspace, const char *pa
     int first = 1;
     int match_count = 0;
     int root_fd;
-    struct scan_budget budget = {0, 0, 0};
+    struct scan_budget budget = {0};
     const char *rel_dir = "";
 
     if (!pattern)
