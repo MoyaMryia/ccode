@@ -116,6 +116,14 @@ static int opt_allow_danger(struct ccode_config *c, const char *v) {
     (void)v;
     c->allow_danger = 1;
     c->auto_approve = 1;
+    fprintf(stderr,
+            "WARNING: --allowdanger is on: ALL tool-call security checks are "
+            "disabled\n"
+            "         (sensitive-path and destructive-command filters, the "
+            "write sandbox and the\n"
+            "         web_fetch host blacklist/SSRF gate); approval is "
+            "auto-granted.\n"
+            "         Only use this in a trusted or throwaway environment.\n");
     return 0;
 }
 static int opt_thinking(struct ccode_config *c, const char *v) { (void)v; c->thinking_enabled = 1; return 0; }

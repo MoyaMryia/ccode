@@ -1355,9 +1355,6 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
     ccode_agent_summary_cache_reset();
     ccode_agent_context_init(&agent_ctx);
     agent_ctx.allow_danger = cfg->allow_danger;
-    if (agent_ctx.allow_danger)
-        fprintf(stderr, "WARNING: --allowdanger is on; all tool-call "
-                        "security checks are disabled.\n");
     reset_workspace_state(ctx);
     ccode_cancel_install();
     verify_model(cfg, model_fallback, sizeof(model_fallback));
@@ -1986,9 +1983,6 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
     ccode_agent_summary_cache_reset();
     ccode_agent_context_init(&agent_ctx);
     agent_ctx.allow_danger = cfg->allow_danger;
-    if (agent_ctx.allow_danger)
-        fprintf(stderr, "WARNING: --allowdanger is on; all tool-call "
-                        "security checks are disabled.\n");
     reset_workspace_state(&agent_ctx);
     ccode_cancel_install();
 
