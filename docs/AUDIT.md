@@ -107,26 +107,130 @@ stress_real_project.py（本仓库源码树，glob/grep/分页/bash/md5/edit
 - bidi 控制字符判定 ×2 → `ccode_cp_is_bidi_control`
 - effort 档位校验漂移(REPL 校验、TUI 不校验)→ `ccode_normalize_thinking_effort`
 
-## BLAME 标记索引（代码内 `//BLAME-IMPACT`）
+## BLAME 标记索引（已全部收敛）
 
-作者阅读时留下的 `//BLAME:` 评论指向四类全局收敛。为便于后续重构，已在所有受影响点（含清单外「犯同样错误」的文件，如 `tui/tui.c` 的 100KB 栈数组、`http.c` 三份 `ccode_stream_chat`、各平台文件双份同名函数）插入机器可 grep 的标记，格式：
+作者阅读时留下的 `//BLAME:` 评论指向四类全局收敛。为便于后续重构，曾在
+所有受影响点插入机器可 grep 的 `//BLAME-IMPACT(<topic>)` 标记。**这些标记现已
+全部清空，原始 `//BLAME:` 注释也已删除。**
 
-    //BLAME-IMPACT(<topic>): <出处> — <该做什么>
+已完成的收敛（按 topic）：
 
-`<出处>` 是原始 `//BLAME:` 的位置（行号为插入标记前的审计时点，以 BLAME 文本为准）。统计（共 87 处）：
+| topic | 做法 |
+|---|---|
+| `vector` | `src/vec.h`（`ccode_buf`/`ccode_vec`）统一历史、会话数组、SSE 累加器、结果 blob、markdown line buffer、TUI 消息/文本/session_path 等 |
+| `json` | 解析/解转义/hex/字段提取统一到 json.c；新增 `ccode_json_append_quoted/int`、`ccode_json_fprint_string`、`ccode_json_get_string/_dup/_bool`；工具 schema、会话保存、change-log、resize 等构建器收敛 |
+| `dup` | HTTP/TLS 响应循环抽成 transport-neutral `stream_chat_loop`；PolarSSL send/recv 抽进 `tls_polarssl_transport.h`；8 份平台文件抽进 `platform_common.h`；终端转义抽成 `ccode_cp_safe_escape` |
+| `readline` | `lineedit.c` 长成 fd 版统一入口 `ccode_read_line_fd`；TUI 的键解码/协议分帧作为独立层保留（AUDIT #2） |
+| `prompt` | 主/子代理 prompt 重写为 deepseek-harness `minimal` 风格的单段短 persona；`ensure_system_prompt` 单点注入 |
+| `dispatch` | 三前端共用 `ccode_command_dispatch` + `struct ccode_cmd_ctx` vtable；命令清单/别名/help 单一来源 |
+| `fdio` | `json_emit` 真正消费 `ccode_fd_write_all` 返回码 |
+| `config` | `ccode_parse_args` 改为 option table |
+| `proc` | `detect_escaped` 增参 `child_pgid`，在 waitpid 前捕获 |
 
-| topic | 指向的原始 BLAME | 处数 | 主要文件 |
-|---|---|---|---|
-| `json` | `cli/main.c:55`、`json.c:10`、`jsmn.c:6` | 28 | message.c、cli/main.c、tui/protocol.c、json.c、agent_prepare.c、websearch.c、agent_output.c、agent_fs.c、webfetch.c、tools.c、models.c、agent_args.c、markdown.c |
-| `vector` | `cli/main.c:36`、`cli/main.c:160`、`cli/main.c:428`、`message.c:21`、`agent.c:1566` | 20 | tui/tui.c、message.c、json.c、cli/main.c、tui/messages.c、markdown.c、agent_results.c、agent_fs.c、agent.c |
-| `dup` | `markdown.c:30`、`json.c:10` | 12 | http.c、webfetch.c、permissions.c、platform_*.c（8 份） |
-| `readline` | `cli/main.c:270`、`lineedit.c:13` | 9 | cli/main.c、agent.c、tui/term.c、tui/protocol.c、tui/input.c、permissions.c、lineedit.c |
-| `prompt` | `agent_output.c:110`、`agent.c:67` | 8 | agent.c（含 5 处重复注入）、agent_output.c |
-| `dispatch` | `cli/main.c:275`、`agent.c:1473`、`agent.c:1622` | 5 | cli/main.c、agent.c、tui/tui.c |
-| `fdio` | `fdio.c:8` | 3 | cli/main.c、fdio.c |
-| `config` | `config.c:190` | 1 | config.c |
-| `proc` | `platform_linux.c:54` | 1 | agent_exec.c |
+### 其他 topic 收敛进度（2026-09-13）
 
-召回：`grep -rn "BLAME-IMPACT" src vendor`
+- **config**：`ccode_parse_args` 的长 `strcmp` 链改为 `struct ccode_option`
+  表（名字/别名/是否带值/处理函数），新增 flag 不再需要新分支。
+- **proc**：`ccode_platform_detect_escaped` 增参 `child_pgid`；agent_exec.c 在
+  waitpid 回收前用 `getpgid(child)` 捕获并传入，结束「Linux 上恒 -1 的死探测」。
+- **fdio**：cli/main.c 的 `json_print`/`json_print_fd` 改用 `json_emit`，真正
+  消费 `ccode_fd_write_all` 的返回码（失败置标志、报一次 stderr，后续事件丢弃）；
+  protocol.c / agent_results.c 本就在检查，fdio 主题清空。
+- **dup**：`ccode_cp_safe_escape` 统一 markdown 与 permissions 的终端转义；
+  `tls_polarssl_transport.h` 统一 http/webfetch 的 PolarSSL send/recv；
+  `platform_common.h` + `CCODE_PLATFORM_FALLBACK_BODY` 统一 8 份平台文件
+  的 no-op、SO_NOSIGPIPE 与 /proc 扫描（`__linux__` 分支已编译验证，其余 7 份
+  在 Linux 上以 `-fsyntax-only` 验证 fallback 路径）。仅剩 http.c 三份
+  `ccode_stream_chat`（AUDIT #1，独立大重构）。
+
+- **dispatch（部分）**：新增 `src/commands.c/.h` 命令注册表（`ccode_command_table`
+  + `ccode_commands_help()`），REPL `print_repl_help`、JSON 后端 `/help`、TUI `/help`
+  三处文本改为单一来源，消除命令清单漂移。剩 3 处结构性的三张分派表本身
+  （vtable 化，属大重构）。
+- **json（部分）**：新增 `ccode_json_append_int`，`tui_protocol_send_resize` 改用
+  `ccode_buf` + `ccode_json_append_quoted/int` 构建（不再手拼格式串）。剩 message.c
+  会话保存、agent_fs change-log、agent_fs 限长转义（均带截断语义）。
+
+- **dispatch（CLI + TUI 已完成）**：`commands.c` 新增 `struct ccode_cmd_ctx`
+  vtable + `ccode_command_dispatch`，负责切分/别名/子命令语法；JSON 后端
+  与进程内 TUI 的命令 if 链改成 vtable 方法（各自拥有存储与消息），只调
+  dispatch。`ccode_normalize_thinking_effort` 从 agent.c 移到 commands.c
+  （fork 版 ccode-tui 无 agent.c 也能链接）。剩 REPL 一处（`agent.c` 巨型
+  循环）未改。
+
+- **dispatch（REPL 也完成）**：REPL 的巨型 `if (line[0]=='/')` 链同样改为
+  `struct repl_cmd` vtable（方法拥有 conv/history/session 等状态；OOM 用
+  `oom` 标志回传给调用方 `goto cleanup`）。三个前端现在都只调
+  `ccode_command_dispatch`，分派主题清空。
+
+- **prompt**：主 prompt 重写为 deepseek-harness `minimal` 预设的风格——
+  单段短 persona（`complete: true` 那种，工具使用说明改由 tools.c 的 schema
+  承担），不再是 100+ 行的多节长文，也就去掉了绕 C99 4095 字节的两段拼接。
+  子代理 prompt 同样改为极简风格并删除已失效的 `git_*`。新增 `ensure_system_prompt`
+  作为唯一注入点，替掉 REPL 的 5 处重复注入。`coding_agent_prompt_contract`
+  断言同步改为新契约。
+
+### json 收敛进度（2026-09-13）
+
+统一到 `json.c` 的入口／工具层：
+
+- **解析／解转义**：所有裸 `ccode_jsmn_parse` 调用改走 `ccode_json_parse`；
+  `copy_string_token`（agent_args.c 手写 6KB 解转义）与 `copy_string_token_dyn`
+  改为 `ccode_json_token_to_string` / `ccode_json_token_string`；删除死代码
+  `ccode_jsmn_token_to_int`；`obj_find_val` 改调 `ccode_json_find_key`。
+- **十六进制解码**：新增 `ccode_jsmn_hex4`，json.c 的 `json_hex_digit` 与
+  jsmn 的 `is_hex` 归并到它；protocol.c 的第三份解码器删除。
+- **字段提取**：新增 `ccode_json_get_string` / `_dup` / `ccode_json_get_bool`，
+  cli/main.c 的 `field`/`boolean_field`/类型分派/权限回复、tui/protocol.c 的
+  `tui_protocol_field`（原先会把 `\uXXXX` 丢成 `?`，已修复）、
+  agent_output.c 的 `"ok":true`、websearch.c 的 content 提取均改走 token 树。
+- **构建**：新增 `ccode_json_append_quoted`，tools.c 的 3 份手写工具 schema
+  合并为 `append_tool_def` + `build_tools_json_named`；websearch.c 的私有
+  转义拼接、webfetch.c 的 snprintf 结果拼装改用统一构建器。
+
+后续已全部收敛：`message.c` 会话保存改用 `ccode_json_fprint_string`，
+`agent_fs.c` change-log 改用 `ccode_buf`，`tui/protocol.c` resize 改用
+`ccode_json_append_int`；`append_json_string_budget` 作为带预算的专用变体
+保留（与无预算的 `ccode_json_escape` 职责不同）。
+
+### readline 收敛进度（2026-09-13）
+
+`lineedit.c` 长成 fd 版统一入口：
+
+- 新增 `ccode_read_line_fd(in_fd, out_fd, buf, cap)`：tty 走原有 UTF-8
+  感知的 raw 编辑器（现在通过 fd 读写，而非写死 STDIN/stderr）；非 tty
+  走逐字节 `read(2)`（不做 stdio 预读，可与 poll 混用），并把超长行的剩余
+  字节在内部排空，下一次调用从干净的行边界开始。
+- `ccode_read_line` 退化为 `STDIN/STDERR` 的薄包装。
+- 收编：cli/main.c 的 JSON 后端主循环与权限回复改用 `ccode_read_line_fd`
+  （不再 fgets，不再把超长行残留当下一行）；agent.c 的 `getchar()` 排空
+  循环删除；agent.c/permissions.c 继续走 `ccode_read_line`。
+
+`tui/term.c` 的转义序列键解码（方向键处理，lineedit 不需要）与
+`tui/protocol.c` 的非阻塞 fd 分帧（poll 驱动、跨调用缓存半行）作为独立层
+保留（AUDIT #2）。`tui/input.c` 的编辑内核已与 lineedit 共用。
+
+### 已全部收敛（2026-09-13）
+
+所有 `//BLAME` / `//BLAME-IMPACT` 注释已从源码删除，无需再 grep 追踪。
+上文的 topic 小节保留了每类收敛的做法记录。
+
+### vector 收敛进度（2026-09-13）
+
+已新增共享容器层 `src/vec.h`（header-only）：`struct ccode_buf`（NUL 结尾
+可增长字符串，`reserve/append/append_n/append_c/detach/free`）与
+`struct ccode_vec`（定长元素泛型数组，`reserve/push/at/clear/free`）。
+`ccode_append_cstr` 改为其薄包装。
+
+已迁移 15 处：agent.c 提示历史（64×8192 假动态数组 → vec of string）、
+cli/main.c 历史/输出捕获/session_path、json.c SSE content 与 reasoning
+累加器、agent_results.c 结果 blob、markdown.c line_buf、tui/messages.c
+消息列表、tui/tui.c 权限请求与异常提示、message.c tool_calls/token 数组/
+sessions 列表。
+
+后续已全部收敛：`message.c` 会话数组改用 `ccode_vec_reserve_capped`；
+`tui/tui.c` 的 `text`/`permission_text`/`session_path` 改用 `ccode_buf`
+（新增 `ccode_session_mint_auto_buf`）；`agent_fs.c` 的 `grow_json_buf` 改用
+`ccode_buf_reserve`。
 
 与上文技术债的对应：`readline`/`dispatch` = #2、#4；`dup` = #1、#3；`json`/`vector` 为新增的横切收敛项。标记只是注释，不改变行为；重构完成一批就删掉对应 topic 的标记。
