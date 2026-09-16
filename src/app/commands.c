@@ -212,10 +212,9 @@ char *ccode_commands_help(void) {
         return NULL;
     }
     for (i = 0; i < ccode_command_table_count; i++) {
-        char line[128];
-        snprintf(line, sizeof(line), "  %-20s %s\n",
-                 ccode_command_table[i].name, ccode_command_table[i].summary);
-        if (ccode_buf_append(&b, line) != 0) {
+        if (ccode_buf_printf(&b, "  %-20s %s\n",
+                             ccode_command_table[i].name,
+                             ccode_command_table[i].summary) != 0) {
             ccode_buf_free(&b);
             return NULL;
         }
@@ -258,9 +257,11 @@ int ccode_command_dispatch(struct ccode_cmd_ctx *ctx, const char *line) {
     split_command(line, name, sizeof(name), &arg);
     spec = ccode_command_lookup(name);
     if (!spec) {
-        char msg[192];
-        snprintf(msg, sizeof(msg), "Unknown command: %.160s", line);
-        ctx->emit_error(ctx->self, msg);
+        struct ccode_buf msg;
+        ccode_buf_init(&msg);
+        if (ccode_buf_printf(&msg, "Unknown command: %.160s", line) == 0)
+            ctx->emit_error(ctx->self, msg.data);
+        ccode_buf_free(&msg);
         return 0;
     }
     return spec->run(ctx, arg);

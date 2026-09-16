@@ -363,10 +363,12 @@ static void be_set_model(void *self, const char *name) {
 
 static void be_show_default_model(void *self) {
     struct backend_cmd *c = self;
-    char msg[320];
-    snprintf(msg, sizeof(msg), "Default model: %s",
-             c->state->options.model_name);
-    json_print("message", msg);
+    struct ccode_buf msg;
+    ccode_buf_init(&msg);
+    if (ccode_buf_printf(&msg, "Default model: %s",
+                         c->state->options.model_name) == 0)
+        json_print("message", msg.data);
+    ccode_buf_free(&msg);
 }
 
 static void be_set_default_model(void *self, const char *name) {
@@ -405,12 +407,15 @@ static void be_set_thinking(void *self, int on) {
 
 static void be_show_reasoning(void *self) {
     struct backend_cmd *c = self;
-    char msg[128];
-    snprintf(msg, sizeof(msg), "Reasoning: %s (effort: %s)",
-             c->state->options.thinking_effort ? "on" : "off",
-             c->state->options.thinking_effort
-                 ? c->state->options.thinking_effort : "medium");
-    json_print("message", msg);
+    struct ccode_buf msg;
+    ccode_buf_init(&msg);
+    if (ccode_buf_printf(&msg, "Reasoning: %s (effort: %s)",
+                         c->state->options.thinking_effort ? "on" : "off",
+                         c->state->options.thinking_effort
+                             ? c->state->options.thinking_effort
+                             : "medium") == 0)
+        json_print("message", msg.data);
+    ccode_buf_free(&msg);
 }
 
 static void be_set_reasoning(void *self, int on) {
@@ -432,12 +437,14 @@ static void be_set_reasoning(void *self, int on) {
 
 static void be_set_effort(void *self, const char *effort) {
     struct backend_cmd *c = self;
-    char msg[64];
+    struct ccode_buf msg;
     snprintf(c->state->options.thinking_effort_buf,
              sizeof(c->state->options.thinking_effort_buf), "%s", effort);
     c->state->options.thinking_effort = c->state->options.thinking_effort_buf;
-    snprintf(msg, sizeof(msg), "Reasoning effort set to: %s.", effort);
-    json_print("message", msg);
+    ccode_buf_init(&msg);
+    if (ccode_buf_printf(&msg, "Reasoning effort set to: %s.", effort) == 0)
+        json_print("message", msg.data);
+    ccode_buf_free(&msg);
 }
 
 static void be_show_history(void *self) {
@@ -445,20 +452,14 @@ static void be_show_history(void *self) {
     struct ccode_buf output;
     size_t i;
     ccode_buf_init(&output);
-    {
-        char header[64];
-        snprintf(header, sizeof(header), "Session history (%d prompts):",
-                 (int)c->state->history.len);
-        if (ccode_buf_append(&output, header) != 0) {
-            ccode_buf_free(&output);
-            json_print("error", "Out of memory.");
-            return;
-        }
+    if (ccode_buf_printf(&output, "Session history (%d prompts):",
+                         (int)c->state->history.len) != 0) {
+        ccode_buf_free(&output);
+        json_print("error", "Out of memory.");
+        return;
     }
     for (i = 0; i < c->state->history.len; i++) {
-        char prefix[32];
-        snprintf(prefix, sizeof(prefix), "\n  [%d] ", (int)i + 1);
-        if (ccode_buf_append(&output, prefix) != 0 ||
+        if (ccode_buf_printf(&output, "\n  [%d] ", (int)i + 1) != 0 ||
             ccode_buf_append(
                 &output,
                 *(char **)ccode_vec_at(&c->state->history, i)) != 0)

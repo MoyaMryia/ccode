@@ -148,9 +148,7 @@ char *ccode_models_render(const char *api_base, const char *api_key,
     ccode_jsmntok_t tokens[CCODE_MODELS_LIST_MAX_TOKENS];
     ccode_jsmntok_t *data;
     char *models;
-    char *out = NULL;
-    size_t pos = 0, cap = 0;
-    char line[600];
+    struct ccode_buf out;
     int num_tokens, i, n = 0;
 
     models = ccode_models_fetch(api_base, api_key);
@@ -170,81 +168,86 @@ char *ccode_models_render(const char *api_base, const char *api_key,
                ? ccode_json_find_key(tokens, num_tokens, 0, models, "data")
                : NULL;
 
-    if (!info && !keyword &&
-        ccode_append_cstr(&out, &pos, &cap, "Available models:\n") != 0)
-        { free(models); return NULL; }
-    if (info && ccode_append_cstr(&out, &pos, &cap, "") != 0)
-        { free(models); return NULL; }
-    if (keyword) {
-        if (ccode_append_cstr(&out, &pos, &cap, "Models matching \"") != 0 ||
-            ccode_append_cstr(&out, &pos, &cap, keyword) != 0 ||
-            ccode_append_cstr(&out, &pos, &cap, "\":\n") != 0)
-            { free(models); return NULL; }
-    }
+    ccode_buf_init(&out);
+    if (!info && !keyword && ccode_buf_append(&out, "Available models:\n") != 0)
+        goto fail;
+    if (keyword &&
+        ccode_buf_printf(&out, "Models matching \"%s\":\n", keyword) != 0)
+        goto fail;
 
     if (data && data->type == CCODE_JSMN_ARRAY) {
         for (i = 0; i < data->size; i++) {
             ccode_jsmntok_t *entry = ccode_json_find_index(
                 tokens, num_tokens, (int)(data - tokens), i);
             ccode_jsmntok_t *id_tok;
-            char id_buf[256];
+            char *id_buf;
             if (!entry || entry->type != CCODE_JSMN_OBJECT) continue;
             id_tok = ccode_json_find_key(tokens, num_tokens,
                                          (int)(entry - tokens), models, "id");
-            if (!id_tok || id_tok->type != CCODE_JSMN_STRING ||
-                ccode_json_token_to_string(models, id_tok, id_buf,
-                                           sizeof(id_buf)) != 0)
-                continue;
+            if (!id_tok || id_tok->type != CCODE_JSMN_STRING) continue;
+            id_buf = ccode_json_token_string(models, id_tok);
+            if (!id_buf) continue;
             if (info) {
                 if (strcmp(id_buf, info) == 0) {
                     ccode_jsmntok_t *ow = ccode_json_find_key(
                         tokens, num_tokens, (int)(entry - tokens), models,
                         "owned_by");
-                    char ow_buf[128];
-                    int ok;
-                    snprintf(line, sizeof(line), "Model: %s\n", id_buf);
-                    ok = ccode_append_cstr(&out, &pos, &cap, line) == 0;
-                    if (ok && ow && ow->type == CCODE_JSMN_STRING &&
-                        ccode_json_token_to_string(models, ow, ow_buf,
-                                                   sizeof(ow_buf)) == 0) {
-                        snprintf(line, sizeof(line), "Provider: %s\n",
-                                 ow_buf);
-                        ok = ccode_append_cstr(&out, &pos, &cap, line) == 0;
-                    }
+                    char *ow_buf = NULL;
+                    int ok = ccode_buf_printf(&out, "Model: %s\n",
+                                              id_buf) == 0;
+                    if (ok && ow && ow->type == CCODE_JSMN_STRING)
+                        ow_buf = ccode_json_token_string(models, ow);
+                    if (ok && ow_buf)
+                        ok = ccode_buf_printf(&out, "Provider: %s\n",
+                                              ow_buf) == 0;
+                    free(ow_buf);
+                    free(id_buf);
                     free(models);
-                    return ok ? out : NULL;
+                    if (!ok) {
+                        ccode_buf_free(&out);
+                        return NULL;
+                    }
+                    return ccode_buf_detach(&out);
                 }
+                free(id_buf);
                 continue;
             }
             if (keyword) {
-                if (!strstr(id_buf, keyword)) continue;
+                if (!strstr(id_buf, keyword)) {
+                    free(id_buf);
+                    continue;
+                }
                 n++;
-                snprintf(line, sizeof(line), "    %d. %s\n", n, id_buf);
+                if (ccode_buf_printf(&out, "    %d. %s\n", n, id_buf) != 0) {
+                    free(id_buf);
+                    goto fail;
+                }
             } else {
                 char cur = ' ';
                 if (current_model && strcmp(id_buf, current_model) == 0)
                     cur = '*';
-                snprintf(line, sizeof(line), "    %c %s\n", cur, id_buf);
+                if (ccode_buf_printf(&out, "    %c %s\n", cur, id_buf) != 0) {
+                    free(id_buf);
+                    goto fail;
+                }
             }
-            if (ccode_append_cstr(&out, &pos, &cap, line) != 0) {
-                free(models);
-                return NULL;
-            }
+            free(id_buf);
         }
     }
 
     if (!info && !keyword && n == 0) {
         /* Unrecognized body shape: show it raw rather than an empty list. */
-        if (ccode_append_cstr(&out, &pos, &cap, "    ") == 0 &&
-            ccode_append_cstr(&out, &pos, &cap, models) == 0)
-            ccode_append_cstr(&out, &pos, &cap, "\n");
+        if (ccode_buf_printf(&out, "    %s\n", models) != 0) goto fail;
     } else if (keyword && n == 0) {
-        ccode_append_cstr(&out, &pos, &cap, "    (no matches)\n");
+        if (ccode_buf_append(&out, "    (no matches)\n") != 0) goto fail;
     } else if (info) {
-        if (ccode_append_cstr(&out, &pos, &cap, "Model not found: ") == 0)
-            ccode_append_cstr(&out, &pos, &cap, info);
-        ccode_append_cstr(&out, &pos, &cap, "\n");
+        if (ccode_buf_printf(&out, "Model not found: %s\n", info) != 0)
+            goto fail;
     }
     free(models);
-    return out;
+    return ccode_buf_detach(&out);
+fail:
+    free(models);
+    ccode_buf_free(&out);
+    return NULL;
 }

@@ -20,8 +20,21 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* va_copy is C99; the retro toolchain (gcc 2.7 / egcs 1.1.2) predates it.
+ * __va_copy covers gcc/egcs, and a plain assignment covers the i386 libc5
+ * stdarg where va_list is a char *. */
+#ifndef va_copy
+#  ifdef __va_copy
+#    define va_copy(dest, src) __va_copy((dest), (src))
+#  else
+#    define va_copy(dest, src) ((dest) = (src))
+#  endif
+#endif
 
 struct ccode_buf {
     char *data;
@@ -74,6 +87,38 @@ static inline int ccode_buf_append(struct ccode_buf *b, const char *s) {
 
 static inline int ccode_buf_append_c(struct ccode_buf *b, char c) {
     return ccode_buf_append_n(b, &c, 1);
+}
+
+/* Formatted append (printf-style). Returns 0 on success, -1 on allocation or
+ * formatting failure. The result is never truncated: an oversized first try
+ * is re-rendered into a grown buffer. */
+static inline int ccode_buf_vprintf(struct ccode_buf *b, const char *fmt,
+                                    va_list ap) {
+    char stack[512];
+    va_list ap2;
+    int n;
+    if (!b || !fmt) return -1;
+    va_copy(ap2, ap);
+    n = vsnprintf(stack, sizeof(stack), fmt, ap2);
+    va_end(ap2);
+    if (n < 0) return -1;
+    if ((size_t)n < sizeof(stack))
+        return ccode_buf_append_n(b, stack, (size_t)n);
+    if (ccode_buf_reserve(b, b->len + (size_t)n + 1) != 0) return -1;
+    va_copy(ap2, ap);
+    vsnprintf(b->data + b->len, (size_t)n + 1, fmt, ap2);
+    va_end(ap2);
+    b->len += (size_t)n;
+    return 0;
+}
+
+static inline int ccode_buf_printf(struct ccode_buf *b, const char *fmt, ...) {
+    va_list ap;
+    int rc;
+    va_start(ap, fmt);
+    rc = ccode_buf_vprintf(b, fmt, ap);
+    va_end(ap);
+    return rc;
 }
 
 static inline void ccode_buf_clear(struct ccode_buf *b) {

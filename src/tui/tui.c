@@ -315,10 +315,9 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
                 ccode_buf_append(&note, " (build ccode-cli alongside ccode, "
                                        "or set CCODE_BACKEND)");
             } else if (exit_code >= 0) {
-                char code[48];
-                snprintf(code, sizeof(code),
-                         "backend exited unexpectedly (code %d): ", exit_code);
-                ccode_buf_append(&note, code);
+                ccode_buf_printf(&note,
+                                 "backend exited unexpectedly (code %d): ",
+                                 exit_code);
                 ccode_buf_append(&note, backend);
             } else {
                 ccode_buf_append(&note, "backend connection lost: ");
@@ -380,12 +379,9 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
             if (key == 3 || key == 'y' || key == 'Y' || key == 'n' || key == 'N' || key == 27) {
                 int allow = key == 'y' || key == 'Y';
                 tui_protocol_send_permission_response(&protocol, allow);
-                {
-                    char decision[64];
-                    snprintf(decision, sizeof(decision), "Permission %s",
-                             allow ? "allowed" : "denied");
-                    tui_messages_add(&messages, TUI_MSG_SYSTEM, decision);
-                }
+                tui_messages_add(&messages, TUI_MSG_SYSTEM,
+                                 allow ? "Permission allowed"
+                                       : "Permission denied");
                 permission_pending = 0;
                 if (key == 3) break;
                 dirty = 1;
@@ -524,12 +520,14 @@ static void inproc_on_reasoning(const char *content, void *context) {
 static int inproc_permission_ask(struct ccode_permission_request *req,
                                  void *context) {
     struct tui_inproc_ctx *ctx = context;
-    char text[4096];
-    snprintf(text, sizeof(text), "Tool request\n  %s: %s (workspace: %s)",
-             req->tool_name ? req->tool_name : "unknown",
-             req->target ? req->target : "",
-             req->workspace_root ? req->workspace_root : ".");
-    tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, text);
+    struct ccode_buf text;
+    ccode_buf_init(&text);
+    if (ccode_buf_printf(&text, "Tool request\n  %s: %s (workspace: %s)",
+                         req->tool_name ? req->tool_name : "unknown",
+                         req->target ? req->target : "",
+                         req->workspace_root ? req->workspace_root : ".") == 0)
+        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, text.data);
+    ccode_buf_free(&text);
     tui_inproc_redraw(ctx, 1);
     for (;;) {
         /* Poll with a short timeout and honor the agent's cancel flag:
@@ -677,7 +675,6 @@ static void inproc_export_session(struct tui_inproc_ctx *ctx,
     char fmt[32];
     char out_path[512];
     char full[4096];
-    char msg[600];
     const char *ext = "json";
     char *exported;
     FILE *out;
@@ -715,8 +712,14 @@ static void inproc_export_session(struct tui_inproc_ctx *ctx,
     fputs(exported, out);
     fclose(out);
     free(exported);
-    snprintf(msg, sizeof(msg), "Session exported to: %s", out_path);
-    inproc_msg(ctx, msg);
+    {
+        struct ccode_buf done;
+        ccode_buf_init(&done);
+        if (ccode_buf_printf(&done, "Session exported to: %s",
+                             out_path) == 0)
+            inproc_msg(ctx, done.data);
+        ccode_buf_free(&done);
+    }
 }
 
 /* Join a session name onto the session directory. Returns 0 and fills
@@ -778,37 +781,48 @@ static void tbe_compact(void *self) {
 
 static void tbe_show_model(void *self) {
     struct tui_inproc_ctx *ctx = self;
-    char msg[300];
-    snprintf(msg, sizeof(msg), "Current model: %s",
-             ctx->config->model ? ctx->config->model : "(none)");
-    inproc_msg(ctx, msg);
+    struct ccode_buf msg;
+    ccode_buf_init(&msg);
+    if (ccode_buf_printf(&msg, "Current model: %s",
+                         ctx->config->model ? ctx->config->model
+                                            : "(none)") == 0)
+        inproc_msg(ctx, msg.data);
+    ccode_buf_free(&msg);
 }
 
 static void tbe_set_model(void *self, const char *name) {
     struct tui_inproc_ctx *ctx = self;
-    char msg[300];
+    struct ccode_buf msg;
     ctx->config->model = ctx->model_buf;
     ctx->model = ctx->model_buf;
     snprintf(ctx->model_buf, sizeof(ctx->model_buf), "%.*s",
              (int)sizeof(ctx->model_buf) - 1, name);
-    snprintf(msg, sizeof(msg), "Model switched to: %s", ctx->config->model);
-    inproc_msg(ctx, msg);
+    ccode_buf_init(&msg);
+    if (ccode_buf_printf(&msg, "Model switched to: %s",
+                         ctx->config->model) == 0)
+        inproc_msg(ctx, msg.data);
+    ccode_buf_free(&msg);
 }
 
 static void tbe_show_default_model(void *self) {
     struct tui_inproc_ctx *ctx = self;
     const char *cur = getenv("CCODE_MODEL");
-    char msg[300];
-    snprintf(msg, sizeof(msg), "Default model: %s", cur ? cur : "(not set)");
-    inproc_msg(ctx, msg);
+    struct ccode_buf msg;
+    ccode_buf_init(&msg);
+    if (ccode_buf_printf(&msg, "Default model: %s",
+                         cur ? cur : "(not set)") == 0)
+        inproc_msg(ctx, msg.data);
+    ccode_buf_free(&msg);
 }
 
 static void tbe_set_default_model(void *self, const char *name) {
     struct tui_inproc_ctx *ctx = self;
-    char msg[300];
+    struct ccode_buf msg;
     setenv("CCODE_MODEL", name, 1);
-    snprintf(msg, sizeof(msg), "Default model set to: %.270s", name);
-    inproc_msg(ctx, msg);
+    ccode_buf_init(&msg);
+    if (ccode_buf_printf(&msg, "Default model set to: %s", name) == 0)
+        inproc_msg(ctx, msg.data);
+    ccode_buf_free(&msg);
 }
 
 static void tbe_list_models(void *self, const char *keyword,
@@ -818,10 +832,12 @@ static void tbe_list_models(void *self, const char *keyword,
 
 static void tbe_show_thinking(void *self) {
     struct tui_inproc_ctx *ctx = self;
-    char msg[512];
-    snprintf(msg, sizeof(msg), "Thinking: %s",
-             ctx->thinking_enabled ? "on" : "off");
-    tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, msg);
+    struct ccode_buf msg;
+    ccode_buf_init(&msg);
+    if (ccode_buf_printf(&msg, "Thinking: %s",
+                         ctx->thinking_enabled ? "on" : "off") == 0)
+        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, msg.data);
+    ccode_buf_free(&msg);
 }
 
 static void tbe_set_thinking(void *self, int on) {
@@ -833,11 +849,14 @@ static void tbe_set_thinking(void *self, int on) {
 
 static void tbe_show_reasoning(void *self) {
     struct tui_inproc_ctx *ctx = self;
-    char msg[512];
-    snprintf(msg, sizeof(msg), "Reasoning: %s (effort: %s)",
-             ctx->thinking_effort[0] ? "on" : "off",
-             ctx->thinking_effort[0] ? ctx->thinking_effort : "medium");
-    tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, msg);
+    struct ccode_buf msg;
+    ccode_buf_init(&msg);
+    if (ccode_buf_printf(&msg, "Reasoning: %s (effort: %s)",
+                         ctx->thinking_effort[0] ? "on" : "off",
+                         ctx->thinking_effort[0] ? ctx->thinking_effort
+                                                 : "medium") == 0)
+        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, msg.data);
+    ccode_buf_free(&msg);
 }
 
 static void tbe_set_reasoning(void *self, int on) {
@@ -855,24 +874,30 @@ static void tbe_set_reasoning(void *self, int on) {
 
 static void tbe_set_effort(void *self, const char *effort) {
     struct tui_inproc_ctx *ctx = self;
-    char msg[512];
+    struct ccode_buf msg;
     snprintf(ctx->thinking_effort, sizeof(ctx->thinking_effort), "%s",
              effort);
-    snprintf(msg, sizeof(msg), "Reasoning effort set to: %s", effort);
-    tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, msg);
+    ccode_buf_init(&msg);
+    if (ccode_buf_printf(&msg, "Reasoning effort set to: %s", effort) == 0)
+        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, msg.data);
+    ccode_buf_free(&msg);
 }
 
 static void tbe_show_history(void *self) {
     struct tui_inproc_ctx *ctx = self;
-    char header[64];
+    struct ccode_buf header;
     int i;
-    snprintf(header, sizeof(header), "Session history (%d prompts):",
-             ctx->history_count);
-    inproc_msg(ctx, header);
+    ccode_buf_init(&header);
+    if (ccode_buf_printf(&header, "Session history (%d prompts):",
+                         ctx->history_count) == 0)
+        inproc_msg(ctx, header.data);
+    ccode_buf_free(&header);
     for (i = 0; i < ctx->history_count; i++) {
-        char line[64];
-        snprintf(line, sizeof(line), "  [%d] ", i + 1);
-        tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, line);
+        struct ccode_buf line;
+        ccode_buf_init(&line);
+        if (ccode_buf_printf(&line, "  [%d] ", i + 1) == 0)
+            tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, line.data);
+        ccode_buf_free(&line);
         tui_messages_append_last(ctx->messages, TUI_MSG_SYSTEM,
                                  ctx->history[i]);
     }
@@ -898,10 +923,12 @@ static void tbe_sessions(void *self, const char *arg) {
             ccode_session_rename(old_n, new_n) != 0) {
             inproc_msg(ctx, "Usage: /sessions rename OLD NEW");
         } else {
-            char msg[600];
-            snprintf(msg, sizeof(msg), "Session renamed: %s -> %s", old_n,
-                     new_n);
-            inproc_msg(ctx, msg);
+            struct ccode_buf msg;
+            ccode_buf_init(&msg);
+            if (ccode_buf_printf(&msg, "Session renamed: %s -> %s", old_n,
+                                 new_n) == 0)
+                inproc_msg(ctx, msg.data);
+            ccode_buf_free(&msg);
         }
         return;
     }

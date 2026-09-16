@@ -420,11 +420,14 @@ char *exec_task_create(struct agent_context *ctx, const char *content) {
              sizeof(ctx->task_list[ctx->task_count].status), "%s", "pending");
     ctx->task_count++;
     {
-        char result[128];
-        snprintf(result, sizeof(result),
-                 "{\"ok\":true,\"id\":\"%s\"}",
-                 ctx->task_list[ctx->task_count - 1].id);
-        return ccode_strdup(result);
+        struct ccode_buf result;
+        ccode_buf_init(&result);
+        if (ccode_buf_printf(&result, "{\"ok\":true,\"id\":\"%s\"}",
+                             ctx->task_list[ctx->task_count - 1].id) != 0) {
+            ccode_buf_free(&result);
+            return ccode_strdup("{\"error\":\"Out of memory\"}");
+        }
+        return ccode_buf_detach(&result);
     }
 }
 
@@ -1663,16 +1666,17 @@ char *exec_glob(struct agent_context *ctx, const char *workspace, const char *pa
     close(root_fd);
 
     {
-        char tail[80];
-        int n = snprintf(tail, sizeof(tail),
-                         "],\"count\":%d,\"max\":%d%s}",
-                         count, CCODE_MAX_GLOB_RESULTS,
-                         (budget.truncated || budget.listing_truncated)
-                             ? ",\"truncated\":true" : "");
-        if (n <= 0 || (size_t)n >= sizeof(tail) ||
-            ccode_append_cstr(&result, &total, &cap, tail) != 0) {
+        struct ccode_buf tail;
+        ccode_buf_init(&tail);
+        if (ccode_buf_printf(&tail, "],\"count\":%d,\"max\":%d%s}",
+                             count, CCODE_MAX_GLOB_RESULTS,
+                             (budget.truncated || budget.listing_truncated)
+                                 ? ",\"truncated\":true" : "") != 0 ||
+            ccode_append_cstr(&result, &total, &cap, tail.data) != 0) {
+            ccode_buf_free(&tail);
             free(result); return NULL;
         }
+        ccode_buf_free(&tail);
     }
     (void)total;
     return result;
@@ -1708,23 +1712,38 @@ static int append_match_entry(char **result, size_t *total, size_t *cap,
 }
 
 struct context_ring {
-    char lines[50][4096];
-    size_t nums[50];
+    struct ccode_vec lines;  /* element: char[4096] */
+    struct ccode_vec nums;   /* element: size_t */
     size_t count;
     size_t start;
 };
 
+static void context_ring_init(struct context_ring *ring) {
+    ccode_vec_init(&ring->lines, 4096);
+    ccode_vec_init(&ring->nums, sizeof(size_t));
+    ring->count = 0;
+    ring->start = 0;
+}
+
+static void context_ring_free(struct context_ring *ring) {
+    ccode_vec_free(&ring->lines);
+    ccode_vec_free(&ring->nums);
+}
+
 static void ctx_ring_push(struct context_ring *ring, const char *line,
                           size_t line_num) {
+    size_t idx;
     if (ring->count < 50) {
-        memcpy(ring->lines[ring->count], line, strlen(line) + 1);
-        ring->nums[ring->count] = line_num;
+        if (!ccode_vec_push(&ring->lines) || !ccode_vec_push(&ring->nums))
+            return;
+        idx = ring->count;
         ring->count++;
     } else {
-        memcpy(ring->lines[ring->start], line, strlen(line) + 1);
-        ring->nums[ring->start] = line_num;
+        idx = ring->start;
         ring->start = (ring->start + 1) % 50;
     }
+    memcpy(ccode_vec_at(&ring->lines, idx), line, strlen(line) + 1);
+    *(size_t *)ccode_vec_at(&ring->nums, idx) = line_num;
 }
 
 #define CCODE_GREP_MAX_CTX 50
@@ -1747,6 +1766,8 @@ static void search_file_for_pattern(int file_fd,
     regex_t regex;
     int regex_ok = 0;
 
+    context_ring_init(&ring);
+
     if (*match_count >= CCODE_MAX_GREP_MATCHES) goto done;
     if (*total >= CCODE_MAX_LISTING_BYTES - 256) goto done;
 
@@ -1754,8 +1775,6 @@ static void search_file_for_pattern(int file_fd,
         if (regcomp(&regex, pattern, REG_EXTENDED | REG_NOSUB) == 0)
             regex_ok = 1;
     }
-
-    memset(&ring, 0, sizeof(ring));
 
     scan_fd = dup(file_fd);
     if (scan_fd < 0) goto done;
@@ -1798,9 +1817,12 @@ static void search_file_for_pattern(int file_fd,
                         int r, j;
                         for (j = 0; j < (int)ring.count; j++) {
                             size_t idx = (ring.start + j) % 50;
-                            r = append_match_entry(result, total, cap,
-                                    rel_path, ring.lines[idx],
-                                    ring.nums[idx], first, 1);
+                            r = append_match_entry(
+                                    result, total, cap, rel_path,
+                                    (const char *)ccode_vec_at(&ring.lines,
+                                                               idx),
+                                    *(size_t *)ccode_vec_at(&ring.nums, idx),
+                                    first, 1);
                             if (r != 0) { budget->truncated = 1; goto done; }
                         }
                         ring.count = 0;
@@ -1839,6 +1861,7 @@ static void search_file_for_pattern(int file_fd,
         budget->truncated = 1;
 
 done:
+    context_ring_free(&ring);
     if (f) fclose(f);
     if (regex_ok) regfree(&regex);
 }
@@ -2011,19 +2034,19 @@ char *exec_grep(struct agent_context *ctx, const char *workspace, const char *pa
     close(root_fd);
 
     {
-                         int n;
-        char tail[80];
+        struct ccode_buf tail;
         int truncated = (budget.truncated || budget.listing_truncated ||
                          match_count >= CCODE_MAX_GREP_MATCHES ||
                          total >= CCODE_MAX_LISTING_BYTES - 256);
-        n = snprintf(tail, sizeof(tail),
-                         "],\"count\":%d,\"max\":%d%s}",
-                         match_count, CCODE_MAX_GREP_MATCHES,
-                         truncated ? ",\"truncated\":true" : "");
-        if (n <= 0 || (size_t)n >= sizeof(tail) ||
-            ccode_append_cstr(&result, &total, &cap, tail) != 0) {
+        ccode_buf_init(&tail);
+        if (ccode_buf_printf(&tail, "],\"count\":%d,\"max\":%d%s}",
+                             match_count, CCODE_MAX_GREP_MATCHES,
+                             truncated ? ",\"truncated\":true" : "") != 0 ||
+            ccode_append_cstr(&result, &total, &cap, tail.data) != 0) {
+            ccode_buf_free(&tail);
             free(result); return NULL;
         }
+        ccode_buf_free(&tail);
     }
     (void)total;
     return result;

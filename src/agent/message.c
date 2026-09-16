@@ -224,17 +224,18 @@ int ccode_conversation_add_tool_result(struct ccode_conversation *conv,
              * and drop the trailing truncation flags. Store a valid bounded
              * envelope instead; archived blobs stay reachable through
              * read_tool_output by tool_call_id. */
-            char envelope[160];
-            int n = snprintf(envelope, sizeof(envelope),
-                             "{\"error\":\"Tool result exceeded the inline "
-                             "content budget\",\"truncated\":true,"
-                             "\"original_bytes\":%lu}",
-                             (unsigned long)len);
-            if (n <= 0 || (size_t)n >= sizeof(envelope)) {
+            struct ccode_buf envelope;
+            ccode_buf_init(&envelope);
+            if (ccode_buf_printf(&envelope,
+                                 "{\"error\":\"Tool result exceeded the inline "
+                                 "content budget\",\"truncated\":true,"
+                                 "\"original_bytes\":%lu}",
+                                 (unsigned long)len) != 0) {
+                ccode_buf_free(&envelope);
                 free(id_copy);
                 return -1;
             }
-            content_copy = ccode_strdup(envelope);
+            content_copy = ccode_buf_detach(&envelope);
         } else {
             content_copy = malloc(len + 1);
             if (content_copy) {
@@ -2057,7 +2058,6 @@ char *ccode_session_list_text(void) {
                 tokens, num_tokens, (int)(arr - tokens), i);
             ccode_jsmntok_t *tok;
             char name_buf[CCODE_SESSION_NAME_MAX];
-            char line[512];
             long size = 0;
             long msgs = 0;
             if (!entry || entry->type != CCODE_JSMN_OBJECT) continue;
@@ -2076,10 +2076,17 @@ char *ccode_session_list_text(void) {
                                       "messages");
             if (tok && tok->type == CCODE_JSMN_PRIMITIVE)
                 ccode_json_token_to_int(sessions, tok, &msgs);
-            snprintf(line, sizeof(line), "    %d. %s (%ld bytes, %ld msgs)\n",
-                     i + 1, name_buf, size, msgs);
-            if (ccode_append_cstr(&out, &pos, &cap, line) != 0) {
-                free(out); free(sessions); return NULL;
+            {
+                struct ccode_buf line;
+                ccode_buf_init(&line);
+                if (ccode_buf_printf(&line,
+                                     "    %d. %s (%ld bytes, %ld msgs)\n",
+                                     i + 1, name_buf, size, msgs) != 0 ||
+                    ccode_append_cstr(&out, &pos, &cap, line.data) != 0) {
+                    ccode_buf_free(&line);
+                    free(out); free(sessions); return NULL;
+                }
+                ccode_buf_free(&line);
             }
         }
     }

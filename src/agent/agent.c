@@ -820,16 +820,17 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
             (void)clock_gettime(CLOCK_MONOTONIC, &now_ts);
             {
                 long el = (long)(now_ts.tv_sec - turn0_ts.tv_sec);
-                char line[256];
-                int n = snprintf(line, sizeof(line),
+                struct ccode_buf line;
+                ccode_buf_init(&line);
+                if (ccode_buf_printf(&line,
                         "\n" CCODE_ANSI("2") "turn %d  mode=%s  workspace=%s  changes=%d  "
                         "elapsed=%lds" CCODE_ANSI("0") "\n",
                         turn + 1, mode_label, ctx->workspace_root[0] ? ctx->workspace_root
                                                                  : "(none)",
-                        ctx->change_count, el);
-                if (n > 0 && (size_t)n < sizeof(line)) {
-                    fwrite(line, 1, (size_t)n, stderr);
+                        ctx->change_count, el) == 0) {
+                    fwrite(line.data, 1, line.len, stderr);
                 }
+                ccode_buf_free(&line);
             }
         }
 
