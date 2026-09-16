@@ -4980,6 +4980,7 @@ static int test_coding_agent_prompt_contract(void) {
     ASSERT(strstr(prompt, "Inspect the relevant code before changing it") != NULL);
     ASSERT(strstr(prompt, "smallest change") != NULL);
     ASSERT(strstr(prompt, "Never invent test results") != NULL);
+    ASSERT(strstr(prompt, "We need") != NULL);
     ASSERT(strlen(prompt) < 4095);
     return 1;
 }

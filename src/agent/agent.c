@@ -71,7 +71,8 @@ static const char *subagent_system_prompt(void) {
         "is the only thing returned to the calling agent, so make it "
         "self-contained: state findings with file_path:line_number "
         "references, list every change you made, and name anything left "
-        "unverified.";
+        "unverified. Begin every reasoning block with \"We need\" followed "
+        "by a one-line statement of your immediate goal.";
 }
 
 /* A delegate's streamed content and reasoning are sinks: only the final

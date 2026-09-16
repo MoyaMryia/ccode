@@ -6,108 +6,162 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Model-facing tool definitions. Description style follows deepseek-harness's
+ * tool catalog: the first sentence states what the tool does; the rest states
+ * output shape, caps/defaults, and side effects. Cross-tool guidance lives
+ * here because ccode's system prompt is intentionally a single short persona
+ * (see agent_output.c), so these descriptions are the model's only tool manual.
+ * `param_schema` must stay valid JSON: agent_prepare.c echoes it back to the
+ * model as the expected argument shape after an argument error. */
 const struct ccode_tool_def ccode_tool_definitions[] = {
     {"read_file",
-     "Read a file within the workspace",
+     "Read a UTF-8 text file from the workspace and return its contents. Use "
+     "this tool instead of `cat` or other shell commands to inspect files. "
+     "Binary files are rejected. A read is capped at 50 KiB; a longer file is "
+     "truncated and the result carries `truncated: true`, with the full "
+     "contents archived for `read_tool_output`.",
      "{\"type\":\"object\",\"properties\":{"
-     "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file to read\"}"
+     "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file to read, relative to the workspace root.\"}"
      "},\"required\":[\"file_path\"]}"},
 
     {"edit_file",
-     "Edit a file by replacing text. An empty old_string creates a new "
-     "file whose content is new_string (refuses to overwrite).",
+     "Edit an existing UTF-8 text file by replacing literal text. Finds "
+     "`old_string` and replaces it with `new_string`. `old_string` must occur "
+     "exactly once; if it appears more than once, include more surrounding "
+     "context to make it unique. An empty `old_string` creates a new file whose "
+     "content is `new_string` and refuses to overwrite an existing path. Read "
+     "the file before editing it. Edits are limited to files up to 50 KiB and "
+     "are refused for binary or hard-linked files.",
      "{\"type\":\"object\",\"properties\":{"
-     "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file to edit\"},"
-     "\"old_string\":{\"type\":\"string\",\"description\":\"Text to replace\"},"
-     "\"new_string\":{\"type\":\"string\",\"description\":\"Replacement text\"}"
+     "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file to edit, relative to the workspace root.\"},"
+     "\"old_string\":{\"type\":\"string\",\"description\":\"Literal text to replace. Must match exactly and occur exactly once; an empty string creates a new file.\"},"
+     "\"new_string\":{\"type\":\"string\",\"description\":\"Replacement text. With an empty `old_string`, this is the complete content of the new file.\"}"
      "},\"required\":[\"file_path\",\"old_string\",\"new_string\"]}"},
 
     {"glob",
-     "List files matching a pattern (glob or regex)",
+     "Find files whose paths match a pattern. Returns matching file paths - "
+     "never directories - and does not read file contents. A pattern containing "
+     "`/` is matched against the path relative to the search root, while a "
+     "pattern with no `/` matches the basename at any depth (so `*.c` searches "
+     "the whole tree). `.gitignore`d files and VCS metadata directories are "
+     "skipped. Set `regex` to true to treat the pattern as a POSIX extended "
+     "regular expression. At most 200 paths are returned; a capped result "
+     "reports `count`, `max`, and `truncated`.",
      "{\"type\":\"object\",\"properties\":{"
-     "\"pattern\":{\"type\":\"string\",\"description\":\"Pattern to match\"},"
-     "\"path\":{\"type\":\"string\",\"description\":\"Subdirectory root for the search (optional)\"},"
-     "\"regex\":{\"type\":\"boolean\",\"description\":\"Treat pattern as regex instead of glob (optional)\"}"
+     "\"pattern\":{\"type\":\"string\",\"description\":\"Glob pattern (e.g. `**/*.c`, `src/**/*.test.js`), or a POSIX extended regex when `regex` is true. Do not shell-expand it.\"},"
+     "\"path\":{\"type\":\"string\",\"description\":\"Directory to search, relative to the workspace root. Defaults to the workspace root.\"},"
+     "\"regex\":{\"type\":\"boolean\",\"description\":\"Treat `pattern` as a POSIX extended regular expression instead of a glob. Defaults to false.\"}"
      "},\"required\":[\"pattern\"]}"},
 
     {"grep",
-      "Search file contents with a pattern (literal or regex)",
+     "Search file contents for a pattern and return matching lines with their "
+     "path and 1-based line number. By default the pattern is a literal "
+     "substring; set `regex` to true for a POSIX extended regular expression. "
+     "`include` filters by file name, `path` limits the search root, and "
+     "`context` adds surrounding lines (context lines are marked with `~`). "
+     "`.gitignore`d files and VCS metadata directories are skipped. At most 200 "
+     "matches are returned; a capped result reports `count`, `max`, and "
+     "`truncated`. Use `read_file` when you need full surrounding context.",
      "{\"type\":\"object\",\"properties\":{"
-      "\"pattern\":{\"type\":\"string\",\"description\":\"Pattern to search\"},"
-     "\"include\":{\"type\":\"string\",\"description\":\"File glob to filter (optional)\"},"
-     "\"path\":{\"type\":\"string\",\"description\":\"Subdirectory root for the search (optional)\"},"
-     "\"context\":{\"type\":\"number\",\"description\":\"Lines of context before and after each match (optional)\"},"
-     "\"regex\":{\"type\":\"boolean\",\"description\":\"Treat pattern as regex instead of literal (optional)\"}"
+     "\"pattern\":{\"type\":\"string\",\"description\":\"Literal text, or a POSIX extended regex when `regex` is true.\"},"
+     "\"include\":{\"type\":\"string\",\"description\":\"Glob that filters which file names to search (e.g. `*.c`). Matched against the basename.\"},"
+     "\"path\":{\"type\":\"string\",\"description\":\"Directory to search, relative to the workspace root. Defaults to the workspace root.\"},"
+     "\"context\":{\"type\":\"number\",\"description\":\"Lines of context to include before and after each match, 0-100. Defaults to 0.\"},"
+     "\"regex\":{\"type\":\"boolean\",\"description\":\"Treat `pattern` as a POSIX extended regular expression instead of a literal. Defaults to false.\"}"
      "},\"required\":[\"pattern\"]}"},
 
     {"task",
-     "Manage the task list. action=create records a task (content); "
-     "action=update changes a task status (id, status: pending, "
-     "in_progress, completed, blocked); action=list shows all tasks.",
+     "Manage the task list. `action` is `create` (record a new task from "
+     "`content`, returns its `id`), `update` (change the `status` of the task "
+     "with `id`), or `list` (return all tasks). Statuses are `pending`, "
+     "`in_progress`, `completed`, and `blocked`. Keep the list current as you "
+     "work through multi-step tasks.",
      "{\"type\":\"object\",\"properties\":{"
-     "\"action\":{\"type\":\"string\",\"description\":\"Action to perform: create, update, or list\"},"
-     "\"content\":{\"type\":\"string\",\"description\":\"Task description (action=create)\"},"
-     "\"id\":{\"type\":\"string\",\"description\":\"Task ID (action=update)\"},"
-     "\"status\":{\"type\":\"string\",\"description\":\"New status: pending, in_progress, completed, blocked (action=update)\"}"
+     "\"action\":{\"type\":\"string\",\"description\":\"One of `create`, `update`, or `list`.\"},"
+     "\"content\":{\"type\":\"string\",\"description\":\"Task description - a short imperative line. Required for `create`; omit otherwise.\"},"
+     "\"id\":{\"type\":\"string\",\"description\":\"Task id returned by `create`. Required for `update`; omit otherwise.\"},"
+     "\"status\":{\"type\":\"string\",\"description\":\"New status: `pending`, `in_progress`, `completed`, or `blocked`. Required for `update`; omit otherwise.\"}"
      "},\"required\":[\"action\"]}"},
 
     {"bash",
-     "Execute a shell command (supports pipes, redirects, and shell syntax)",
+     "Execute a shell command with `bash -c` and return its stdout, stderr, "
+     "and exit status. Each call runs in a fresh shell: no working directory, "
+     "variables, or functions persist between calls, so pass full paths or "
+     "chain commands with `&&` instead of relying on `cd`. A non-zero exit sets "
+     "`exit_code`; a signal-killed command reports `signal` and a null "
+     "`exit_code`; a timeout sets `timed_out`. Long output is truncated (flagged "
+     "by `stdout_truncated`/`stderr_truncated`) and the full stream is archived "
+     "for `read_tool_output`. Prefer `read_file`, `glob`, and `grep` for file "
+     "inspection.",
      "{\"type\":\"object\",\"properties\":{"
-     "\"command\":{\"type\":\"string\",\"description\":\"Shell command to execute\"},"
-     "\"timeout_ms\":{\"type\":\"number\",\"description\":\"Timeout in milliseconds (optional, default 120000, max 300000)\"}"
+     "\"command\":{\"type\":\"string\",\"description\":\"The shell command to execute.\"},"
+     "\"timeout_ms\":{\"type\":\"number\",\"description\":\"Timeout in milliseconds (default 120000, max 300000). On expiry the command is killed and `timed_out` is true.\"}"
      "},\"required\":[\"command\"]}"},
 
     {"delete_file",
-     "Delete a file within the workspace",
+     "Delete a file from the workspace. Fails if the path is outside the "
+     "workspace or is not a regular file. This cannot be undone.",
      "{\"type\":\"object\",\"properties\":{"
-     "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file to delete\"}"
+     "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file to delete, relative to the workspace root.\"}"
      "},\"required\":[\"file_path\"]}"},
 
     {"move_file",
-     "Move or rename a file within the workspace",
+     "Move or rename a file within the workspace. Both paths are resolved "
+     "against the workspace root; the destination's parent directory must exist "
+     "and the destination must not already exist.",
      "{\"type\":\"object\",\"properties\":{"
-     "\"source\":{\"type\":\"string\",\"description\":\"Current file path\"},"
-     "\"destination\":{\"type\":\"string\",\"description\":\"New file path\"}"
+     "\"source\":{\"type\":\"string\",\"description\":\"Current path of the file, relative to the workspace root.\"},"
+     "\"destination\":{\"type\":\"string\",\"description\":\"New path for the file, relative to the workspace root. Must not already exist.\"}"
      "},\"required\":[\"source\",\"destination\"]}"},
 
     {"web_fetch",
-     "Fetch a URL and return its content as text. Supports HTTP/HTTPS GET."
-     " HTML pages are converted to plain text.",
+     "Fetch a specific HTTP(S) URL and return the response decoded to text. "
+     "HTML pages are stripped to plain text; other bodies are returned as-is. "
+     "Redirects are followed. The body is capped at `max_size` (default 1 MiB), "
+     "and a capped body sets `truncated`. Cite the URL as a Markdown link when "
+     "you use its content.",
      "{\"type\":\"object\",\"properties\":{"
-     "\"url\":{\"type\":\"string\",\"description\":\"URL to fetch (http/https only)\"},"
-     "\"method\":{\"type\":\"string\",\"description\":\"HTTP method: GET or HEAD (optional, default GET)\"},"
-     "\"timeout\":{\"type\":\"number\",\"description\":\"Timeout in seconds (optional, default 30)\"},"
-     "\"max_size\":{\"type\":\"number\",\"description\":\"Max response size in bytes (optional, default 1MB)\"}"
+     "\"url\":{\"type\":\"string\",\"description\":\"The HTTP(S) URL to fetch.\"},"
+     "\"method\":{\"type\":\"string\",\"description\":\"HTTP method: `GET` or `HEAD`. Defaults to `GET`.\"},"
+     "\"timeout\":{\"type\":\"number\",\"description\":\"Total timeout in seconds (default 30, max 300).\"},"
+     "\"max_size\":{\"type\":\"number\",\"description\":\"Maximum response body size in bytes (default 1048576, max 104857600).\"}"
      "},\"required\":[\"url\"]}"},
 
     {"agent_tool",
-     "Delegate a task to a sub-agent that runs its own agent loop inside the "
-     "workspace and returns its final answer. The sub-agent is read-only by "
-     "default; set read_only to 'false' to let it use write tools (each write "
-     "still requires approval).",
+     "Delegate a task to a sub-agent that runs its own agent loop in the same "
+     "workspace and returns only its final answer, not its intermediate steps. "
+     "Give it a complete, self-contained task: the sub-agent does not see this "
+     "conversation. It is read-only by default; pass the string `false` for "
+     "`read_only` to let it use write tools (each write still requires "
+     "approval). Several `agent_tool` calls in one turn run in parallel: give "
+     "each sub-agent a non-overlapping file or directory scope, and never let "
+     "two sub-agents write the same file.",
      "{\"type\":\"object\",\"properties\":{"
-     "\"task\":{\"type\":\"string\",\"description\":\"Task to delegate\"},"
-     "\"read_only\":{\"type\":\"string\",\"description\":\"Set to 'false' to allow write tools (optional, default true)\"}"
+     "\"task\":{\"type\":\"string\",\"description\":\"The complete, standalone task for the sub-agent. It does not see this conversation, so include everything it needs.\"},"
+     "\"read_only\":{\"type\":\"string\",\"description\":\"The string `true` or `false`; set to `false` to allow the sub-agent's write tools (each write still requires approval). Defaults to `true`.\"}"
      "},\"required\":[\"task\"]}"},
 
     {"web_search",
-     "Search the web for the given query and return result titles, URLs and "
-     "snippets.",
+     "Search the web for current information and return result titles, URLs, "
+     "and snippets. Follow up with `web_fetch` when you need the full content "
+     "of a result, and cite the relevant URLs as Markdown links.",
      "{\"type\":\"object\",\"properties\":{"
-     "\"query\":{\"type\":\"string\",\"description\":\"Search query\"}"
+     "\"query\":{\"type\":\"string\",\"description\":\"The search query.\"}"
      "},\"required\":[\"query\"]}"},
 
     {"read_tool_output",
-     "Read a window of an oversized tool result that was archived because the "
-     "inline result was truncated. Pass the tool_call_id of the truncated "
-     "result (role 'tool'). For commands, stream selects stdout (default) or "
-     "stderr.",
+     "Read a window from an oversized tool result that was archived because "
+     "its inline preview was truncated. Pass the `tool_call_id` of the "
+     "truncated result (the id on the preceding `tool` message). For a command, "
+     "`stream` selects the `stdout` (default) or `stderr` archive; when no "
+     "stdout archive exists, the stderr one is used. `offset` and `limit` page "
+     "through the archived bytes, with one read returning at most 65536 bytes. "
+     "Use this whenever a result reports `truncated`.",
      "{\"type\":\"object\",\"properties\":{"
-     "\"tool_call_id\":{\"type\":\"string\",\"description\":\"ID of the tool call whose result was truncated\"},"
-     "\"stream\":{\"type\":\"string\",\"description\":\"'stdout' or 'stderr' for commands (optional, default stdout)\"},"
-     "\"offset\":{\"type\":\"number\",\"description\":\"Byte offset to start at (optional, default 0)\"},"
-     "\"limit\":{\"type\":\"number\",\"description\":\"Maximum bytes to return (optional, default 65536)\"}"
+     "\"tool_call_id\":{\"type\":\"string\",\"description\":\"Id of the tool call whose result was truncated.\"},"
+     "\"stream\":{\"type\":\"string\",\"description\":\"For commands: `stdout` or `stderr` (default `stdout`; falls back to stderr when no stdout archive exists).\"},"
+     "\"offset\":{\"type\":\"number\",\"description\":\"Byte offset into the archived stream to start at. Defaults to 0.\"},"
+     "\"limit\":{\"type\":\"number\",\"description\":\"Maximum bytes to return, at most 65536. Defaults to 65536.\"}"
      "},\"required\":[\"tool_call_id\"]}"},
 };
 

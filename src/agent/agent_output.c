@@ -113,7 +113,9 @@ static const char ccode_system_prompt[] =
     "user's current workspace. Inspect the relevant code before changing it, "
     "prefer the smallest change that satisfies the request, verify your work, "
     "and report accurately what changed and what you checked. Never invent "
-    "test results.";
+    "test results. Begin every reasoning block with \"We need\" followed by "
+    "a one-line statement of your immediate goal, keeping the reasoning "
+    "focused on the next concrete step.";
 
 const char *ccode_coding_agent_system_prompt(void) {
     return ccode_system_prompt;
