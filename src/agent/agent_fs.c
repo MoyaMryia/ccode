@@ -1404,13 +1404,11 @@ static int read_sorted_dir(int parent_fd, struct sorted_dirent *entries,
 }
 #undef CCODE_MAX_DIR_ENTS
 
-#define CCODE_GI_PATTERNS 256
 #define CCODE_GI_LINE_LEN 256
 
-struct gitignore_rules {
-    char patterns[CCODE_GI_PATTERNS][CCODE_GI_LINE_LEN];
-    int negate[CCODE_GI_PATTERNS];
-    int count;
+struct gitignore_rule {
+    char pattern[CCODE_GI_LINE_LEN];
+    int negate;
 };
 
 static int ccode_get_respect_gitignore(struct agent_context *ctx) {
@@ -1423,14 +1421,14 @@ static int ccode_get_respect_gitignore(struct agent_context *ctx) {
     return ctx->respect_gitignore;
 }
 
-/* Load .gitignore patterns from a directory fd. Returns 0 on success. */
-static int load_gitignore(int dir_fd, struct gitignore_rules *rules) {
+/* Load .gitignore patterns from a directory fd, appending to the active rule
+ * stack. Returns 0 on success, -1 when there is no readable .gitignore. */
+static int load_gitignore(int dir_fd, struct ccode_vec *rules) {
     int fd;
     FILE *f;
     char line[CCODE_GI_LINE_LEN];
     struct stat st;
 
-    memset(rules, 0, sizeof(*rules));
     fd = openat(dir_fd, ".gitignore",
                 O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0) return -1;
@@ -1441,11 +1439,11 @@ static int load_gitignore(int dir_fd, struct gitignore_rules *rules) {
     f = fdopen(fd, "rb");
     if (!f) { close(fd); return -1; }
 
-    while (fgets(line, sizeof(line), f) &&
-           rules->count < CCODE_GI_PATTERNS) {
+    while (fgets(line, sizeof(line), f)) {
         size_t len = strlen(line);
         int neg = 0;
         char *pat;
+        struct gitignore_rule *slot;
         if (len > 0 && line[len - 1] == '\n') line[--len] = '\0';
         if (len > 0 && line[len - 1] == '\r') line[--len] = '\0';
         pat = line;
@@ -1455,24 +1453,28 @@ static int load_gitignore(int dir_fd, struct gitignore_rules *rules) {
         while (*pat == ' ' || *pat == '\t') pat++;
         if (*pat == '\0') continue;
         if (strlen(pat) >= CCODE_GI_LINE_LEN) continue;
-        memcpy(rules->patterns[rules->count], pat, strlen(pat) + 1);
-        rules->negate[rules->count] = neg;
-        rules->count++;
+        slot = ccode_vec_push(rules);
+        if (!slot) break;
+        memcpy(slot->pattern, pat, strlen(pat) + 1);
+        slot->negate = neg;
     }
     fclose(f);
     return 0;
 }
 
 /* Check if a path component matches any active .gitignore pattern.
- * Returns 1 if ignored, 0 if not ignored, -1 on error. */
+ * Returns 1 if ignored, 0 if not ignored. */
 static int is_gitignored(struct agent_context *ctx, const char *name,
                          int is_dir,
-                         const struct gitignore_rules *rules) {
-    int i;
+                         const struct ccode_vec *rules) {
+    size_t i;
     int ignored = 0;
     if (!ccode_get_respect_gitignore(ctx)) return 0;
-    for (i = 0; i < rules->count; i++) {
-        const char *pat = rules->patterns[i];
+    if (!rules) return 0;
+    for (i = 0; i < rules->len; i++) {
+        const struct gitignore_rule *r =
+            ccode_vec_at((struct ccode_vec *)rules, i);
+        const char *pat = r->pattern;
         size_t plen = strlen(pat);
         int match_dir = 0;
         if (plen > 0 && pat[plen - 1] == '/') {
@@ -1480,7 +1482,7 @@ static int is_gitignored(struct agent_context *ctx, const char *name,
         }
         if (match_dir && !is_dir) continue;
         if (fnmatch(pat, name, FNM_PATHNAME) == 0) {
-            ignored = !rules->negate[i];
+            ignored = !r->negate;
         }
     }
     return ignored;
@@ -1493,17 +1495,14 @@ static void glob_recursive(struct agent_context *ctx, int parent_fd,
                             char **result, size_t *total, size_t *cap,
                             int *first, int *count,
                             struct scan_budget *budget,
-                            const struct gitignore_rules *parent_gi) {
-                                int nents, i;
-                                const struct gitignore_rules * active_gi;
-    int have_gi;
-    struct gitignore_rules merged_gi;
-    struct gitignore_rules local_gi;
+                            struct ccode_vec *gi) {
+    int nents = 0, i;
     struct stat st;
-    struct sorted_dirent * entries;
+    struct sorted_dirent *entries = NULL;
     char rel_path[4096];
     regex_t gregex;
     int gregex_ok = 0;
+    size_t gi_saved = gi ? gi->len : 0;
 
     if (use_regex && pattern && pattern[0] != '\0') {
         if (regcomp(&gregex, pattern, REG_EXTENDED | REG_NOSUB) == 0)
@@ -1512,14 +1511,13 @@ static void glob_recursive(struct agent_context *ctx, int parent_fd,
 
     if (depth > CCODE_MAX_TRAVERSAL_DEPTH) {
         budget->truncated = 1;
-        if (gregex_ok) { regfree(&gregex); }
-        return;
+        goto cleanup;
     }
-    if (*count >= CCODE_MAX_GLOB_RESULTS) { budget->truncated = 1; if (gregex_ok) { regfree(&gregex); } return; }
-    if (*total >= CCODE_MAX_LISTING_BYTES - 256) { budget->truncated = 1; if (gregex_ok) { regfree(&gregex); } return; }
+    if (*count >= CCODE_MAX_GLOB_RESULTS) { budget->truncated = 1; goto cleanup; }
+    if (*total >= CCODE_MAX_LISTING_BYTES - 256) { budget->truncated = 1; goto cleanup; }
 
     entries = malloc(512 * sizeof(struct sorted_dirent));
-    if (!entries) { if (gregex_ok) { regfree(&gregex); } return; }
+    if (!entries) goto cleanup;
     nents = read_sorted_dir(parent_fd, entries, 512);
     if (nents == -2) {
         /* Directory has more than 512 entries: keep the first 512 (sorted)
@@ -1527,29 +1525,11 @@ static void glob_recursive(struct agent_context *ctx, int parent_fd,
         budget->listing_truncated = 1;
         nents = 512;
     }
-    if (nents < 0) { free(entries); if (gregex_ok) { regfree(&gregex); } return; }
+    if (nents < 0) goto cleanup;
 
-    /* Merge parent gitignore rules with any local .gitignore. */
-    have_gi = 0;
-    if (parent_gi && parent_gi->count > 0) {
-        memcpy(&merged_gi, parent_gi, sizeof(merged_gi));
-        have_gi = 1;
-    }
-    if (load_gitignore(parent_fd, &local_gi) == 0) {
-        if (!have_gi) {
-            memcpy(&merged_gi, &local_gi, sizeof(merged_gi));
-        } else {
-            int j;
-            for (j = 0; j < local_gi.count && merged_gi.count < CCODE_GI_PATTERNS; j++) {
-                memcpy(merged_gi.patterns[merged_gi.count], local_gi.patterns[j],
-                       CCODE_GI_LINE_LEN);
-                merged_gi.negate[merged_gi.count] = local_gi.negate[j];
-                merged_gi.count++;
-            }
-        }
-        have_gi = 1;
-    }
-    active_gi = have_gi ? &merged_gi : NULL;
+    /* Push this directory's .gitignore rules onto the active stack; the
+     * suffix is popped again at cleanup. */
+    if (gi) (void)load_gitignore(parent_fd, gi);
 
     for (i = 0; i < nents; i++) {
         int entry_fd;
@@ -1574,8 +1554,7 @@ static void glob_recursive(struct agent_context *ctx, int parent_fd,
             continue;
         }
 
-        if (active_gi && is_gitignored(ctx, d_name, S_ISDIR(st.st_mode) ? 1 : 0,
-                                        active_gi)) {
+        if (is_gitignored(ctx, d_name, S_ISDIR(st.st_mode) ? 1 : 0, gi)) {
             close(entry_fd);
             continue;
         }
@@ -1586,9 +1565,7 @@ static void glob_recursive(struct agent_context *ctx, int parent_fd,
                 (size_t)st.st_size > CCODE_MAX_SCAN_BYTES - budget->bytes) {
                 budget->truncated = 1;
                 close(entry_fd);
-                free(entries);
-                if (gregex_ok) { regfree(&gregex); }
-                return;
+                goto cleanup;
             }
             budget->files++;
             budget->bytes += (size_t)st.st_size;
@@ -1607,19 +1584,19 @@ static void glob_recursive(struct agent_context *ctx, int parent_fd,
             if (match_ok) {
                 if (!*first) {
                     if (ccode_append_cstr(result, total, cap, ",") != 0) {
-                        budget->truncated = 1; close(entry_fd); free(entries); if (gregex_ok) { regfree(&gregex); } return;
+                        budget->truncated = 1; close(entry_fd); goto cleanup;
                     }
                 }
                 *first = 0;
 
                 if (ccode_append_cstr(result, total, cap, "\"") != 0) {
-                    budget->truncated = 1; close(entry_fd); free(entries); if (gregex_ok) { regfree(&gregex); } return;
+                    budget->truncated = 1; close(entry_fd); goto cleanup;
                 }
                 if (append_json_string(result, total, cap, rel_path) != 0) {
-                    budget->truncated = 1; close(entry_fd); free(entries); if (gregex_ok) { regfree(&gregex); } return;
+                    budget->truncated = 1; close(entry_fd); goto cleanup;
                 }
                 if (ccode_append_cstr(result, total, cap, "\"") != 0) {
-                    budget->truncated = 1; close(entry_fd); free(entries); if (gregex_ok) { regfree(&gregex); } return;
+                    budget->truncated = 1; close(entry_fd); goto cleanup;
                 }
                 (*count)++;
 
@@ -1627,9 +1604,7 @@ static void glob_recursive(struct agent_context *ctx, int parent_fd,
                     *total >= CCODE_MAX_LISTING_BYTES - 256) {
                     budget->truncated = 1;
                     close(entry_fd);
-                    free(entries);
-                    if (gregex_ok) { regfree(&gregex); }
-                    return;
+                    goto cleanup;
                 }
             }
         }
@@ -1637,14 +1612,17 @@ static void glob_recursive(struct agent_context *ctx, int parent_fd,
         if (S_ISDIR(st.st_mode)) {
             glob_recursive(ctx, entry_fd, rel_path, pattern, depth + 1,
                            use_regex,
-                           result, total, cap, first, count, budget,
-                           active_gi);
+                           result, total, cap, first, count, budget, gi);
             if (budget->truncated) {
-                close(entry_fd); free(entries); if (gregex_ok) { regfree(&gregex); } return;
+                close(entry_fd);
+                goto cleanup;
             }
         }
         close(entry_fd);
     }
+
+cleanup:
+    if (gi) gi->len = gi_saved;
     free(entries);
     if (gregex_ok) regfree(&gregex);
 }
@@ -1691,8 +1669,13 @@ char *exec_glob(struct agent_context *ctx, const char *workspace, const char *pa
         close(root_fd); free(result); return NULL;
     }
 
-    glob_recursive(ctx, root_fd, rel_dir, pattern, 0, use_regex,
-                   &result, &total, &cap, &first, &count, &budget, NULL);
+    {
+        struct ccode_vec gi;
+        ccode_vec_init(&gi, sizeof(struct gitignore_rule));
+        glob_recursive(ctx, root_fd, rel_dir, pattern, 0, use_regex,
+                       &result, &total, &cap, &first, &count, &budget, &gi);
+        ccode_vec_free(&gi);
+    }
     close(root_fd);
 
     {
@@ -1905,25 +1888,22 @@ static void search_dir_recursive(struct agent_context *ctx, int parent_fd, const
                                   char **result, size_t *total, size_t *cap,
                                   int *first, int *match_count,
                                   struct scan_budget *budget,
-                                  const struct gitignore_rules *parent_gi) {
-                                      const struct gitignore_rules * active_gi;
-    int have_gi;
-    struct gitignore_rules merged_gi;
-    struct gitignore_rules local_gi;
+                                  struct ccode_vec *gi) {
+    int nents = 0, i;
     struct stat st;
     char rel_path[4096];
-    struct sorted_dirent *entries;
-    int nents, i;
+    struct sorted_dirent *entries = NULL;
+    size_t gi_saved = gi ? gi->len : 0;
 
     if (depth > CCODE_MAX_TRAVERSAL_DEPTH) {
         budget->truncated = 1;
-        return;
+        goto cleanup;
     }
-    if (*match_count >= CCODE_MAX_GREP_MATCHES) return;
-    if (*total >= CCODE_MAX_LISTING_BYTES - 256) return;
+    if (*match_count >= CCODE_MAX_GREP_MATCHES) goto cleanup;
+    if (*total >= CCODE_MAX_LISTING_BYTES - 256) goto cleanup;
 
     entries = malloc(512 * sizeof(struct sorted_dirent));
-    if (!entries) return;
+    if (!entries) goto cleanup;
     nents = read_sorted_dir(parent_fd, entries, 512);
     if (nents == -2) {
         /* Over 512 entries: scan what we have, flag truncation, and let
@@ -1931,28 +1911,9 @@ static void search_dir_recursive(struct agent_context *ctx, int parent_fd, const
         budget->listing_truncated = 1;
         nents = 512;
     }
-    if (nents < 0) { free(entries); return; }
+    if (nents < 0) goto cleanup;
 
-    have_gi = 0;
-    if (parent_gi && parent_gi->count > 0) {
-        memcpy(&merged_gi, parent_gi, sizeof(merged_gi));
-        have_gi = 1;
-    }
-    if (load_gitignore(parent_fd, &local_gi) == 0) {
-        if (!have_gi) {
-            memcpy(&merged_gi, &local_gi, sizeof(merged_gi));
-        } else {
-            int j;
-            for (j = 0; j < local_gi.count && merged_gi.count < CCODE_GI_PATTERNS; j++) {
-                memcpy(merged_gi.patterns[merged_gi.count], local_gi.patterns[j],
-                       CCODE_GI_LINE_LEN);
-                merged_gi.negate[merged_gi.count] = local_gi.negate[j];
-                merged_gi.count++;
-            }
-        }
-        have_gi = 1;
-    }
-    active_gi = have_gi ? &merged_gi : NULL;
+    if (gi) (void)load_gitignore(parent_fd, gi);
 
     for (i = 0; i < nents && *match_count < CCODE_MAX_GREP_MATCHES; i++) {
         int entry_fd;
@@ -1977,8 +1938,7 @@ static void search_dir_recursive(struct agent_context *ctx, int parent_fd, const
             continue;
         }
 
-        if (active_gi && is_gitignored(ctx, d_name, S_ISDIR(st.st_mode) ? 1 : 0,
-                                        active_gi)) {
+        if (is_gitignored(ctx, d_name, S_ISDIR(st.st_mode) ? 1 : 0, gi)) {
             close(entry_fd);
             continue;
         }
@@ -1989,8 +1949,7 @@ static void search_dir_recursive(struct agent_context *ctx, int parent_fd, const
                 (size_t)st.st_size > CCODE_MAX_SCAN_BYTES - budget->bytes) {
                 budget->truncated = 1;
                 close(entry_fd);
-                free(entries);
-                return;
+                goto cleanup;
             }
             budget->files++;
             budget->bytes += (size_t)st.st_size;
@@ -2004,12 +1963,15 @@ static void search_dir_recursive(struct agent_context *ctx, int parent_fd, const
             search_dir_recursive(ctx, entry_fd, rel_path, pattern, include,
                                  context_lines, use_regex,
                                  depth + 1, result, total, cap, first,
-                                 match_count, budget, active_gi);
+                                 match_count, budget, gi);
         }
         close(entry_fd);
-        if (budget->truncated) { free(entries); return; }
+        if (budget->truncated) goto cleanup;
     }
     if (*match_count >= CCODE_MAX_GREP_MATCHES) budget->truncated = 1;
+
+cleanup:
+    if (gi) gi->len = gi_saved;
     free(entries);
 }
 
@@ -2057,10 +2019,15 @@ char *exec_grep(struct agent_context *ctx, const char *workspace, const char *pa
         close(root_fd); free(result); return NULL;
     }
 
-    search_dir_recursive(ctx, root_fd, rel_dir, pattern, include,
-                         context_lines, use_regex, 0,
-                         &result, &total, &cap, &first, &match_count,
-                         &budget, NULL);
+    {
+        struct ccode_vec gi;
+        ccode_vec_init(&gi, sizeof(struct gitignore_rule));
+        search_dir_recursive(ctx, root_fd, rel_dir, pattern, include,
+                             context_lines, use_regex, 0,
+                             &result, &total, &cap, &first, &match_count,
+                             &budget, &gi);
+        ccode_vec_free(&gi);
+    }
     close(root_fd);
 
     {
