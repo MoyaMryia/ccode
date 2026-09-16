@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -39,8 +40,8 @@ static int tests_failed;
  * parsed result back over a pipe. Feeding the keystrokes before the child has
  * switched the slave to raw mode would be discarded by TCSAFLUSH, so the
  * parent sleeps briefly first. */
-static int run_session(const char *keys, size_t nkeys, char *out, size_t cap,
-                       char *raw, size_t raw_cap) {
+static int run_session_mode(const char *keys, size_t nkeys, char *out, size_t cap,
+                            char *raw, size_t raw_cap, int redirect_echo) {
     int master, slave, rpipe[2];
     char *slave_name;
     pid_t pid;
@@ -63,9 +64,18 @@ static int run_session(const char *keys, size_t nkeys, char *out, size_t cap,
     if (pid == 0) {
         char line[512];
         int r;
+        int echo_fd = slave;
         close(master);
         close(rpipe[0]);
-        r = ccode_read_line_fd(slave, slave, line, sizeof(line));
+        if (redirect_echo) {
+            /* Make the pty slave this process's controlling terminal so the
+             * editor's /dev/tty echo fallback resolves to it, then hand it a
+             * deliberately non-tty echo fd (as a redirected stderr would be). */
+            setsid();
+            ioctl(slave, TIOCSCTTY, 0);
+            echo_fd = open("/dev/null", O_WRONLY);
+        }
+        r = ccode_read_line_fd(slave, echo_fd, line, sizeof(line));
         if (r <= 0) line[0] = '\0';
         (void)!write(rpipe[1], line, strlen(line) + 1);
         close(rpipe[1]);
@@ -114,6 +124,11 @@ static int run_session(const char *keys, size_t nkeys, char *out, size_t cap,
     close(rpipe[0]);
     close(master);
     return 1;
+}
+
+static int run_session(const char *keys, size_t nkeys, char *out, size_t cap,
+                       char *raw, size_t raw_cap) {
+    return run_session_mode(keys, nkeys, out, cap, raw, raw_cap, 0);
 }
 
 static int expect_line(const char *keys, const char *want) {
@@ -229,6 +244,18 @@ static int test_utf8_stream_well_formed(void) {
     return 1;
 }
 
+static int test_redirected_echo_still_edits(void) {
+    /* The CLI prompts on stderr; when it is redirected we must still edit on
+     * the terminal instead of letting the line discipline insert "[D". */
+    char got[512];
+    char raw[4096];
+    const char *keys = "abc\x1b[DX\n";
+    ASSERT(run_session_mode(keys, strlen(keys), got, sizeof(got),
+                            raw, sizeof(raw), 1));
+    ASSERT(strcmp(got, "abXc") == 0);
+    return 1;
+}
+
 int main(void) {
     fprintf(stderr, "=== lineedit pty tests ===\n");
     TEST(plain_line);
@@ -243,6 +270,7 @@ int main(void) {
     TEST(invalid_lead_then_escape);
     TEST(four_byte_sequence);
     TEST(utf8_stream_well_formed);
+    TEST(redirected_echo_still_edits);
     fprintf(stderr, "lineedit tests: %d run, %d failed\n",
             tests_run, tests_failed);
     return tests_failed != 0;

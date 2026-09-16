@@ -5,6 +5,7 @@
 
 #ifndef _WIN32
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <termios.h>
@@ -353,9 +354,24 @@ static int read_line_fallback(char *buf, size_t cap) {
 int ccode_read_line_fd(int in_fd, int out_fd, char *buf, size_t cap) {
     if (!buf || cap == 0) return -1;
 #ifndef _WIN32
-    if (isatty(in_fd) && isatty(out_fd)) {
-        int r = read_line_raw(in_fd, out_fd, buf, cap);
-        if (r >= 0) return r;
+    if (isatty(in_fd)) {
+        /* The caller may hand us a non-tty echo fd (the CLI prompts on
+         * stderr, which is often redirected/piped). Editing still belongs on
+         * the terminal, otherwise the line discipline inserts raw escape
+         * bytes for arrow keys. Fall back to the controlling tty for echo. */
+        int echo_fd = out_fd;
+        int close_echo = 0;
+        if (!isatty(echo_fd)) {
+            echo_fd = open("/dev/tty", O_WRONLY | O_NOCTTY);
+            close_echo = 1;
+        }
+        if (isatty(echo_fd)) {
+            int r = read_line_raw(in_fd, echo_fd, buf, cap);
+            if (close_echo) close(echo_fd);
+            if (r >= 0) return r;
+        } else if (close_echo && echo_fd >= 0) {
+            close(echo_fd);
+        }
     }
     return read_line_fd_plain(in_fd, buf, cap);
 #else

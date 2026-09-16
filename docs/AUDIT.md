@@ -219,6 +219,11 @@ emacs 风 Ctrl-A/E/K/U/W，并整行重绘（`\033[K` + 回退光标）以支持
 ESC 序列。键盘输入回归测试 `tests/test_lineedit.c`（pty 驱动，
 `make test-lineedit`）覆盖，含终端输出流无截断 UTF-8 的检查。
 
+同日补充：`ccode_read_line_fd` 原先要求 stdin 和调用方给的 echo fd 都是 tty
+才走 raw 编辑器。CLI 的提示写在 stderr，一旦 stderr 被重定向/接管就退回行规范
+模式，方向键又被行规范当成字面量插入。现在只要 stdin 是 tty 就用编辑器，echo fd
+不是 tty 时改开 `/dev/tty`，都不可用才退回逐字节读取。
+
 ### 已全部收敛（2026-09-13）
 
 所有 `//BLAME` / `//BLAME-IMPACT` 注释已从源码删除，无需再 grep 追踪。
