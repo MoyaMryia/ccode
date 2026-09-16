@@ -63,6 +63,9 @@ is also given.
 .BR \-i ", " \-\-interactive
 Read prompts from stdin until EOF or
 .BR /exit .
+When stdin is a terminal, the input line is edited in raw mode with
+readline-style keys (arrows, Home/End/Delete, Ctrl-A/E/K/U/W); Up/Down
+walk back and forth through the prompts entered this session.
 .TP
 .B \-\-json
 Use the JSON Lines protocol (machine mode). Implies interactive.

@@ -41,7 +41,8 @@ static int tests_failed;
  * switched the slave to raw mode would be discarded by TCSAFLUSH, so the
  * parent sleeps briefly first. */
 static int run_session_mode(const char *keys, size_t nkeys, char *out, size_t cap,
-                            char *raw, size_t raw_cap, int redirect_echo) {
+                            char *raw, size_t raw_cap, int redirect_echo,
+                            char *const *hist, size_t hist_count) {
     int master, slave, rpipe[2];
     char *slave_name;
     pid_t pid;
@@ -63,6 +64,7 @@ static int run_session_mode(const char *keys, size_t nkeys, char *out, size_t ca
     if (pid < 0) { close(master); close(slave); close(rpipe[0]); close(rpipe[1]); return 0; }
     if (pid == 0) {
         char line[512];
+        struct ccode_lineedit_history h;
         int r;
         int echo_fd = slave;
         close(master);
@@ -75,7 +77,10 @@ static int run_session_mode(const char *keys, size_t nkeys, char *out, size_t ca
             ioctl(slave, TIOCSCTTY, 0);
             echo_fd = open("/dev/null", O_WRONLY);
         }
-        r = ccode_read_line_fd(slave, echo_fd, line, sizeof(line));
+        h.items = hist;
+        h.count = hist_count;
+        r = ccode_read_line_fd_hist(slave, echo_fd, line, sizeof(line),
+                                    hist_count ? &h : NULL);
         if (r <= 0) line[0] = '\0';
         (void)!write(rpipe[1], line, strlen(line) + 1);
         close(rpipe[1]);
@@ -128,7 +133,21 @@ static int run_session_mode(const char *keys, size_t nkeys, char *out, size_t ca
 
 static int run_session(const char *keys, size_t nkeys, char *out, size_t cap,
                        char *raw, size_t raw_cap) {
-    return run_session_mode(keys, nkeys, out, cap, raw, raw_cap, 0);
+    return run_session_mode(keys, nkeys, out, cap, raw, raw_cap, 0, NULL, 0);
+}
+
+static int expect_line_hist(const char *keys, char *const *hist, size_t hist_count,
+                            const char *want) {
+    char got[512];
+    if (!run_session_mode(keys, strlen(keys), got, sizeof(got), NULL, 0, 0,
+                          hist, hist_count))
+        return 0;
+    if (strcmp(got, want) != 0) {
+        fprintf(stderr, "    hist keys=%s got=\"%s\" want=\"%s\"\n",
+                keys, got, want);
+        return 0;
+    }
+    return 1;
 }
 
 static int expect_line(const char *keys, const char *want) {
@@ -251,8 +270,40 @@ static int test_redirected_echo_still_edits(void) {
     char raw[4096];
     const char *keys = "abc\x1b[DX\n";
     ASSERT(run_session_mode(keys, strlen(keys), got, sizeof(got),
-                            raw, sizeof(raw), 1));
+                            raw, sizeof(raw), 1, NULL, 0));
     ASSERT(strcmp(got, "abXc") == 0);
+    return 1;
+}
+
+static int test_history_navigation(void) {
+    char *hist[] = { "first", "second", "third" };
+    /* Up walks back to the oldest entry and clamps there. */
+    ASSERT(expect_line_hist("\x1b[A\n", hist, 3, "third"));
+    ASSERT(expect_line_hist("\x1b[A\x1b[A\n", hist, 3, "second"));
+    ASSERT(expect_line_hist("\x1b[A\x1b[A\x1b[A\n", hist, 3, "first"));
+    ASSERT(expect_line_hist("\x1b[A\x1b[A\x1b[A\x1b[A\n", hist, 3, "first"));
+    /* Down walks forward; past the newest it restores the live draft. */
+    ASSERT(expect_line_hist("\x1b[A\x1b[A\x1b[B\n", hist, 3, "third"));
+    ASSERT(expect_line_hist("typed\x1b[A\x1b[B\n", hist, 3, "typed"));
+    ASSERT(expect_line_hist("\x1b[A\x1b[B\x1b[B\n", hist, 3, ""));
+    /* Application-cursor (SS3) up/down works too. */
+    ASSERT(expect_line_hist("\x1bOA\x1bOB\n", hist, 3, ""));  /* draft */
+    /* A recalled entry can be edited and inserted into. */
+    ASSERT(expect_line_hist("\x1b[AX\n", hist, 3, "thirdX"));
+    ASSERT(expect_line_hist("\x1b[A\x1b[D\x1b[DX\n", hist, 3, "thiXrd"));
+    return 1;
+}
+
+static int test_history_utf8(void) {
+    char *hist[] = { "\xe4\xb8\xad\xe6\x96\x87" "abc", "hello" };
+    ASSERT(expect_line_hist("\x1b[A\n", hist, 2, "hello"));
+    ASSERT(expect_line_hist("\x1b[A\x1b[A\n", hist, 2, "\xe4\xb8\xad\xe6\x96\x87" "abc"));
+    return 1;
+}
+
+static int test_history_empty_list(void) {
+    /* No history: Up/Down must do nothing rather than crash. */
+    ASSERT(expect_line("ab\x1b[A\x1b[B\n", "ab"));
     return 1;
 }
 
@@ -271,6 +322,9 @@ int main(void) {
     TEST(four_byte_sequence);
     TEST(utf8_stream_well_formed);
     TEST(redirected_echo_still_edits);
+    TEST(history_navigation);
+    TEST(history_utf8);
+    TEST(history_empty_list);
     fprintf(stderr, "lineedit tests: %d run, %d failed\n",
             tests_run, tests_failed);
     return tests_failed != 0;

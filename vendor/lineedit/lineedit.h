@@ -19,4 +19,19 @@ int ccode_read_line_fd(int in_fd, int out_fd, char *buf, size_t cap);
 /* Read one line from stdin (echo to stderr). */
 int ccode_read_line(char *buf, size_t cap);
 
+/* Readline-style history for the tty editor's Up/Down keys: a borrowed,
+ * oldest-first list of previously submitted lines. Passing NULL (or count 0)
+ * disables navigation; the caller keeps ownership of the entries and is
+ * expected to append each accepted line before the next read. */
+struct ccode_lineedit_history {
+    char *const *items;
+    size_t count;
+};
+
+/* Same as ccode_read_line_fd / ccode_read_line, with Up/Down history. */
+int ccode_read_line_fd_hist(int in_fd, int out_fd, char *buf, size_t cap,
+                            const struct ccode_lineedit_history *history);
+int ccode_read_line_hist(char *buf, size_t cap,
+                         const struct ccode_lineedit_history *history);
+
 #endif

@@ -2,6 +2,7 @@
 
 #include "../json/json.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 static size_t previous_utf8_char(const char *text, size_t cursor) {
@@ -48,6 +49,19 @@ void tui_input_clear(struct tui_input *input) {
     input->len = 0;
     input->cursor = 0;
     input->text[0] = '\0';
+}
+
+void tui_input_set(struct tui_input *input, const char *text) {
+    size_t n = text ? strlen(text) : 0;
+    if (n > sizeof(input->text) - 1) {
+        n = sizeof(input->text) - 1;
+        /* Never cut inside a UTF-8 code point. */
+        while (n > 0 && ((unsigned char)text[n] & 0xc0U) == 0x80U) n--;
+    }
+    if (n) memcpy(input->text, text, n);
+    input->text[n] = '\0';
+    input->len = n;
+    input->cursor = n;
 }
 
 int tui_input_key(struct tui_input *input, int key) {
@@ -144,4 +158,60 @@ int tui_input_delete(struct tui_input *input) {
             input->len - end + 1);
     input->len -= end - input->cursor;
     return 1;
+}
+
+static char *tui_history_dup(const char *s) {
+    size_t n = s ? strlen(s) : 0;
+    char *p = (char *)malloc(n + 1);
+    if (!p) return NULL;
+    if (n) memcpy(p, s, n);
+    p[n] = '\0';
+    return p;
+}
+
+void tui_history_init(struct tui_history *h) {
+    h->items = NULL;
+    h->count = 0;
+    h->pos = 0;
+    h->draft = NULL;
+}
+
+void tui_history_set(struct tui_history *h, char *const *items, size_t count) {
+    h->items = items;
+    h->count = count;
+    if (h->pos > count) h->pos = count;
+}
+
+void tui_history_reset(struct tui_history *h) {
+    h->pos = h->count;
+    free(h->draft);
+    h->draft = NULL;
+}
+
+void tui_history_free(struct tui_history *h) {
+    free(h->draft);
+    h->draft = NULL;
+    h->items = NULL;
+    h->count = 0;
+    h->pos = 0;
+}
+
+const char *tui_history_prev(struct tui_history *h, const char *current) {
+    if (!h->items || h->count == 0) return current;
+    if (h->pos == 0) return h->items[0];   /* already at the oldest */
+    if (h->pos == h->count) {
+        /* Leaving the live line for the first time: remember it. */
+        free(h->draft);
+        h->draft = tui_history_dup(current);
+    }
+    h->pos--;
+    return h->items[h->pos];
+}
+
+const char *tui_history_next(struct tui_history *h) {
+    if (!h->items || h->count == 0 || h->pos >= h->count) return NULL;
+    h->pos++;
+    if (h->pos == h->count)
+        return h->draft ? h->draft : "";
+    return h->items[h->pos];
 }

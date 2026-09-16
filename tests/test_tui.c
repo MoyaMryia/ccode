@@ -69,6 +69,62 @@ static int test_input_utf8_backspace(void) {
     return 1;
 }
 
+static int test_input_set(void) {
+    struct tui_input input;
+    tui_input_init(&input);
+    tui_input_set(&input, "hello");
+    ASSERT(strcmp(input.text, "hello") == 0);
+    ASSERT(input.len == 5 && input.cursor == 5);
+    tui_input_set(&input, "");
+    ASSERT(input.len == 0 && input.cursor == 0);
+    /* Oversized text is clamped at a UTF-8 boundary, not mid-glyph. */
+    {
+        char big[TUI_INPUT_MAX + 16];
+        size_t i;
+        for (i = 0; i + 3 < sizeof(big); i += 3) {
+            big[i] = (char)0xe4; big[i + 1] = (char)0xb8;
+            big[i + 2] = (char)0xad;
+        }
+        big[i] = '\0';
+        tui_input_set(&input, big);
+        ASSERT(input.len <= TUI_INPUT_MAX - 1);
+        ASSERT((input.len % 3) == 0);
+        ASSERT(input.cursor == input.len);
+    }
+    return 1;
+}
+
+static int test_input_history(void) {
+    char *items[] = { "first", "second", "third" };
+    struct tui_history h;
+    tui_history_init(&h);
+    tui_history_set(&h, items, 3);
+    tui_history_reset(&h);
+
+    ASSERT(strcmp(tui_history_prev(&h, "live"), "third") == 0);
+    ASSERT(strcmp(tui_history_prev(&h, "ignored"), "second") == 0);
+    ASSERT(strcmp(tui_history_prev(&h, "ignored"), "first") == 0);
+    ASSERT(strcmp(tui_history_prev(&h, "ignored"), "first") == 0); /* clamp */
+    ASSERT(strcmp(tui_history_next(&h), "second") == 0);
+    ASSERT(strcmp(tui_history_next(&h), "third") == 0);
+    ASSERT(strcmp(tui_history_next(&h), "live") == 0);   /* draft restored */
+    ASSERT(tui_history_next(&h) == NULL);                 /* nothing newer */
+
+    /* Resetting drops the draft and returns to the live line. */
+    ASSERT(strcmp(tui_history_prev(&h, "d2"), "third") == 0);
+    tui_history_reset(&h);
+    ASSERT(strcmp(tui_history_prev(&h, "live2"), "third") == 0);
+    ASSERT(strcmp(tui_history_next(&h), "live2") == 0);
+
+    /* Empty history never navigates or allocates a draft. */
+    tui_history_set(&h, items, 0);
+    tui_history_reset(&h);
+    ASSERT(strcmp(tui_history_prev(&h, "keep"), "keep") == 0);
+    ASSERT(tui_history_next(&h) == NULL);
+    tui_history_free(&h);
+    return 1;
+}
+
 static int test_input_horizontal_view(void) {
     struct tui_input input;
     size_t start;
@@ -428,6 +484,8 @@ static int test_render_part_keeps_cjk_intact(void) {
 int main(void) {
     TEST(input_editing_controls);
     TEST(input_utf8_backspace);
+    TEST(input_set);
+    TEST(input_history);
     TEST(input_horizontal_view);
     TEST(multiline_message_count);
     TEST(streaming_message_append);

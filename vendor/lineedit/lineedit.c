@@ -125,7 +125,9 @@ enum lineedit_key {
     LE_KEY_RIGHT,
     LE_KEY_HOME,
     LE_KEY_END,
-    LE_KEY_DELETE
+    LE_KEY_DELETE,
+    LE_KEY_UP,
+    LE_KEY_DOWN
 };
 
 /* A lone ESC is reported as LE_KEY_NONE. Arrow/Home/End/Delete arrive as
@@ -138,7 +140,8 @@ static int decode_escape(struct lineedit_reader *r) {
     if (b == 'O') {
         if (!reader_wait(r, 10, &b)) return LE_KEY_NONE;
         switch (b) {
-        case 'A': case 'B': return LE_KEY_NONE;          /* up/down */
+        case 'A': return LE_KEY_UP;
+        case 'B': return LE_KEY_DOWN;
         case 'C': return LE_KEY_RIGHT;
         case 'D': return LE_KEY_LEFT;
         case 'H': return LE_KEY_HOME;
@@ -157,7 +160,8 @@ static int decode_escape(struct lineedit_reader *r) {
             if (nparams < sizeof(params)) params[nparams++] = x;
         }
         switch (final) {
-        case 'A': case 'B': return LE_KEY_NONE;          /* up/down */
+        case 'A': return LE_KEY_UP;
+        case 'B': return LE_KEY_DOWN;
         case 'C': return LE_KEY_RIGHT;
         case 'D': return LE_KEY_LEFT;
         case 'H': return LE_KEY_HOME;
@@ -179,8 +183,10 @@ static int decode_escape(struct lineedit_reader *r) {
     }
 }
 
-static int read_line_raw(int in_fd, int out_fd, char *buf, size_t cap) {
+static int read_line_raw(int in_fd, int out_fd, char *buf, size_t cap,
+                         const struct ccode_lineedit_history *history) {
     struct tui_input input;
+    struct tui_history hist;
     struct termios raw;
     struct lineedit_reader reader;
     size_t len;
@@ -198,6 +204,9 @@ static int read_line_raw(int in_fd, int out_fd, char *buf, size_t cap) {
     ccode_lineedit_active = 1;
 
     tui_input_init(&input);
+    tui_history_init(&hist);
+    if (history) tui_history_set(&hist, history->items, history->count);
+    tui_history_reset(&hist);
     reader.fd = in_fd;
     reader.pushback = 0;
     reader.has_pushback = 0;
@@ -218,6 +227,22 @@ static int read_line_raw(int in_fd, int out_fd, char *buf, size_t cap) {
             case LE_KEY_HOME:  if (input.cursor != 0) { input.cursor = 0; changed = 1; } break;
             case LE_KEY_END:   if (input.cursor != input.len) { input.cursor = input.len; changed = 1; } break;
             case LE_KEY_DELETE: changed = tui_input_delete(&input); break;
+            case LE_KEY_UP: {
+                const char *v = tui_history_prev(&hist, input.text);
+                if (v && strcmp(v, input.text) != 0) {
+                    tui_input_set(&input, v);
+                    changed = 1;
+                }
+                break;
+            }
+            case LE_KEY_DOWN: {
+                const char *v = tui_history_next(&hist);
+                if (v && strcmp(v, input.text) != 0) {
+                    tui_input_set(&input, v);
+                    changed = 1;
+                }
+                break;
+            }
             default: break;                     /* lone ESC / unknown: consumed */
             }
             if (changed) {
@@ -295,6 +320,7 @@ static int read_line_raw(int in_fd, int out_fd, char *buf, size_t cap) {
     len = input.len;
 
 done:
+    tui_history_free(&hist);
     /* If editing left the cursor mid-line, walk it back to end-of-line so the
      * pending '\n' lands on the next row instead of splitting the text. */
     if (input.cursor < input.len)
@@ -351,7 +377,8 @@ static int read_line_fallback(char *buf, size_t cap) {
 }
 #endif /* !_WIN32 */
 
-int ccode_read_line_fd(int in_fd, int out_fd, char *buf, size_t cap) {
+int ccode_read_line_fd_hist(int in_fd, int out_fd, char *buf, size_t cap,
+                            const struct ccode_lineedit_history *history) {
     if (!buf || cap == 0) return -1;
 #ifndef _WIN32
     if (isatty(in_fd)) {
@@ -366,7 +393,7 @@ int ccode_read_line_fd(int in_fd, int out_fd, char *buf, size_t cap) {
             close_echo = 1;
         }
         if (isatty(echo_fd)) {
-            int r = read_line_raw(in_fd, echo_fd, buf, cap);
+            int r = read_line_raw(in_fd, echo_fd, buf, cap, history);
             if (close_echo) close(echo_fd);
             if (r >= 0) return r;
         } else if (close_echo && echo_fd >= 0) {
@@ -377,10 +404,21 @@ int ccode_read_line_fd(int in_fd, int out_fd, char *buf, size_t cap) {
 #else
     (void)in_fd;
     (void)out_fd;
+    (void)history;   /* the Windows console does its own line editing */
     return read_line_fallback(buf, cap);
 #endif
 }
 
+int ccode_read_line_fd(int in_fd, int out_fd, char *buf, size_t cap) {
+    return ccode_read_line_fd_hist(in_fd, out_fd, buf, cap, NULL);
+}
+
+int ccode_read_line_hist(char *buf, size_t cap,
+                         const struct ccode_lineedit_history *history) {
+    return ccode_read_line_fd_hist(STDIN_FILENO, STDERR_FILENO, buf, cap,
+                                   history);
+}
+
 int ccode_read_line(char *buf, size_t cap) {
-    return ccode_read_line_fd(STDIN_FILENO, STDERR_FILENO, buf, cap);
+    return ccode_read_line_fd_hist(STDIN_FILENO, STDERR_FILENO, buf, cap, NULL);
 }

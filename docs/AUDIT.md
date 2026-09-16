@@ -224,6 +224,12 @@ ESC 序列。键盘输入回归测试 `tests/test_lineedit.c`（pty 驱动，
 模式，方向键又被行规范当成字面量插入。现在只要 stdin 是 tty 就用编辑器，echo fd
 不是 tty 时改开 `/dev/tty`，都不可用才退回逐字节读取。
 
+CLI 交互 REPL 增加 Up/Down 历史：`tui_input` 内核新增 `struct tui_history`
+（借用调用方的 oldest-first 字符串表，自己只拥有草稿副本）与 `tui_input_set`；
+`ccode_read_line_hist` / `ccode_read_line_fd_hist` 接收一张
+`struct ccode_lineedit_history` 视图，`agent.c` 把 `repl` 里既有的 history vec
+直接传进去（命令 `/xxx` 不入历史，只存真实 prompt）。
+
 ### 已全部收敛（2026-09-13）
 
 所有 `//BLAME` / `//BLAME-IMPACT` 注释已从源码删除，无需再 grep 追踪。

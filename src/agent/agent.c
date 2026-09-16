@@ -2092,13 +2092,16 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
     fprintf(stderr, "ccode interactive mode. Type /help for commands, /exit to quit.\n");
     for (;;) {
         char line[CCODE_INPUT_LINE_MAX];
+        struct ccode_lineedit_history hist;
         size_t len;
         int turn_result;
 
         fprintf(stderr, "\n" CCODE_ANSI("1") "> " CCODE_ANSI("0") "");
         fflush(stderr);
 
-        if (ccode_read_line(line, sizeof(line)) <= 0) {
+        hist.items = (char *const *)history.data;
+        hist.count = history.len;
+        if (ccode_read_line_hist(line, sizeof(line), &hist) <= 0) {
             fprintf(stderr, "\n");
             break;
         }

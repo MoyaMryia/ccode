@@ -103,6 +103,6 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（165 agent + 45 json + 32 http + 17 tui + 12 lineedit + 21 markdown + 5 tty + 8 e2e + 4 streaming；集成 37；实战 e2e `test-e2e-real` 35 项检查（mock provider 脚本化驱动真实 ccode-cli 在本仓库副本上全 12 工具完成 修复→重建→运行验证 闭环，含超大结果双流截断/归档/取回回归）；`make mutate` 含 result/reasoning/webfetch 新 mutant 全 KILLED；test-tui-commands 与 test-tui-real 手动运行（`make ccode ccode-tui ccode-cli` 后 `make test-tui-real`），全绿）。行为收敛项(2026-09-12):`/models` 三前端同文本、`/reasoning effort` 三前端同校验、JSON Lines 事件单一构造器——见 `docs/AUDIT.md`
+3. 现有测试套件全过（165 agent + 45 json + 32 http + 19 tui + 16 lineedit + 21 markdown + 5 tty + 8 e2e + 4 streaming；集成 37；实战 e2e `test-e2e-real` 35 项检查（mock provider 脚本化驱动真实 ccode-cli 在本仓库副本上全 12 工具完成 修复→重建→运行验证 闭环，含超大结果双流截断/归档/取回回归）；`make mutate` 含 result/reasoning/webfetch 新 mutant 全 KILLED；test-tui-commands 与 test-tui-real 手动运行（`make ccode ccode-tui ccode-cli` 后 `make test-tui-real`），全绿）。行为收敛项(2026-09-12):`/models` 三前端同文本、`/reasoning effort` 三前端同校验、JSON Lines 事件单一构造器——见 `docs/AUDIT.md`
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟
 5. 工具调用/指令安全改动要过 `make fuzz-tool-args fuzz-command-paths fuzz-paths`，且 `make mutate`（故意注入错误看测试是否抓住）保持全部 KILLED
