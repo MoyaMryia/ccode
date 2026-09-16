@@ -47,6 +47,7 @@ int ccode_platform_exe_path(char *buf, size_t cap) {
  * enough to Linux that the same ppid/pgid scan works. If the translator is
  * not mounted (opendir fails) we return 0, as platform.h allows platforms
  * without a usable procfs to do. */
+//BLAME-IMPACT(dup): markdown.c:30 — 与其它平台逐字相同(AUDIT #3)；同文件双份
 int ccode_platform_detect_escaped(pid_t child) {
     DIR *dir;
     struct dirent *entry;

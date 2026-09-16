@@ -57,6 +57,7 @@ int ccode_platform_exe_path(char *buf, size_t cap) {
 
 /* ── Escaped descendant detection ── */
 
+//BLAME-IMPACT(dup): markdown.c:30 — 与其它平台逐字相同(AUDIT #3)；同文件双份
 int ccode_platform_detect_escaped(pid_t child) {
     /* Darwin has no /proc. libproc's proc_listallpids / proc_pidinfo could
      * reconstruct the process tree, but that is a heavier dependency than

@@ -50,6 +50,7 @@ void tui_input_clear(struct tui_input *input) {
     input->text[0] = '\0';
 }
 
+//BLAME-IMPACT(readline): lineedit.c:13 — 统一编辑内核；lineedit 与 TUI 共用，收编点
 int tui_input_key(struct tui_input *input, int key) {
     size_t start;
     size_t removed;

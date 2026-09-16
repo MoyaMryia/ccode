@@ -170,6 +170,7 @@ static const char *refuse_path(const char *error, const char *value,
 /* Decode a string token into a freshly allocated buffer (caller owns it via
  * prepared_tool_free). Unlike the fixed-buffer copy_string_token this is not
  * capped at CCODE_MAX_ARGUMENT_LEN; the caller bounds the encoded arguments. */
+//BLAME-IMPACT(json): json.c:10 — 重复 ccode_json_token_string/to_string
 static int copy_string_token_dyn(const char *json, const ccode_jsmntok_t *token,
                                  char **out) {
     size_t len = (size_t)(token->end - token->start);
@@ -839,6 +840,7 @@ static const char *explain_tool_error(const char *name, const char *error) {
      * need the full schema repeated. */
     if (strstr(error, "expected") != NULL) return error;
     /* Security refusals already carry a "reason"; do not bolt the schema on. */
+    //BLAME-IMPACT(json): cli/main.c:55 — strstr 提字段，改走 token 树
     if (strstr(error, "\"reason\"") != NULL) return error;
     body = error + 10;
     close = strrchr(error, '"');

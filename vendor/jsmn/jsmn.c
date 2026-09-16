@@ -3,6 +3,9 @@
 #include <limits.h>
 #include <string.h>
 
+//BLAME: 我觉得这里的函数很多重复了
+
+//BLAME-IMPACT(json): jsmn.c:6 — hex 解析三份之一
 static int is_hex(char c) {
     return (c >= '0' && c <= '9') ||
            (c >= 'a' && c <= 'f') ||
@@ -165,6 +168,7 @@ int ccode_jsmn_token_streq(const char *js, ccode_jsmntok_t *tok,
            memcmp(js + tok->start, s, len) == 0;
 }
 
+//BLAME-IMPACT(json): jsmn.c:6 — 死代码：与 ccode_json_token_to_int 重复且语义不同，删
 int ccode_jsmn_token_to_int(const char *js, ccode_jsmntok_t *tok) {
     unsigned int val = 0;
     unsigned int limit;

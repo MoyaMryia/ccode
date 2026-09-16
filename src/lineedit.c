@@ -10,7 +10,7 @@
 #include <unistd.h>
 
 #include "tui/input.h"
-
+//BLAME: 我觉得这个文件要加长
 /* The tty's canonical-mode erase is column/byte based, so backspacing over a
  * double-width CJK glyph leaves half a glyph on screen while the buffer is
  * already correct. This reader takes the terminal out of canonical mode and
@@ -101,6 +101,7 @@ static int read_line_fallback(char *buf, size_t cap) {
     return 1;
 }
 
+//BLAME-IMPACT(readline): lineedit.c:13 — 加长成 fd 版统一入口，收编 main.c 裸 fgets 与 agent.c drain
 int ccode_read_line(char *buf, size_t cap) {
     if (!buf || cap == 0) return -1;
 #ifndef _WIN32

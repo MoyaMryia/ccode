@@ -75,6 +75,7 @@ int ccode_platform_exe_path(char *buf, size_t cap) {
 
 /* ── Escaped descendant detection ── */
 
+//BLAME-IMPACT(dup): markdown.c:30 — hurd/linux/win32 逐字相同(AUDIT #3)；同文件另一 #ifdef 分支亦然
 int ccode_platform_detect_escaped(pid_t child) {
     /* libkvm could reconstruct the process tree on the BSDs, but it pulls
      * in a heavier dependency (libkvm + /dev/mem access on some systems)

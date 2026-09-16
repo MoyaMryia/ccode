@@ -342,6 +342,7 @@ const char *change_log_serialize(struct agent_context *ctx) {
     static char buf[4096];
     size_t pos = 0;
     int i;
+    //BLAME-IMPACT(json): json.c:10 — 手搓 change-log JSON，统一构建器
     pos = (size_t)snprintf(buf, sizeof(buf), "{\"changes\":[");
     for (i = 0; i < ctx->change_count; i++) {
         size_t entry_start = pos;
@@ -980,6 +981,7 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
 
 /* Grow a dynamic JSON buffer to at least `need` bytes. Returns -1 on
  * allocation failure. */
+//BLAME-IMPACT(vector): message.c:21 — 重造 append 助手，改用统一 buf
 static int grow_json_buf(char **buf, size_t *pos, size_t *cap, size_t need) {
     char *tmp;
     size_t new_cap = *cap * 2;
@@ -995,6 +997,7 @@ static int grow_json_buf(char **buf, size_t *pos, size_t *cap, size_t need) {
 /* Append the JSON-escaped form of `s` to a dynamic buffer. Used to safely
  * serialize path entries rather than dropping control bytes or trusting
  * quotes. Returns -1 on allocation failure. */
+//BLAME-IMPACT(json): json.c:10 — 私有 JSON 转义拼接，统一构建器
 int append_json_string_n(char **buf, size_t *pos, size_t *cap,
                                 const char *s, size_t n) {
     return append_json_string_budget(buf, pos, cap, s, n, (size_t)-1, NULL);

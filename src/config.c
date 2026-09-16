@@ -187,7 +187,9 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
         }
     }
     config->session_dir = getenv("CCODE_SESSION_DIR");
-
+    //Blame: 这里该有个更好的写法
+    //写个option table
+    //BLAME-IMPACT(config): config.c:190 — 长 strcmp 链，改 option table
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             ccode_print_usage(argv[0]);

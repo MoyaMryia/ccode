@@ -107,6 +107,8 @@ void default_stream_reasoning(const char *content, void *context) {
 /* The prompt exceeds the 4095-byte string length ISO C99 guarantees, so it
  * is kept as two literals joined once into a static buffer to stay
  * warning-free under -Wpedantic. */
+//BLAME: 之后我打算重写
+//BLAME-IMPACT(prompt): agent_output.c:110 — 拆两段绕 C99 上限，重写时统一
 static const char ccode_system_prompt_part1[] =
         "You are ccode, a careful terminal coding agent working in the user's "
         "current workspace. Help with software engineering tasks: inspect, "
@@ -160,6 +162,7 @@ static const char ccode_system_prompt_part1[] =
         "speculative features, broad refactors, compatibility shims, or new "
         "abstractions without a concrete need.\n";
 
+//BLAME-IMPACT(prompt): agent_output.c:110 — 同上
 static const char ccode_system_prompt_part2[] =
         "- Do not fix unrelated bugs or broken tests you happen to find; report them "
         "instead of silently expanding scope.\n"
@@ -312,6 +315,7 @@ void ccode_render_tool_result(FILE *out, const char *result_json) {
         return;
     }
     ccode_jsmn_init(&parser);
+    //BLAME-IMPACT(json): jsmn.c:6 — 裸 ccode_jsmn_parse，改 ccode_json_parse
     ntok = ccode_jsmn_parse(&parser, result_json, strlen(result_json),
                             tokens, 128);
     if (ntok <= 0 || tokens[0].type != CCODE_JSMN_OBJECT) {
@@ -383,6 +387,7 @@ void ccode_render_tool_result(FILE *out, const char *result_json) {
     }
 
     /* Unknown shape: keep the information, sanitised. */
+    //BLAME-IMPACT(json): cli/main.c:55 — strstr 提字段，改走 token 树
     if (strstr(result_json, "\"ok\":true") != NULL) {
         fputs(" ok\n", out);
         return;

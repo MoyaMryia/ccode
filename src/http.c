@@ -814,6 +814,7 @@ static int send_http_request(int fd, const struct parsed_url *url,
     return send_all(fd, body, strlen(body), total_deadline);
 }
 
+//BLAME-IMPACT(dup): markdown.c:30 — 三份 ccode_stream_chat(plain/mbedtls/polarssl)+webfetch，AUDIT #1
 static int stream_chat_plain(const struct parsed_url *url, const char *api_key,
                              const char *body,
                              struct ccode_sse_accumulator *acc,
@@ -1166,6 +1167,7 @@ static int polarssl_send_no_signal(void *context, const unsigned char *data,
     return POLARSSL_ERR_NET_SEND_FAILED;
 }
 
+//BLAME-IMPACT(dup): markdown.c:30 — 与 webfetch.c wf_polarssl_recv 逐字重复
 static int polarssl_recv(void *context, unsigned char *data, size_t length) {
     const int *fd = context;
     ssize_t got = recv(*fd, data, length, 0);

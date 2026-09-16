@@ -897,6 +897,7 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     if (stderr_pipe[0] >= 0) close(stderr_pipe[0]);
     ccode_cancel_child_unregister();
     if (timed_out)
+        //BLAME-IMPACT(proc): platform_linux.c:54 — waitpid 后调用，Linux 上恒 -1 死探测
         incomplete_cleanup = ccode_platform_detect_escaped(child);
     stdout_buf[stdout_len] = '\0';
     stderr_buf[stderr_len] = '\0';

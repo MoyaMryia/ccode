@@ -468,6 +468,7 @@ static int wf_polarssl_send(void *context, const unsigned char *data,
     return POLARSSL_ERR_NET_SEND_FAILED;
 }
 
+//BLAME-IMPACT(dup): markdown.c:30 — 与 http.c polarssl_recv 逐字重复(AUDIT #1)
 static int wf_polarssl_recv(void *context, unsigned char *data, size_t length) {
     const int *fd = context;
     ssize_t got = recv(*fd, data, length, 0);
@@ -1325,6 +1326,7 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             result = malloc(rcap);
             if (result) {
                 int n = snprintf(result, rcap,
+                    //BLAME-IMPACT(json): json.c:10 — snprintf 拼 JSON，统一构建器
                     "{\"content\":\"%s\",\"content_type\":\"%s\","
                     "\"status\":%d,\"url\":\"%s\"%s}",
                     escaped, esc_ct, status, esc_url,

@@ -36,6 +36,7 @@ int ccode_result_tail_append(struct ccode_result_tail *t,
         return 0;
     }
     if (needed > t->cap) {
+        //BLAME-IMPACT(vector): message.c:21 — 结果 blob 自增，统一 vector
         size_t new_cap = t->cap ? t->cap : 8192;
         char *grown;
         while (new_cap < needed) {

@@ -15,6 +15,7 @@ static void *permission_context;
 
 #define is_bidi_control(cp) ccode_cp_is_bidi_control(cp)
 
+//BLAME-IMPACT(dup): markdown.c:30 — 转义逻辑与 markdown.c emit_text 重复
 static void fprint_safe_limit(FILE *stream, const char *value,
                               const char *null_value, size_t limit,
                               int keep_layout) {
@@ -173,6 +174,7 @@ int ccode_permission_ask(struct ccode_permission_request *req) {
 
         fflush(stderr);
 
+        //BLAME-IMPACT(readline): lineedit.c:13 — 已是统一入口的消费者，收敛其余 fgets 到此
         if (ccode_read_line(line, sizeof(line)) <= 0) {
             fprintf(stderr, "\n");
             return 0;

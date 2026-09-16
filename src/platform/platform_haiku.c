@@ -54,6 +54,7 @@ int ccode_platform_exe_path(char *buf, size_t cap) {
 
 /* ── Escaped descendant detection ── */
 
+//BLAME-IMPACT(dup): markdown.c:30 — 与其它平台逐字相同(AUDIT #3)；同文件双份
 int ccode_platform_detect_escaped(pid_t child) {
     /* Haiku has no /proc. The team_roster / get_next_team_info APIs could
      * reconstruct the process (team) tree, but that is a heavier dependency

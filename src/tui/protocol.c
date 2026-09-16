@@ -129,10 +129,12 @@ int tui_protocol_send_clear(struct tui_protocol *protocol) {
 
 int tui_protocol_send_resize(struct tui_protocol *protocol, int cols, int rows) {
     char line[128];
+    //BLAME-IMPACT(json): json.c:10 — 手搓事件 JSON，改 ccode_json_build_event
     snprintf(line, sizeof(line), "{\"type\":\"resize\",\"cols\":%d,\"rows\":%d}\n", cols, rows);
     return ccode_fd_write_all(protocol->input_fd, line, strlen(line));
 }
 
+//BLAME-IMPACT(readline): cli/main.c:270 — 第五份读行；fd 分帧逻辑保留，门面对齐 lineedit
 int tui_protocol_read_line(struct tui_protocol *protocol, char *line, size_t cap) {
     char *newline;
     ssize_t n;
@@ -167,6 +169,7 @@ int tui_protocol_read_line(struct tui_protocol *protocol, char *line, size_t cap
     }
 }
 
+//BLAME-IMPACT(json): jsmn.c:6 — hex 解析三份之一(jsmn/json.c/tui)
 static int hex_value(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -174,6 +177,7 @@ static int hex_value(char c) {
     return -1;
 }
 
+//BLAME-IMPACT(json): cli/main.c:55 — 第三份字段提取，自带有损 unescape(\uXXXX->'?')；改调 ccode_json_unescape
 int tui_protocol_field(const char *line, const char *field, char *out, size_t cap) {
     size_t pos;
     char needle[128];

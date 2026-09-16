@@ -33,9 +33,10 @@ struct backend_options {
     const char *save_session;
     const char *resume_session;
 };
-
+//BLAME: 你能不能写个动态数组 写malloc是能要你的命吗
 struct json_session_state {
     struct backend_options options;
+    //BLAME-IMPACT(vector): cli/main.c:36 — 64x4096 固定历史，收编到统一 buf
     char history[64][4096];
     int history_count;
     /* Auto-named session chain for plain prompts: consecutive "input"
@@ -52,7 +53,8 @@ struct json_session_state {
      * collide with the previous (still existing) file. */
     int chain_seq;
 };
-
+//BLAME: 拆走json处理部分
+//BLAME-IMPACT(json): cli/main.c:55 — 私有 JSON 字段提取，改走 json.c token 树 + ccode_json_unescape
 static int field(const char *line, const char *name, char *out, size_t cap) {
     char needle[64];
     const char *start, *end;
@@ -71,6 +73,7 @@ static int field(const char *line, const char *name, char *out, size_t cap) {
     return ccode_json_unescape(start, end, out, cap);
 }
 
+//BLAME-IMPACT(json): cli/main.c:55 — 手搓布尔字段，同上
 static int boolean_field(const char *line, const char *name, int *value) {
     char needle[64];
     const char *start;
@@ -89,6 +92,7 @@ static void json_print(const char *type, const char *text) {
     char *event;
     size_t event_length;
     if (ccode_json_build_event(type, text, &event, &event_length) == 0) {
+        //BLAME-IMPACT(fdio): fdio.c:8 — 丢弃 write_all 的返回码
         (void)ccode_fd_write_all(STDOUT_FILENO, event, event_length);
         free(event);
     }
@@ -98,6 +102,7 @@ static void json_print_fd(int fd, const char *type, const char *text) {
     char *event;
     size_t event_length;
     if (ccode_json_build_event(type, text, &event, &event_length) != 0) return;
+    //BLAME-IMPACT(fdio): fdio.c:8 — 丢弃 write_all 的返回码
     (void)ccode_fd_write_all(fd, event, event_length);
     free(event);
 }
@@ -131,6 +136,7 @@ static int json_permission_ask(struct ccode_permission_request *request,
              request->target ? request->target : "",
              request->workspace_root ? request->workspace_root : ".");
     json_print_fd(permission->output_fd, "permission_request", event);
+    //BLAME-IMPACT(readline): cli/main.c:270 — 权限回复绕过 ccode_read_line
     if (!fgets(line, sizeof(line), stdin)) return 0;
     if (strstr(line, "\"type\":\"permission_response\"")) {
         allow = strstr(line, "\"allow\":true") != NULL ||
@@ -157,7 +163,8 @@ static int run_agent_prompt(const struct backend_options *options,
     struct json_permission_context permission;
     int result;
     size_t length;
-    char output[65536];
+    //BLAME-IMPACT(vector): cli/main.c:160 — 64KB 栈缓冲，换统一可变缓冲
+    char output[65536];//BLAME: 我不觉得这么写是明智的
     FILE * capture;
     struct ccode_agent_config config;
     int saved_stdout, saved_stderr;
@@ -267,9 +274,20 @@ static void backend_clear(struct json_session_state *state) {
     state->skip_resume_once = state->base_save[0] ? 1 : 0;
 }
 
+//BLAME: 我觉得该自己写个readline了
+//
+
+
+
+//BLAME: 我的建议是分开行为和/commands
+//给每个实际的行为写一个函数
+//然后alias和本名都直接调用这个函数不行吗
+//我的建议是一个可变参函数（除非libc5不支持这个东西）
+//BLAME-IMPACT(dispatch): cli/main.c:275 — 命令分派表之一；REPL/TUI 三份漂移(AUDIT #4)
 static void backend_command(struct json_session_state *state,
                             const char *command, const char *workspace) {
     if (strcmp(command, "/help") == 0) {
+        //BLAME-IMPACT(dispatch): agent.c:1473 — 与 agent.c print_repl_help 重复的命令清单
         json_print("message", "Slash commands:\n  /help\n  /exit\n  /clear\n  /compact\n  /model [NAME]\n  /model default NAME\n  /models\n  /models search KEYWORD\n  /models info NAME\n  /thinking\n  /thinking on|off\n  /thinking effort low|medium|high|xhigh|max\n  /history\n  /sessions (aliases: /session list, /resume --list)\n  /sessions delete NAME\n  /sessions rename OLD NEW\n  /sessions export NAME FORMAT\n  /resume [NAME]\n  /session new [NAME]\n  /session switch NAME");
     } else if (strcmp(command, "/clear") == 0) {
         backend_clear(state);
@@ -315,7 +333,7 @@ static void backend_command(struct json_session_state *state,
         snprintf(msg, sizeof(msg), "Reasoning: %s (effort: %s)",
                  state->options.thinking_effort ? "on" : "off",
                  state->options.thinking_effort ? state->options.thinking_effort
-                                                : "medium");
+                                                : "medium"); // BLAME: Change it to "High", I remember I changed it.
         json_print("message", msg);
     } else if (strcmp(command, "/reasoning on") == 0) {
         if (!state->options.thinking_effort) {
@@ -415,7 +433,9 @@ static void backend_command(struct json_session_state *state,
             }
             if (!session_name) json_print("error", "No saved sessions found.");
             else {
+                //BLAME-IMPACT(vector): cli/main.c:428 — 静态定长 + 复制三份(另见 456/473)
                 static char session_path[4096];
+				//BLAME: 写个动态数组会死吗 下面的也一样 能不能不要老是复制代码啊
                 if (snprintf(session_path, sizeof(session_path), "%s/%s", dir,
                              session_name) >= (int)sizeof(session_path))
                     json_print("error", "Session path too long.");
@@ -531,6 +551,8 @@ static int run_json_mode(const struct ccode_config *config) {
     state.options.model = state.options.model_name;
     if (state.options.model) snprintf(model, sizeof(model), "%s", state.options.model);
 
+    //BLAME-IMPACT(json): cli/main.c:55 — 类型分派全靠 strstr，改走 token 树
+    //BLAME-IMPACT(readline): cli/main.c:270 — JSON 后端主循环绕过 ccode_read_line
     while (fgets(line, sizeof(line), stdin)) {
         if (strstr(line, "\"type\":\"hello\"")) {
             char hello_effort[16];

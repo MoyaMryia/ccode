@@ -35,6 +35,7 @@ int tui_messages_add(struct tui_messages *messages, enum tui_message_type type,
     char *copy;
     if (!messages) return -1;
     if (messages->count == messages->cap) {
+        //BLAME-IMPACT(vector): message.c:21 — 消息列表自增，统一 vector
         size_t new_cap = messages->cap ? messages->cap * 2 : 32;
         struct tui_message *grown =
             (struct tui_message *)realloc(messages->items,

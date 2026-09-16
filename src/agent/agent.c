@@ -58,13 +58,14 @@ static struct agent_context agent_ctx;
  * A sub-agent runs against its own context copy, so its dedup state never
  * suppresses a summary the parent still needs to append. */
 
+//BLAME-IMPACT(prompt): agent.c:67 — 独立 prompt 且 git_* 已失效，与主 prompt 统一
 static const char *subagent_system_prompt(void) {
     return
         "You are a delegate sub-agent of ccode, the terminal coding agent. "
         "You are given a single focused task inside the current workspace. "
         "Inspect the relevant files first: use glob to find paths, grep to "
         "search content, and read_file when you know the path. Prefer "
-        "read-only tools (read_file, glob, grep, git_*) and make no changes "
+        "read-only tools (read_file, glob, grep, git_*) and make no changes " //BLAME: 我们还有git工具吗
         "unless the task explicitly asks for them. Match your thoroughness "
         "to what the caller requested. Never claim something was verified "
         "unless a check actually ran. If a tool result was denied or "
@@ -1375,6 +1376,7 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
 
     if ((cfg->read_only_tools || cfg->tools_enabled) &&
         !conversation_has_system(&conv)) {
+        //BLAME-IMPACT(prompt): agent_output.c:110 — 第 1/5 处重复注入，抽 ensure_system_prompt
         const char *sys = ccode_coding_agent_system_prompt();
         if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
             fprintf(stderr, "Out of memory.\n");
@@ -1470,7 +1472,8 @@ const char *ccode_normalize_thinking_effort(const char *effort) {
     if (strcmp(effort, "max") == 0) return "max";
     return NULL;
 }
-
+//BLAME: 神人啊这里没改？
+//BLAME-IMPACT(dispatch): agent.c:1473 — 命令清单与 main.c /help 重复
 static void print_repl_help(void) {
     fprintf(stderr,
         "  Slash commands:\n"
@@ -1563,9 +1566,10 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
     have_session_path = 0;
 
     current_session_path[0] = '\0';
-
+	//BLAME: 你管这叫动态数组？
     /* Keep the prompt history off the stack: 64 x 8192 bytes does not belong
      * in a fixed-size frame (small-stack platforms / future threads). */
+    //BLAME-IMPACT(vector): agent.c:1566 — 固定 64x8192 堆块，伪动态数组
     history = malloc(CCODE_HISTORY_MAX * CCODE_INPUT_LINE_MAX);
     if (!history) {
         fprintf(stderr, "Out of memory.\n");
@@ -1611,6 +1615,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
 
     if ((cfg->read_only_tools || cfg->tools_enabled) &&
         !conversation_has_system(&conv)) {
+        //BLAME-IMPACT(prompt): agent_output.c:110 — 第 2/5 处重复注入，抽 ensure_system_prompt
         const char *sys = ccode_coding_agent_system_prompt();
         if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
             fprintf(stderr, "Out of memory.\n");
@@ -1619,8 +1624,10 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
     }
 
     fprintf(stderr, "ccode interactive mode. Type /help for commands, /exit to quit.\n");
-
+		//BLAME: 和另外一个文件一样，你能不能把功能拆到单独的函数里
     for (;;) {
+        //BLAME-IMPACT(readline): cli/main.c:270 — 定长行 + 手工 drain，收进 lineedit
+        //BLAME-IMPACT(dispatch): agent.c:1622 — 巨型 REPL 循环，拆到按行为函数(同 backend_command)
         char line[CCODE_INPUT_LINE_MAX];
         size_t len;
         int turn_result;
@@ -1634,7 +1641,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
         }
 
         len = strlen(line);
-
+		//BLAME: 你reject了个锤子 你tm line这个数组就开了这么一片地方
         /* Reject/bound overlong input at the line level. */
         if (len >= CCODE_INPUT_LINE_MAX - 1) {
             fprintf(stderr, "  Input too long; please keep prompts under %d bytes.\n",
@@ -1642,6 +1649,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
             /* Drain the rest of the overlong line. */
             if (line[len - 1] != '\n') {
                 int c;
+                //BLAME-IMPACT(readline): cli/main.c:270 — 超长行排空应收进 lineedit
                 while ((c = getchar()) != '\n' && c != EOF) {}
             }
             continue;
@@ -1809,6 +1817,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                 }
                 ccode_agent_summary_cache_reset();
                 if (cfg->read_only_tools || cfg->tools_enabled) {
+                    //BLAME-IMPACT(prompt): agent_output.c:110 — 第 3/5 处重复注入，抽 ensure_system_prompt
                     const char *sys = ccode_coding_agent_system_prompt();
                     if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
                         fprintf(stderr, "Out of memory.\n");
@@ -1987,6 +1996,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                         goto cleanup;
                     }
                     if (cfg->read_only_tools || cfg->tools_enabled) {
+                        //BLAME-IMPACT(prompt): agent_output.c:110 — 第 4/5 处重复注入，抽 ensure_system_prompt
                         const char *sys = ccode_coding_agent_system_prompt();
                         if (ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, sys) != 0) {
                             fputs("  Out of memory.\n", stderr);
@@ -2019,6 +2029,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
                         goto cleanup;
                     }
                     if (cfg->read_only_tools || cfg->tools_enabled) {
+                        //BLAME-IMPACT(prompt): agent_output.c:110 — 第 5/5 处重复注入，抽 ensure_system_prompt
                         const char *sys = ccode_coding_agent_system_prompt();
                         if (ccode_conversation_add(&fresh, CCODE_ROLE_SYSTEM, sys) != 0) {
                             ccode_conversation_destroy(&fresh);

@@ -46,6 +46,7 @@ int ccode_platform_exe_path(char *buf, size_t cap) {
 
 /* ── Escaped descendant detection ── */
 
+//BLAME-IMPACT(dup): markdown.c:30 — 与其它平台逐字相同(AUDIT #3)；同文件双份
 int ccode_platform_detect_escaped(pid_t child) {
     /* MINIX has no /proc. Return 0 (no escape detected) and rely on the
      * parent's process-group kill to clean up. platform.h explicitly allows

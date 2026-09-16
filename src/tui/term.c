@@ -222,6 +222,7 @@ int tui_term_read_key(int timeout_ms) {
     pfd.events = POLLIN;
     result = poll(&pfd, 1, timeout_ms);
     if (result <= 0) return -1;
+    //BLAME-IMPACT(readline): cli/main.c:270 — 另一份裸 read(STDIN) 键解析，与 lineedit/tui_input 并存
     if (read(STDIN_FILENO, &c, 1) != 1) return -1;
     if (c == 0x1b) {
         struct pollfd sequence_poll = { STDIN_FILENO, POLLIN, 0 };

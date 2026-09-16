@@ -106,3 +106,27 @@ stress_real_project.py（本仓库源码树，glob/grep/分页/bash/md5/edit
 - JSON Lines 事件构造 ×2(截断策略互相矛盾)→ `ccode_json_build_event`
 - bidi 控制字符判定 ×2 → `ccode_cp_is_bidi_control`
 - effort 档位校验漂移(REPL 校验、TUI 不校验)→ `ccode_normalize_thinking_effort`
+
+## BLAME 标记索引（代码内 `//BLAME-IMPACT`）
+
+作者阅读时留下的 `//BLAME:` 评论指向四类全局收敛。为便于后续重构，已在所有受影响点（含清单外「犯同样错误」的文件，如 `tui/tui.c` 的 100KB 栈数组、`http.c` 三份 `ccode_stream_chat`、各平台文件双份同名函数）插入机器可 grep 的标记，格式：
+
+    //BLAME-IMPACT(<topic>): <出处> — <该做什么>
+
+`<出处>` 是原始 `//BLAME:` 的位置（行号为插入标记前的审计时点，以 BLAME 文本为准）。统计（共 87 处）：
+
+| topic | 指向的原始 BLAME | 处数 | 主要文件 |
+|---|---|---|---|
+| `json` | `cli/main.c:55`、`json.c:10`、`jsmn.c:6` | 28 | message.c、cli/main.c、tui/protocol.c、json.c、agent_prepare.c、websearch.c、agent_output.c、agent_fs.c、webfetch.c、tools.c、models.c、agent_args.c、markdown.c |
+| `vector` | `cli/main.c:36`、`cli/main.c:160`、`cli/main.c:428`、`message.c:21`、`agent.c:1566` | 20 | tui/tui.c、message.c、json.c、cli/main.c、tui/messages.c、markdown.c、agent_results.c、agent_fs.c、agent.c |
+| `dup` | `markdown.c:30`、`json.c:10` | 12 | http.c、webfetch.c、permissions.c、platform_*.c（8 份） |
+| `readline` | `cli/main.c:270`、`lineedit.c:13` | 9 | cli/main.c、agent.c、tui/term.c、tui/protocol.c、tui/input.c、permissions.c、lineedit.c |
+| `prompt` | `agent_output.c:110`、`agent.c:67` | 8 | agent.c（含 5 处重复注入）、agent_output.c |
+| `dispatch` | `cli/main.c:275`、`agent.c:1473`、`agent.c:1622` | 5 | cli/main.c、agent.c、tui/tui.c |
+| `fdio` | `fdio.c:8` | 3 | cli/main.c、fdio.c |
+| `config` | `config.c:190` | 1 | config.c |
+| `proc` | `platform_linux.c:54` | 1 | agent_exec.c |
+
+召回：`grep -rn "BLAME-IMPACT" src vendor`
+
+与上文技术债的对应：`readline`/`dispatch` = #2、#4；`dup` = #1、#3；`json`/`vector` 为新增的横切收敛项。标记只是注释，不改变行为；重构完成一批就删掉对应 topic 的标记。

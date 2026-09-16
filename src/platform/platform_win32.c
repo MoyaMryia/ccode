@@ -44,6 +44,7 @@ int ccode_platform_exe_path(char *buf, size_t cap) {
  *
  * Cygwin's /proc exposes /proc/<pid>/stat in a Linux-compatible format, so
  * the same ppid/pgid scan works. */
+//BLAME-IMPACT(dup): markdown.c:30 — 与其它平台逐字相同(AUDIT #3)；同文件三份
 int ccode_platform_detect_escaped(pid_t child) {
     DIR *dir;
     struct dirent *entry;

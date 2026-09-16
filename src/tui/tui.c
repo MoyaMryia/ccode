@@ -59,6 +59,7 @@ static void tui_process_backend(struct tui_protocol *protocol,
                                 size_t thinking_effort_cap, int *backend_eof) {
     char line[TUI_PROTOCOL_EVENT_MAX];
     char type[32];
+    //BLAME-IMPACT(vector): cli/main.c:160 — 100KB 栈缓冲，与 cli/main.c:160 同类
     char text[102401];
     int status;
 
@@ -127,6 +128,7 @@ static void tui_process_backend(struct tui_protocol *protocol,
         } else if (strcmp(type, "permission_request") == 0) {
             if (tui_protocol_field(line, "text", permission_text,
                                    permission_text_cap) == 0) {
+                //BLAME-IMPACT(vector): cli/main.c:160 — 定长请求缓冲
                 char request_text[4300];
                 int written = snprintf(request_text, sizeof(request_text),
                                        "Tool request\n  %s",
@@ -232,6 +234,7 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
     int streaming = 0;
     int thinking_enabled = config->thinking_enabled;
     char thinking_effort[16] = "medium";
+    //BLAME-IMPACT(vector): cli/main.c:160 — 定长权限文本
     char permission_text[4096] = "";
     const char *workspace = config->workspace ? config->workspace : ".";
     const char *backend = tui_find_backend(backend_path);
@@ -297,6 +300,7 @@ int ccode_tui_run(struct ccode_agent_config *config, const char *backend_path,
                                 sizeof(thinking_effort), &backend_eof);
         if (backend_eof && !backend_noted) {
             int exit_code = -1;
+            //BLAME-IMPACT(vector): cli/main.c:160 — 定长 note
             char note[4200];
             backend_noted = 1;
             if (tui_protocol_exited(&protocol, &exit_code) == 1 &&
@@ -469,6 +473,7 @@ struct tui_inproc_ctx {
     /* Session chaining: when session_path is set, each turn resumes this
      * session file and saves back to it, so conversation context persists
      * across turns (same semantics as the CLI JSON backend). */
+    //BLAME-IMPACT(vector): cli/main.c:428 — 定长路径，同 cli/main.c session_path
     char session_path[4096];
     const char *base_save;
     /* Disambiguates re-minted chain names after /clear: auto-<time>-<pid>
@@ -732,6 +737,7 @@ static int inproc_session_path(const char *name, char *path, size_t cap) {
 }
 
 /* Handle a slash command in-process. Returns 1 if the TUI should exit. */
+//BLAME-IMPACT(dispatch): agent.c:1622 — 第三张命令分派表(AUDIT #4)，与 CLI/REPL 漂移
 static int inproc_handle_command(struct tui_inproc_ctx *ctx, const char *cmd) {
     char msg[512];
     if (strcmp(cmd, "/exit") == 0 || strcmp(cmd, "/quit") == 0) return 1;

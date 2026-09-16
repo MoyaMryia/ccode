@@ -63,6 +63,7 @@ int ccode_platform_exe_path(char *buf, size_t cap) {
  * us to a specific ABI), we read the file head and parse the two integers
  * at their documented offsets. If the procfs layout is unavailable we
  * return 0, as platform.h allows platforms without a usable procfs to do. */
+//BLAME-IMPACT(dup): markdown.c:30 — 与其它平台逐字相同(AUDIT #3)；同文件双份
 int ccode_platform_detect_escaped(pid_t child) {
     DIR *dir;
     struct dirent *entry;

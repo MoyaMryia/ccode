@@ -96,6 +96,7 @@ static size_t ws_html_to_text(const char *in, size_t len, char *out,
 
 /* Append a JSON-escaped quoted field to the growable result buffer.
  * Returns -1 on allocation failure. */
+//BLAME-IMPACT(json): json.c:10 — 私有 JSON 字符串拼接，统一构建器
 static int ws_append_json_string(char **out, size_t *pos, size_t *cap,
                                  const char *s) {
     char *escaped = ccode_json_escape(s ? s : "");
@@ -266,6 +267,7 @@ char *ccode_web_search(const char *query) {
     result = ccode_web_fetch(&opts);
     if (!result) return ccode_strdup("{\"error\":\"Search failed\"}");
 
+    //BLAME-IMPACT(json): cli/main.c:55 — strstr + 手扫字符串，改走 token 树
     content_start = strstr(result, "\"content\":");
     if (!content_start) {
         /* web_fetch returned an error payload; pass it through. */

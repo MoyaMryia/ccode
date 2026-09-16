@@ -7,7 +7,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
+//BLAME: 我觉得这里的代码在哪里见过
+//BLAME-IMPACT(json): json.c:10 — 重复 POSIX strdup；集中到一处或直接用 libc
 char *ccode_strdup(const char *s) {
     size_t len;
     char *copy;
@@ -26,6 +27,7 @@ int ccode_append_cstr(char **buf, size_t *pos, size_t *cap, const char *s) {
     size_t len = strlen(s);
     if (*pos + len + 1 > *cap) {
         char * tmp;
+        //BLAME-IMPACT(vector): message.c:21 — canonical append 助手：扩展为 struct buf + _n/reserve
         size_t new_cap = *cap * 2;
         if (new_cap < *pos + len + 1) new_cap = *pos + len + 1;
         tmp = realloc(*buf, new_cap);
@@ -382,6 +384,7 @@ int ccode_utf8_cp_width(unsigned int cp) {
 }
 
 
+//BLAME-IMPACT(json): jsmn.c:6 — hex 解析三份之一
 static int json_hex_digit(unsigned char c, unsigned int *value) {
     if (c >= '0' && c <= '9') *value = c - '0';
     else if (c >= 'a' && c <= 'f') *value = c - 'a' + 10U;
@@ -630,6 +633,7 @@ static ccode_jsmntok_t *find_index_in(ccode_jsmntok_t *tokens, int num_tokens,
     return NULL;
 }
 
+//BLAME-IMPACT(json): jsmn.c:6 — 唯一 parse 入口；调用方不得再直接 ccode_jsmn_parse
 int ccode_json_parse(const char *data, size_t length,
                      ccode_jsmntok_t *tokens, int maxtok) {
     ccode_jsmn_parser parser;
@@ -1067,6 +1071,7 @@ static int accumulator_append_content(struct ccode_sse_accumulator *acc,
     if (needed > acc->content_cap) {
         char * tmp;
         size_t new_cap;
+        //BLAME-IMPACT(vector): message.c:21 — SSE content 自增，统一 vector
         if (!acc->content_cap) new_cap = 256;
         else if (acc->content_cap > SIZE_MAX / 2) new_cap = needed;
         else new_cap = acc->content_cap * 2;
@@ -1099,6 +1104,7 @@ static int accumulator_append_reasoning(struct ccode_sse_accumulator *acc,
     if (needed > acc->reasoning_cap) {
         char * tmp;
         size_t new_cap;
+        //BLAME-IMPACT(vector): message.c:21 — SSE reasoning 自增，统一 vector
         if (!acc->reasoning_cap) new_cap = 256;
         else if (acc->reasoning_cap > SIZE_MAX / 2) new_cap = needed;
         else new_cap = acc->reasoning_cap * 2;

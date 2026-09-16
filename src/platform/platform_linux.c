@@ -51,6 +51,10 @@ int ccode_platform_exe_path(char *buf, size_t cap) {
  *
  * (Moved verbatim from agent.c to remove the /proc dependency from the
  * main source tree. The logic is unchanged.) */
+//BLAME:child_pgid = getpgid(child); 但唯一调用点在     
+//agent_exec.c:900 位于 waitpid 回收 child 之后，Linux 上必然返回 -1，于是整个 detect_escaped 退化成恒为 0 的死探  
+//测（且 PID 复用时可能读到无关进程的 pgid）。                         
+//BLAME-IMPACT(dup): platform_linux.c:54 — 与其它平台逐字相同(AUDIT #3)；同文件双份
 int ccode_platform_detect_escaped(pid_t child) {
     DIR *dir;
     struct dirent *entry;

@@ -18,7 +18,7 @@
 #include <unistd.h>
 #include <limits.h>
 #include <dirent.h>
-
+//BLAME: 讨论一个思路，手写一个cpp vector算了，我看不定长数组的实现看力竭了
 /* Defined with the session helpers below; used by save() to create the
  * session directory on first write. */
 int mkdir_p(const char *path);
@@ -62,6 +62,7 @@ void ccode_conversation_destroy(struct ccode_conversation *conv) {
 static int add_message(struct ccode_conversation *conv) {
     if (conv->count >= conv->max_capacity) return -1;
     if (conv->count >= conv->capacity) {
+        //BLAME-IMPACT(vector): message.c:21 — 会话增长，统一 vector
         size_t new_cap = conv->capacity ? conv->capacity * 2
                                         : CCODE_INITIAL_MESSAGES;
         struct ccode_message *grown;
@@ -185,6 +186,7 @@ int ccode_conversation_add_tool_call(struct ccode_conversation *conv,
     if (msg->tool_call_count >= CCODE_MAX_TOOL_CALLS) goto fail;
 
     {
+        //BLAME-IMPACT(vector): message.c:21 — tool_calls 增长，统一 vector
         struct ccode_tool_call *new_tc = realloc(msg->tool_calls,
             (msg->tool_call_count + 1) * sizeof(struct ccode_tool_call));
         if (!new_tc) goto fail;
@@ -527,6 +529,7 @@ static void ccode_message_cleanup(struct ccode_message *msg) {
  * Appends a summary entry to the output buffer. The body is parsed as JSON
  * rather than substring-matched so key order, whitespace and escaped values
  * cannot break the scan. */
+//BLAME-IMPACT(json): jsmn.c:6 — 裸 ccode_jsmn_parse；与 ccode_json_parse 入口不统一
 static void scan_tool_result(const char *body,
                               char *out, size_t out_cap, size_t *pos) {
     ccode_jsmn_parser parser;
@@ -848,6 +851,7 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
     f = fdopen(fd, "wb");
     if (!f) { close(fd); unlink(temp_path); free(temp_path); return -1; }
 
+    //BLAME-IMPACT(json): json.c:10 — 手搓会话 JSON 构建，统一构建器
     fputs("{\"version\":5,\"messages\":[", f);
     for (i = 0; i < conv->count; i++) {
         const char *role;
@@ -1041,6 +1045,7 @@ static int token_subtree(ccode_jsmntok_t *toks, int num_tokens, int idx) {
 
 /* Find a value token by key name within an object. Returns the value token
  * index or -1 if not found. Does not detect duplicates (caller must check). */
+//BLAME-IMPACT(json): jsmn.c:6 — 自研 find_key 走查，重复 json.c find_key_in
 static int obj_find_val(ccode_jsmntok_t *toks, int num_tokens,
                         int obj_idx, const char *js, const char *key) {
     int expect_key;
@@ -1143,6 +1148,8 @@ static int obj_check_known_keys(ccode_jsmntok_t *toks, int num_tokens,
 /* Parse `js` into a token array, doubling the buffer when jsmn runs out.
  * On success *toks_out is a malloc'd array (caller frees) and the token count
  * is returned; on failure -1 with *toks_out NULL. */
+//BLAME-IMPACT(vector): message.c:21 — token 数组增长，统一 vector
+//BLAME-IMPACT(json): jsmn.c:6 — 裸 ccode_jsmn_parse + 自增 token 数组
 static int parse_tokens_growable(const char *js, size_t len,
                                  ccode_jsmntok_t **toks_out) {
     size_t cap = 8192;
@@ -1879,6 +1886,7 @@ int ccode_session_prune(void) {
         mtime = (long long)st.st_mtime;
 
         if (count == cap) {
+            //BLAME-IMPACT(vector): message.c:21 — sessions 列表增长，统一 vector
             size_t new_cap = cap == 0 ? 32 : cap * 2;
             struct session_entry *tmp =
                 realloc(entries, new_cap * sizeof(*entries));

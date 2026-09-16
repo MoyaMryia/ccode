@@ -27,6 +27,9 @@
 /* Emit a bounded text run with control/bidi characters escaped. ANSI
  * sequences are emitted by callers directly and therefore never reach this
  * function or consume the visible-column budget. */
+//BLAME: 这段代码我好像在哪见过
+
+//BLAME-IMPACT(json): markdown.c:30 — 转义逻辑与 permissions.c 重复
 static void emit_text(struct ccode_md_renderer *r, const char *data, size_t len) {
     FILE *out = r->out;
     const unsigned char *s = (const unsigned char *)data;
@@ -540,6 +543,7 @@ void ccode_md_render(struct ccode_md_renderer *r, const char *fragment) {
         size_t flen = strlen(fragment);
         size_t need = r->line_len + flen + 1;
         if (need > r->line_cap) {
+            //BLAME-IMPACT(vector): message.c:21 — line_buf 自增，统一 vector
             size_t ncap = r->line_cap ? r->line_cap * 2 : 256;
             char *nb;
             while (ncap < need) ncap *= 2;

@@ -38,6 +38,7 @@
 #include "agent_internal.h"
 
 
+//BLAME-IMPACT(json): json.c:10 — 重复 ccode_json_token_to_string
 int copy_string_token(const char *json, const ccode_jsmntok_t *token,
                              char *dest, size_t dest_size) {
     size_t in_pos = 0;

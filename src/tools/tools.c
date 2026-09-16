@@ -134,6 +134,7 @@ char *ccode_build_tools_json(void) {
     if (!buf) return NULL;
     buf[0] = '\0';
 
+    //BLAME-IMPACT(json): json.c:10 — 手搓工具 schema JSON（同文件共 3 份），统一构建器
     if (ccode_append_cstr(&buf, &pos, &cap, "\"tools\":[") != 0) goto fail;
 
     for (i = 0; i < ccode_tool_definitions_count; i++) {
