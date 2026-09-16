@@ -155,8 +155,9 @@ fail:
 
 char *ccode_web_search(const char *query) {
     const char *tmpl = getenv("CCODE_WEB_SEARCH_URL");
+    const char *marker;
     struct ccode_web_fetch_opts opts;
-    char url[4096];
+    struct ccode_buf url;
     char encoded[WS_QUERY_MAX * 3 + 1];
     char *result;
     char *html_text = NULL;
@@ -166,26 +167,28 @@ char *ccode_web_search(const char *query) {
         return ccode_json_error("Invalid search query");
 
     ws_url_encode(query, encoded, sizeof(encoded));
-    if (!tmpl || strstr(tmpl, "{query}") == NULL)
+    if (!tmpl || (marker = strstr(tmpl, "{query}")) == NULL) {
         tmpl = "https://www.bing.com/search?q={query}";
-    {
-        const char *marker = strstr(tmpl, "{query}");
-        size_t head = (size_t)(marker - tmpl);
-        if (head + strlen(encoded) + strlen(marker + 7) >= sizeof(url))
-            return ccode_json_error("Search endpoint too long");
-        memcpy(url, tmpl, head);
-        memcpy(url + head, encoded, strlen(encoded) + 1);
-        strncat(url, marker + 7, sizeof(url) - strlen(url) - 1);
+        marker = strstr(tmpl, "{query}");
+    }
+
+    ccode_buf_init(&url);
+    if (ccode_buf_append_n(&url, tmpl, (size_t)(marker - tmpl)) != 0 ||
+        ccode_buf_append(&url, encoded) != 0 ||
+        ccode_buf_append(&url, marker + 7) != 0) {
+        ccode_buf_free(&url);
+        return ccode_json_error("Search endpoint too long");
     }
 
     memset(&opts, 0, sizeof(opts));
-    opts.url = url;
+    opts.url = url.data;
     opts.method = "GET";
     opts.timeout_sec = 20;
     opts.max_size = WS_BODY_MAX;
     opts.raw_html = 1;
 
     result = ccode_web_fetch(&opts);
+    ccode_buf_free(&url);
     if (!result) return ccode_json_error("Search failed");
 
     /* web_fetch returns {"content":"<html>",...}; pull the field through the

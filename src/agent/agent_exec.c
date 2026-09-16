@@ -483,17 +483,24 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
                 "}") != 0) goto oom;
     }
     {
-        char cmd_summary[128] = "";
+        struct ccode_buf summary;
         size_t j;
-        for (j = 0; j < argc && j < 3; j++) {
-            if (j > 0) strncat(cmd_summary, " ", sizeof(cmd_summary) - strlen(cmd_summary) - 1);
-            strncat(cmd_summary, argv[j], sizeof(cmd_summary) - strlen(cmd_summary) - 1);
+        int bad = 0;
+        ccode_buf_init(&summary);
+        for (j = 0; j < argc && j < 3 && !bad; j++) {
+            if (j > 0 && ccode_buf_append_c(&summary, ' ') != 0) bad = 1;
+            else if (ccode_buf_append(&summary, argv[j]) != 0) bad = 1;
         }
-        if (argc > 3) strncat(cmd_summary, " ...", sizeof(cmd_summary) - strlen(cmd_summary) - 1);
-        change_log_add_ex(ctx, "command", cmd_summary,
+        if (!bad && argc > 3 && ccode_buf_append(&summary, " ...") != 0) bad = 1;
+        if (bad) {
+            ccode_buf_free(&summary);
+            goto oom;
+        }
+        change_log_add_ex(ctx, "command", summary.data ? summary.data : "",
                        WIFEXITED(status) ? WEXITSTATUS(status) : -1,
                        timed_out, 0, truncated_out || stdout_preview_cut,
                        truncated_err || stderr_preview_cut);
+        ccode_buf_free(&summary);
     }
     return result;
 
@@ -1009,17 +1016,24 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
                 "}") != 0) goto oom;
     }
     {
-        char cmd_summary[128] = "";
+        struct ccode_buf summary;
         size_t j;
-        for (j = 0; j < argc && j < 3; j++) {
-            if (j > 0) strncat(cmd_summary, " ", sizeof(cmd_summary) - strlen(cmd_summary) - 1);
-            strncat(cmd_summary, argv[j], sizeof(cmd_summary) - strlen(cmd_summary) - 1);
+        int bad = 0;
+        ccode_buf_init(&summary);
+        for (j = 0; j < argc && j < 3 && !bad; j++) {
+            if (j > 0 && ccode_buf_append_c(&summary, ' ') != 0) bad = 1;
+            else if (ccode_buf_append(&summary, argv[j]) != 0) bad = 1;
         }
-        if (argc > 3) strncat(cmd_summary, " ...", sizeof(cmd_summary) - strlen(cmd_summary) - 1);
-        change_log_add_ex(ctx, "command", cmd_summary,
+        if (!bad && argc > 3 && ccode_buf_append(&summary, " ...") != 0) bad = 1;
+        if (bad) {
+            ccode_buf_free(&summary);
+            goto oom;
+        }
+        change_log_add_ex(ctx, "command", summary.data ? summary.data : "",
                        WIFEXITED(status) ? WEXITSTATUS(status) : -1,
                        timed_out, 0, truncated_out || stdout_preview_cut,
                        truncated_err || stderr_preview_cut);
+        ccode_buf_free(&summary);
     }
     /* Archive the raw stdout whenever the inline preview was cut, by the
      * byte cap (tail present) or by the escaped-length budget, so the model

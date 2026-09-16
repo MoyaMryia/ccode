@@ -10,46 +10,45 @@
 
 char *ccode_models_fetch(const char *api_base, const char *api_key) {
     struct ccode_web_fetch_opts opts;
-    char url[4096];
-    char auth_header[4096];
+    struct ccode_buf url;
+    struct ccode_buf auth_header;
     char *result;
     char *models_json = NULL;
-    size_t url_len;
 
     if (!api_base || !api_key) return NULL;
 
+    ccode_buf_init(&url);
+    ccode_buf_init(&auth_header);
+
     /* Build the models endpoint URL. */
-    url_len = strlen(api_base);
-    if (url_len >= sizeof(url) - 10) return NULL;
-    memcpy(url, api_base, url_len);
-    url[url_len] = '\0';
+    if (ccode_buf_append(&url, api_base) != 0) goto fail;
 
     /* Strip trailing slash if present for consistent URL building. */
-    if (url_len > 0 && url[url_len - 1] == '/')
-        url[--url_len] = '\0';
+    if (url.len > 0 && url.data[url.len - 1] == '/')
+        ccode_buf_truncate(&url, url.len - 1);
 
     /* Normalize to the OpenAI-compatible /v1/models endpoint. */
-    if (url_len >= 3 && strcmp(url + url_len - 3, "/v1") == 0) {
-        if (url_len + 8 >= sizeof(url)) return NULL;
-        memcpy(url + url_len, "/models", 8);
-        url[url_len + 7] = '\0';
+    if (url.len >= 3 && strcmp(url.data + url.len - 3, "/v1") == 0) {
+        if (ccode_buf_append(&url, "/models") != 0) goto fail;
     } else {
-        if (url_len + 12 >= sizeof(url)) return NULL;
-        memcpy(url + url_len, "/v1/models", 11);
-        url[url_len + 10] = '\0';
+        if (ccode_buf_append(&url, "/v1/models") != 0) goto fail;
     }
 
     /* Build Authorization header. */
-    snprintf(auth_header, sizeof(auth_header), "Bearer %s", api_key);
+    if (ccode_buf_append(&auth_header, "Bearer ") != 0 ||
+        ccode_buf_append(&auth_header, api_key) != 0)
+        goto fail;
 
     memset(&opts, 0, sizeof(opts));
-    opts.url = url;
+    opts.url = url.data;
     opts.method = "GET";
     opts.timeout_sec = 15;
     opts.max_size = 1024 * 512; /* 512KB max for model list */
-    opts.auth_header = auth_header;
+    opts.auth_header = auth_header.data;
 
     result = ccode_web_fetch(&opts);
+    ccode_buf_free(&url);
+    ccode_buf_free(&auth_header);
     if (!result) return NULL;
 
     /* Extract just the content field from the web_fetch JSON response.
@@ -74,6 +73,11 @@ char *ccode_models_fetch(const char *api_base, const char *api_key) {
         /* No usable content field: pass the raw response through. */
         return result;
     }
+
+fail:
+    ccode_buf_free(&url);
+    ccode_buf_free(&auth_header);
+    return NULL;
 }
 
 /* Verify that model is present in the API model list.

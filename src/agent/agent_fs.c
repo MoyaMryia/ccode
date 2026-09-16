@@ -284,24 +284,22 @@ int append_json_escaped_fixed(char *buf, size_t cap, size_t *pos,
 }
 
 char *format_tool_error_reason(const char *error, const char *reason) {
-    char buf[768];
-    size_t pos = 0;
-
-    buf[0] = '\0';
-    if (!error) error = "Tool refused";
-    if (append_fixed_cstr(buf, sizeof(buf), &pos, "{\"error\":\"") != 0 ||
-        append_json_escaped_fixed(buf, sizeof(buf), &pos, error) != 0 ||
-        append_fixed_cstr(buf, sizeof(buf), &pos, "\"") != 0)
-        return ccode_strdup("{\"error\":\"Tool refused\"}");
+    static const char fallback[] = "{\"error\":\"Tool refused\"}";
+    struct ccode_buf out;
+    ccode_buf_init(&out);
+    if (ccode_buf_append(&out, "{\"error\":") != 0 ||
+        ccode_json_append_quoted(&out, error ? error : "Tool refused") != 0)
+        goto fail;
     if (reason && reason[0] != '\0') {
-        if (append_fixed_cstr(buf, sizeof(buf), &pos, ",\"reason\":\"") != 0 ||
-            append_json_escaped_fixed(buf, sizeof(buf), &pos, reason) != 0 ||
-            append_fixed_cstr(buf, sizeof(buf), &pos, "\"") != 0)
-            return ccode_strdup("{\"error\":\"Tool refused\"}");
+        if (ccode_buf_append(&out, ",\"reason\":") != 0 ||
+            ccode_json_append_quoted(&out, reason) != 0)
+            goto fail;
     }
-    if (append_fixed_cstr(buf, sizeof(buf), &pos, "}") != 0)
-        return ccode_strdup("{\"error\":\"Tool refused\"}");
-    return ccode_strdup(buf);
+    if (ccode_buf_append(&out, "}") != 0) goto fail;
+    return ccode_buf_detach(&out);
+fail:
+    ccode_buf_free(&out);
+    return ccode_strdup(fallback);
 }
 
 /* ── Change tracking ── */
@@ -389,39 +387,23 @@ void task_list_reset(struct agent_context *ctx) {
 }
 
 const char *task_list_serialize(struct agent_context *ctx) {
-    static char buf[4096];
-    size_t pos = 0;
-    int i;
-    pos = (size_t)snprintf(buf, sizeof(buf), "{\"tasks\":[");
-    for (i = 0; i < ctx->task_count; i++) {
-        size_t entry_start = pos;
-        if (i > 0) {
-            if (pos + 1 >= sizeof(buf)) goto truncated;
-            buf[pos++] = ',';
-        }
-        if (pos + 12 >= sizeof(buf) ||
-            append_fixed_cstr(buf, sizeof(buf), &pos, "{\"id\":\"") != 0 ||
-            append_json_escaped_fixed(buf, sizeof(buf), &pos, ctx->task_list[i].id) != 0 ||
-            append_fixed_cstr(buf, sizeof(buf), &pos, "\",\"content\":\"") != 0 ||
-            append_json_escaped_fixed(buf, sizeof(buf), &pos, ctx->task_list[i].content) != 0 ||
-            append_fixed_cstr(buf, sizeof(buf), &pos, "\",\"status\":\"") != 0 ||
-            append_json_escaped_fixed(buf, sizeof(buf), &pos, ctx->task_list[i].status) != 0 ||
-            append_fixed_cstr(buf, sizeof(buf), &pos, "\"}") != 0)
-            goto truncate_entry;
-        if (pos >= sizeof(buf) - 100) goto truncate_entry;
-        continue;
-
-truncate_entry:
-        pos = entry_start;
-        goto truncated;
+    static struct ccode_buf buf;
+    size_t i;
+    ccode_buf_clear(&buf);
+    if (ccode_buf_append(&buf, "{\"tasks\":[") != 0) return "{\"tasks\":[]}";
+    for (i = 0; i < (size_t)ctx->task_count; i++) {
+        if ((i > 0 && ccode_buf_append(&buf, ",") != 0) ||
+            ccode_buf_append(&buf, "{\"id\":") != 0 ||
+            ccode_json_append_quoted(&buf, ctx->task_list[i].id) != 0 ||
+            ccode_buf_append(&buf, ",\"content\":") != 0 ||
+            ccode_json_append_quoted(&buf, ctx->task_list[i].content) != 0 ||
+            ccode_buf_append(&buf, ",\"status\":") != 0 ||
+            ccode_json_append_quoted(&buf, ctx->task_list[i].status) != 0 ||
+            ccode_buf_append(&buf, "}") != 0)
+            return "{\"tasks\":[]}";
     }
-    snprintf(buf + pos, sizeof(buf) - pos, "]}");
-    return buf;
-
-truncated:
-    if (pos > sizeof(buf) - 32) pos = sizeof(buf) - 32;
-    snprintf(buf + pos, sizeof(buf) - pos, "],\"truncated\":true}");
-    return buf;
+    if (ccode_buf_append(&buf, "]}") != 0) return "{\"tasks\":[]}";
+    return buf.data;
 }
 
 char *exec_task_create(struct agent_context *ctx, const char *content) {

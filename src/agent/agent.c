@@ -1409,29 +1409,33 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
             printf("" CCODE_ANSI("1") "Session summary:" CCODE_ANSI("0") "\n");
             for (i = 0; i < ctx->change_count; i++) {
                 if (strcmp(ctx->change_log[i].type, "command") == 0) {
-                    char extra[80] = "";
+                    struct ccode_buf extra;
+                    ccode_buf_init(&extra);
                     fputs("  command: ", stdout);
                     ccode_fprint_safe(stdout, ctx->change_log[i].target, "");
                     if (ctx->change_log[i].timed_out)
-                        strncat(extra, ", timed out", sizeof(extra) - strlen(extra) - 1);
+                        ccode_buf_append(&extra, ", timed out");
                     if (ctx->change_log[i].stdout_truncated)
-                        strncat(extra, ", stdout truncated", sizeof(extra) - strlen(extra) - 1);
+                        ccode_buf_append(&extra, ", stdout truncated");
                     if (ctx->change_log[i].stderr_truncated)
-                        strncat(extra, ", stderr truncated", sizeof(extra) - strlen(extra) - 1);
+                        ccode_buf_append(&extra, ", stderr truncated");
                     if (ctx->change_log[i].denied)
-                        strncat(extra, ", denied", sizeof(extra) - strlen(extra) - 1);
+                        ccode_buf_append(&extra, ", denied");
                     fprintf(stdout, " (exit=%d%s)\n", ctx->change_log[i].exit_code,
-                            extra);
+                            extra.data ? extra.data : "");
+                    ccode_buf_free(&extra);
                 } else {
-                    char extra[32] = "";
+                    struct ccode_buf extra;
+                    ccode_buf_init(&extra);
                     if (ctx->change_log[i].denied)
-                        strncat(extra, " (denied)", sizeof(extra) - strlen(extra) - 1);
+                        ccode_buf_append(&extra, " (denied)");
                     fputs("  ", stdout);
                     ccode_fprint_safe(stdout, ctx->change_log[i].type, "");
                     fputs(": ", stdout);
                     ccode_fprint_safe(stdout, ctx->change_log[i].target, "");
-                    fputs(extra, stdout);
+                    fputs(extra.data ? extra.data : "", stdout);
                     fputc('\n', stdout);
+                    ccode_buf_free(&extra);
                 }
             }
         }
@@ -2108,28 +2112,32 @@ cleanup:
             printf("" CCODE_ANSI("1") "Session summary:" CCODE_ANSI("0") "\n");
             for (i = 0; i < ctx->change_count; i++) {
                 if (strcmp(ctx->change_log[i].type, "command") == 0) {
-                    char extra[80] = "";
+                    struct ccode_buf extra;
+                    ccode_buf_init(&extra);
                     fputs("  command: ", stdout);
                     ccode_fprint_safe(stdout, ctx->change_log[i].target, "");
                     if (ctx->change_log[i].timed_out)
-                        strncat(extra, ", timed out", sizeof(extra) - strlen(extra) - 1);
+                        ccode_buf_append(&extra, ", timed out");
                     if (ctx->change_log[i].stdout_truncated)
-                        strncat(extra, ", stdout truncated", sizeof(extra) - strlen(extra) - 1);
+                        ccode_buf_append(&extra, ", stdout truncated");
                     if (ctx->change_log[i].stderr_truncated)
-                        strncat(extra, ", stderr truncated", sizeof(extra) - strlen(extra) - 1);
+                        ccode_buf_append(&extra, ", stderr truncated");
                     if (ctx->change_log[i].denied)
-                        strncat(extra, ", denied", sizeof(extra) - strlen(extra) - 1);
-                    fprintf(stdout, " (exit=%d%s)\n", ctx->change_log[i].exit_code, extra);
+                        ccode_buf_append(&extra, ", denied");
+                    fprintf(stdout, " (exit=%d%s)\n", ctx->change_log[i].exit_code, extra.data ? extra.data : "");
+                    ccode_buf_free(&extra);
                 } else {
-                    char extra[32] = "";
+                    struct ccode_buf extra;
+                    ccode_buf_init(&extra);
                     if (ctx->change_log[i].denied)
-                        strncat(extra, " (denied)", sizeof(extra) - strlen(extra) - 1);
+                        ccode_buf_append(&extra, " (denied)");
                     fputs("  ", stdout);
                     ccode_fprint_safe(stdout, ctx->change_log[i].type, "");
                     fputs(": ", stdout);
                     ccode_fprint_safe(stdout, ctx->change_log[i].target, "");
-                    fputs(extra, stdout);
+                    fputs(extra.data ? extra.data : "", stdout);
                     fputc('\n', stdout);
+                    ccode_buf_free(&extra);
                 }
             }
         }
