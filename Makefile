@@ -134,6 +134,9 @@ TEST_MD_SRC = tests/test_markdown.c vendor/markdown/markdown.c vendor/json/json.
 TTY_TEST := $(shell python3 -c "import pty" 2>/dev/null && echo 1)
 TEST_TARGETS = test-json test-agent test-http
 TEST_TARGETS += test-tui
+ifneq ($(TTY_TEST),)
+TEST_TARGETS += test-lineedit
+endif
 # test-tui-commands drives the combined `ccode` binary. Not in the default
 # `test` target: the default build does not produce ccode/ccode-tui.
 # TEST_TARGETS += test-tui-commands
@@ -444,6 +447,13 @@ test-tui: tests/test_tui
 tests/test_tui: $(TEST_TUI_SRC) vendor/lineedit/input.c src/tui/messages.c src/tui/render.c src/tui/protocol.c vendor/markdown/markdown.c vendor/json/json.c $(RETRO_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 
+test-lineedit: tests/test_lineedit
+	./tests/test_lineedit
+
+# pty-backed regression test for the tty line editor (escape sequences).
+tests/test_lineedit: tests/test_lineedit.c vendor/lineedit/lineedit.c vendor/lineedit/input.c vendor/json/json.c $(RETRO_SRC)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
+
 # 单体 ccode 的进程内 TUI slash 命令（pty 驱动，需要 Python3）。
 # 手动运行：先 `make ccode`（默认构建不产出该二进制）。
 test-tui-commands: ccode
@@ -544,4 +554,4 @@ asan: clean
 repro: clean
 	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 SIZE_CFLAGS= SIZE_LDFLAGS= CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic -Werror $(X86_GNU_FLAGS) -ffile-prefix-map=$(PWD)=."
 
-.PHONY: ccode ccode-tui ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-markdown test-tui-commands test-tui-real test-tty test-e2e test-streaming retro-test asan repro test-sandbox fuzz-tool-args fuzz-tool-args-asan fuzz-command-paths fuzz-paths mutate
+.PHONY: ccode ccode-tui ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-lineedit test-markdown test-tui-commands test-tui-real test-tty test-e2e test-streaming retro-test asan repro test-sandbox fuzz-tool-args fuzz-tool-args-asan fuzz-command-paths fuzz-paths mutate

@@ -109,6 +109,11 @@ int tui_input_cursor_column(const struct tui_input *input) {
     return input_column_between(input, 0, input->cursor);
 }
 
+int tui_input_column_at(const struct tui_input *input, size_t pos) {
+    if (pos > input->len) pos = input->len;
+    return input_column_between(input, 0, pos);
+}
+
 size_t tui_input_view_start(const struct tui_input *input, int max_cols) {
     size_t start = 0;
     if (max_cols <= 0) return input->cursor;

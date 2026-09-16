@@ -206,9 +206,18 @@ stress_real_project.py（本仓库源码树，glob/grep/分页/bash/md5/edit
   （不再 fgets，不再把超长行残留当下一行）；agent.c 的 `getchar()` 排空
   循环删除；agent.c/permissions.c 继续走 `ccode_read_line`。
 
-`tui/term.c` 的转义序列键解码（方向键处理，lineedit 不需要）与
-`tui/protocol.c` 的非阻塞 fd 分帧（poll 驱动、跨调用缓存半行）作为独立层
-保留（AUDIT #2）。`tui/input.c` 的编辑内核已与 lineedit 共用。
+`tui/term.c` 的转义序列键解码与 `tui/protocol.c` 的非阻塞 fd 分帧（poll
+驱动、跨调用缓存半行）作为独立层保留（AUDIT #2）。`tui/input.c` 的编辑内核已与
+lineedit 共用。
+
+2026-09-16 修复：lineedit 原来只丢弃 ESC 控制字节，方向键的 CSI 尾部（`[A` 等）
+会当作普通字符插入缓冲区。现在 raw 编辑器自带一个小的转义序列解码器
+（SS3/CSI，含 modified/括号粘贴的整段吞掉），支持 ←/→/Home/End/Delete 以及
+emacs 风 Ctrl-A/E/K/U/W，并整行重绘（`\033[K` + 回退光标）以支持行中编辑。
+输入侧还会先把一个完整 UTF-8 序列（含 1 字节 pushback，遇到非续接字节比如方向键
+的 ESC 会退回）组装好再插入/重绘，避免变长字符在重绘时被拆成截断序列跟上
+ESC 序列。键盘输入回归测试 `tests/test_lineedit.c`（pty 驱动，
+`make test-lineedit`）覆盖，含终端输出流无截断 UTF-8 的检查。
 
 ### 已全部收敛（2026-09-13）
 

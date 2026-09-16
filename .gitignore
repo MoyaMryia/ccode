@@ -13,6 +13,7 @@ tests/test_agent
 tests/test_agent_asan
 tests/test_permissions
 tests/test_tui
+tests/test_lineedit
 tests/test_markdown
 test-sandbox/
 tests/fixtures/
