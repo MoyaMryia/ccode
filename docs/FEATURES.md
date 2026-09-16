@@ -22,7 +22,8 @@
 - `read_file` / `edit_file` / `glob` / `grep`（支持正则）；`edit_file` 空
   `old_string` 原子创建新文件，pre-rename 校验要求目标不存在，永不覆盖
 - `bash`（唯一命令工具；可选 `timeout_ms`，默认 120s 上限 300s；审批
-  display 显式构造，超长报错不静默截断）
+  display 显式构造，超长报错不静默截断；静态扫描确认所有路径 token 都在
+  工作区内时自动放行，否则弹审批）
 - `task`（action=create/update/list，字段组合按 action 严格校验）
 - `read_tool_output`（只读）：按 `tool_call_id` 分页取回被存档的超长工具输出窗口（`offset`/`limit`，单次上限 64 KiB；命令可选 `stream=stdout|stderr`，默认 stdout，无 stdout 存档时自动选 stderr），越界/未知 id/非当前会话一律结构化报错
 - `delete_file` / `move_file`（限工作区内）
@@ -53,9 +54,15 @@
 
 ### 安全
 
-- 命令级过滤：敏感路径（密钥、云凭据、`/proc/self/environ` 等）按文件名边界匹配（`known_hosts_sample.txt` 不再误伤），破坏性命令（`mkfs`、`dd`、`chown` 等）拒绝；软路径（`/home/`、`/root/`、`/.config/`）仅在工作区或属主自己的 home 内放行，且逐命中路径判定，防止"提一句工作区"绕过；工具结果带具体原因回给模型（`{"error":..,"reason":..}`，写明命中的规则与越界值，路径类拒绝同此）
+- 命令风险分级（`security/sandbox.c` 的 `ccode_command_classify`）：**A 直接拒绝**——`rm -rf /` 或关键系统目录、`find / -delete`、覆盖/删除 `passwd`/`shadow`/`sudoers`、写 `sysrq-trigger`/`/dev/mem`；**B 拒绝并提示转交用户**——裸设备写/抹除、`mkfs`/分区表工具/引导固件、`mknod b|c`、作用于设备或 `/` 的 `fsck`（错误里明写“如确属必需，请告诉用户，不要绕过”）；**C 需输入 `Yes`**——`sudo`/`doas`/`pkexec`、硬敏感路径（私钥、`.aws/credentials`、`.netrc`、`.gnupg`、`etc/shadow`、`proc/self/environ` 等）、`chown`/`chattr`、命令替换；**D 需输入 `Yes, do as I say.`**——`shutdown`/`reboot`/`poweroff`/`halt`/`systemctl` 电源、fork bomb、`chmod -R 000 /`、`chown -R /`；**E 需输入 `y`**——工作区外软敏感/普通越界路径。敏感词/路径按词或文件名边界匹配，软路径仅在工作区或属主 home 内放行且逐命中判定（`known_hosts_sample.txt` 不误伤）
+- 硬拒绝（A/B）不可在带内批准；C/D 强制整句确认且**无视 `--auto-approve`**（`y` 对 C 档、`Yes` 对 D 档会被打回重问），只有 `--allowdanger` 能全局关闭
 - 文件路径校验与 fd 相对遍历拒绝 Windows 分隔符（`\`、`X:`、UNC），避免 POSIX-only 组件遍历在 Win32 被绕过；`~`/`~\`/`$HOME/`/`${HOME}/` 一律识别为 home 路径
-- 工具审批：`y` 批准、`n` 拒绝；其它输入视为拒绝并把原文作为原因回给模型
+- 工具审批：默认免审批面 = `read_file`/`glob`/`grep`/`read_tool_output`、
+  `web_fetch`/`web_search`（各自的黑名单/SSRF/限流门仍生效）、`task`、
+  `agent_tool`（读-写子代理自己的写工具仍逐次弹审批）；`edit_file`/`move_file`
+  仅在路径可确认为工作区内时免审批，`bash` 仅在静态扫描确认所有路径 token
+  都在工作区内时免审批；`delete_file` 始终弹审批。分级确认见上一条；`n` 在任何档
+  都拒绝且可跟原因，其它输入按档位处理（C/D 档强度不足时重新提示）
 - 子进程最小环境（不继承任何父环境变量）
 - Landlock 写沙箱（Linux 可用时自动启用，否则退回命令过滤）；沙箱只放行 `/dev` 下已有设备的 `WRITE_FILE`（如 `/dev/null`），不放开设备节点创建/删除，避免 `git` 等常规命令被误伤
 - 密钥文件要求 0600 权限 + 单硬链接

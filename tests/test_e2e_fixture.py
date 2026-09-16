@@ -220,10 +220,10 @@ def main():
             print("    content: %s" % content[:100])
             tests_failed += 1
 
-        if approved >= 2:
-            print("  PASS: %d tool approvals handled" % approved)
+        if approved == 0:
+            print("  PASS: workspace-confined tools auto-approved (no prompts)")
         else:
-            print("  FAIL: only %d tools approved (expected >= 2)" % approved)
+            print("  FAIL: expected 0 approvals, got %d" % approved)
             tests_failed += 1
 
         if "[run]" in output:
@@ -300,10 +300,10 @@ def main():
         else:
             print("  SKIP: git diff assertion (git baseline unavailable)")
 
-        if approved >= 6:
-            print("  PASS: %d tool approvals handled" % approved)
+        if approved == 0:
+            print("  PASS: workspace-confined tools auto-approved (no prompts)")
         else:
-            print("  FAIL: only %d tools approved (expected >= 6)" % approved)
+            print("  FAIL: expected 0 approvals, got %d" % approved)
             tests_failed += 1
 
     except Exception as e:
@@ -493,11 +493,11 @@ def main():
     if 'sub_dir' in dir():
         subprocess.run(["rm", "-rf", sub_dir], capture_output=True)
 
-    # Test 5b: A read-only delegate's own read tool must not prompt. The
-    # forked child shares the parent's terminal from a non-foreground process
-    # group, so prompting there raised SIGTTIN and froze the child while the
-    # parent waited in poll() forever. The only approval in this workflow is
-    # the parent's agent_tool call; the delegate's read_file must auto-approve.
+    # Test 5b: Neither the parent's agent_tool call nor the read-only
+    # delegate's read tools prompt any more: delegation is always
+    # auto-approved, and the delegate only holds non-mutating, workspace-
+    # confined tools. (Prompting in the forked child used to raise SIGTTIN
+    # and freeze it while the parent waited in poll() forever.)
     tests_run += 1
     print("--- workflow: read-only sub-agent auto-approves its reads ---")
     try:
@@ -518,11 +518,10 @@ def main():
                   % output[:400])
             tests_failed += 1
 
-        if approved == 1:
-            print("  PASS: only the parent tool call was approved")
+        if approved == 0:
+            print("  PASS: no prompts (delegation and reads auto-approved)")
         else:
-            print("  FAIL: expected exactly 1 approval, got %d "
-                  "(delegate prompted for its own read)" % approved)
+            print("  FAIL: expected 0 approvals, got %d" % approved)
             tests_failed += 1
 
     except Exception as e:

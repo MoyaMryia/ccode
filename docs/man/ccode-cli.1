@@ -37,10 +37,22 @@ are paused but documented for reference.
 The agent can inspect and modify the workspace with tools; by default
 only read-only tools are enabled, pass
 .B \-\-write
-to enable write tools. Tools run only after interactive confirmation
-unless
-.B \-\-auto-approve
-is given.
+to enable write tools. Read-only tools, web_fetch/web_search, task and
+agent_tool run without confirmation; edit_file/move_file and bash run
+without confirmation only while every path they touch stays inside the
+workspace. delete_file and any call that may leave the workspace always
+prompt.
+.PP
+Dangerous bash commands are classified before approval: credential or
+elevated commands require typing
+.BR Yes ;
+power/resource-destroying commands require typing
+.BR \&Yes,\ do\ as\ I\ say. ;
+raw-device, filesystem, partition and boot changes are refused and the
+model is told to hand them to the user; commands that would destroy the
+running system are refused outright. The typed confirmations are not
+bypassed by
+.BR \-\-auto-approve .
 .SH OPTIONS
 .TP
 .BI \-p ", " \-\-prompt " TEXT"
@@ -111,8 +123,9 @@ but also print each provider tool call as raw OpenAI response JSON
 on stderr. Off by default.
 .TP
 .B \-\-auto-approve
-Approve all tool requests without prompting (also
+Approve all remaining tool requests without prompting (also
 .BR CCODE_AUTO_APPROVE=1 ).
+Dangerous bash commands still require their typed confirmation.
 .TP
 .B \-\-allowdanger
 DANGER: disable every tool-call security check \em sensitive-path and

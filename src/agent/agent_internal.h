@@ -211,6 +211,11 @@ int append_json_escaped_fixed(char *buf, size_t cap, size_t *pos,
 char *format_tool_error_reason(const char *error, const char *reason);
 char *command_policy_refuse(struct agent_context *ctx,
                             const struct prepared_tool *prepared);
+/* Risk class of a prepared bash call (enum ccode_command_class from
+ * security/sandbox.h). Returns int to avoid an enum dependency here. */
+int command_policy_classify(struct agent_context *ctx,
+                            const struct prepared_tool *prepared,
+                            char *reason, size_t reason_size);
 void change_log_reset(struct agent_context *ctx);
 void change_log_add_ex(struct agent_context *ctx, const char *type,
                               const char *target, int exit_code,

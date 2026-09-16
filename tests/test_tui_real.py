@@ -246,16 +246,16 @@ def test_fork_tui(workspace, session_dir, failures):
         if "**" in md.split("__ccode_test_tui-markdown")[-1]:
             failures.append("fork: markdown bold markers leaked raw")
 
-        # Permission allow: write_file approved -> tool runs -> file exists.
+        # Workspace-confined writes auto-approve: the edit runs with no
+        # permission prompt, so no "Allow?" frame may appear.
         mark = len(tui.buf)
         tui.submit("__ccode_test_write-calls")
-        if not tui.read_until("Allow?", mark=mark):
-            failures.append("fork: permission prompt never shown")
-        tui.send(b"y")
-        if not tui.read_until("Write result received."):
-            failures.append("fork: turn after allow never finished")
+        if not tui.read_until("Write result received.", mark=mark):
+            failures.append("fork: write turn never finished")
         if not wait_for_file(os.path.join(workspace, "integration-write.txt")):
-            failures.append("fork: approved write_file did not run")
+            failures.append("fork: auto-approved write did not run")
+        if "Allow?" in strip_ansi(tui.buf[mark:]):
+            failures.append("fork: confined write prompted for approval")
 
         # Permission deny: both requests refused, no side effects. Each
         # prompt must be matched with a fresh mark: the redraw loop keeps
@@ -355,12 +355,11 @@ def test_inproc_tui(workspace, session_dir, failures):
 
         # Permission prompt dismissed with Ctrl-C: the in-process agent's
         # SIGINT handler raises the cancel flag; the prompt must deny,
-        # abort the turn and return to a working input row. Recovery is
-        # asserted via /history — every later model turn would still route
-        # to the write-calls fixture (the last prefixed prompt wins), so a
-        # plain echo assertion cannot prove recovery here.
+        # abort the turn and return to a working input row. This fixture
+        # forces a prompt (out-of-workspace path); recovery is asserted via
+        # /history, since a later plain echo cannot prove the loop recovered.
         mark = len(tui.buf)
-        tui.submit("__ccode_test_write-calls")
+        tui.submit("__ccode_test_deny-no-side-effects")
         if not tui.read_until("Allow?", mark=mark):
             failures.append("inproc: permission prompt never shown")
         tui.send(b"\x03")
@@ -369,10 +368,10 @@ def test_inproc_tui(workspace, session_dir, failures):
         tui.settle()
         mark = len(tui.buf)
         tui.submit("/history")
-        if not tui.read_until("__ccode_test_write-calls", mark=mark):
+        if not tui.read_until("__ccode_test_deny-no-side-effects", mark=mark):
             failures.append("inproc: TUI stuck after Ctrl-C on prompt")
-        if os.path.exists(os.path.join(workspace, "integration-write.txt")):
-            failures.append("inproc: Ctrl-C approved the write (should deny)")
+        if os.path.exists(os.path.join(workspace, "must_not_exist.txt")):
+            failures.append("inproc: Ctrl-C approved the tool (should deny)")
 
         # Auto session chain exists for the prompts above.
         if not any(f.startswith("auto-") for f in os.listdir(session_dir)):

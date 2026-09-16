@@ -145,7 +145,7 @@ SSE 按行解析 `data:` 事件，支持重定向、超时控制。
 
 ### security/permissions.c — 审批
 
-默认所有工具请求都拒绝，等用户确认。可以装自定义 handler（TUI 用对话框，JSON 模式走协议消息）。`--auto-approve` 跳过审批。
+默认所有工具请求都拒绝，等用户确认。可以装自定义 handler（TUI 用对话框，JSON 模式走协议消息）。`agent.c` 的 `tool_auto_approved()` 先给免审批分级：只读工具、`web_fetch`/`web_search`、`task`、`agent_tool` 直接放行；`edit_file`/`move_file` 看路径能否确认为工作区内（`is_workspace_relative_path()`）。`bash` 先过 `ccode_command_classify()`（`security/sandbox.c`）：A（自毁）直接拒、B（设备/文件系统/引导）拒绝并让模型转交用户、C/D/E 分别要求输入 `Yes` / `Yes, do as I say.` / `y`。C/D 档忽略 `--auto-approve`，只有 `--allowdanger` 全局关闭；`delete_file` 始终弹审批。TUI 单键输入不支持整句确认，C/D 档在 TUI 里 fail-closed（提示改用 CLI），待后续单独实现行输入。
 
 ### tui/ — 终端界面
 

@@ -1281,6 +1281,10 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
                     size_t tot = 0;
                     if (ccode_results_archive(ctx, full, got, "", 0,
                                               &bid, &tot) == 0) {
+                        /* Replace any previous blob (a prior tool in the
+                         * same turn may have left one): exec_run_command_ex
+                         * frees at entry, so mirror that here. */
+                        free(ctx->last_result_blob);
                         ctx->last_result_blob = bid;
                         ctx->last_result_total = tot;
                     }

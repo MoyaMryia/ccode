@@ -128,6 +128,7 @@ int main(void) {
     memset(long_target, 'a', sizeof(long_target) - 1);
     long_target[sizeof(long_target) - 1] = '\0';
 
+    memset(&req, 0, sizeof(req));
     req.tool_name = "shell\033[2J\nname\177";
     req.target = "target\001x \342\200\256 ";
     req.workspace_root = "root\r\t \302\205 \342\201\246/end";
@@ -180,6 +181,44 @@ int main(void) {
         assert(strcmp(parsed.deny_reason, "too dangerous") == 0);
         assert(ccode_permission_parse_reply("don't touch /etc\n", &parsed) == 0);
         assert(strcmp(parsed.deny_reason, "don't touch /etc") == 0);
+    }
+
+    {
+        struct ccode_permission_request tier;
+        const char *p2;
+        const char *p3;
+        memset(&tier, 0, sizeof(tier));
+
+        tier.danger_level = CCODE_CONFIRM_Y;
+        assert(ccode_permission_parse_reply("y\n", &tier) == 1);
+        assert(ccode_permission_parse_reply("yes\n", &tier) == 1);
+        assert(ccode_permission_parse_reply("n\n", &tier) == 0);
+
+        tier.danger_level = CCODE_CONFIRM_YES;
+        assert(ccode_permission_parse_reply("y\n", &tier) == -1);
+        assert(ccode_permission_parse_reply("yes\n", &tier) == 1);
+        assert(ccode_permission_parse_reply("Yes\n", &tier) == 1);
+        assert(ccode_permission_parse_reply("Yes, do as I say.\n", &tier) == 1);
+        assert(ccode_permission_parse_reply("n\n", &tier) == 0);
+
+        tier.danger_level = CCODE_CONFIRM_YES_DO_AS_I_SAY;
+        assert(ccode_permission_parse_reply("Yes\n", &tier) == -1);
+        assert(ccode_permission_parse_reply("yes\n", &tier) == -1);
+        assert(ccode_permission_parse_reply("Yes, do as I say.\n", &tier) == 1);
+        assert(ccode_permission_parse_reply("yes, do as i say\n", &tier) == 1);
+        assert(ccode_permission_parse_reply("Yes, do as I say\n", &tier) == 1);
+        assert(ccode_permission_parse_reply("n\n", &tier) == 0);
+
+        assert(ccode_permission_required_phrase(0) == NULL);
+        p2 = ccode_permission_required_phrase(CCODE_CONFIRM_YES);
+        assert(p2 != NULL && strcmp(p2, "Yes") == 0);
+        p3 = ccode_permission_required_phrase(CCODE_CONFIRM_YES_DO_AS_I_SAY);
+        assert(p3 != NULL && strcmp(p3, "Yes, do as I say.") == 0);
+        assert(ccode_permission_reply_matches("y", CCODE_CONFIRM_YES) == 0);
+        assert(ccode_permission_reply_matches("Yes", CCODE_CONFIRM_YES) == 1);
+        assert(ccode_permission_reply_matches(
+                   "Yes, do as I say.",
+                   CCODE_CONFIRM_YES_DO_AS_I_SAY) == 1);
     }
 
     puts("permission display escaping tests passed");

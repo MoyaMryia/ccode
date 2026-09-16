@@ -79,6 +79,7 @@ void ccode_atomic_fail_inject(int stage);
 void ccode_atomic_fail_inject_clear(void);
 void test_agent_context_init(void);
 int test_command_policy_refused(const char *cmd, int allow_danger);
+int test_tool_auto_approved(const char *name, const char *arguments);
 void test_change_log_reset(void);
 int test_change_log_count(void);
 const char *test_change_log_serialize(void);
@@ -3115,6 +3116,84 @@ static int test_sensitive_reason_names_the_path(void) {
     return 1;
 }
 
+/* The workspace-confined predicate feeding bash auto-approval: a yes only
+ * when every path token can be positively placed inside the workspace. */
+static int test_command_stays_in_workspace(void) {
+    const char *ws = "/home/bob/proj";
+
+    ASSERT(ccode_command_stays_in_workspace("make -j4", ws) == 1);
+    ASSERT(ccode_command_stays_in_workspace("gcc -o build/out src/main.c",
+                                            ws) == 1);
+    ASSERT(ccode_command_stays_in_workspace("./configure --prefix=build",
+                                            ws) == 1);
+    ASSERT(ccode_command_stays_in_workspace("rm -rf build", ws) == 1);
+    ASSERT(ccode_command_stays_in_workspace("cat src/x.c | grep foo",
+                                            ws) == 1);
+    ASSERT(ccode_command_stays_in_workspace("echo hi > out.txt", ws) == 1);
+    ASSERT(ccode_command_stays_in_workspace("make OUT=build/x", ws) == 1);
+    ASSERT(ccode_command_stays_in_workspace("ls . /home/bob/proj/src",
+                                            ws) == 1);
+
+    ASSERT(ccode_command_stays_in_workspace("cat /etc/passwd", ws) == 0);
+    ASSERT(ccode_command_stays_in_workspace("cat ../secret", ws) == 0);
+    ASSERT(ccode_command_stays_in_workspace("cat ~/.bashrc", ws) == 0);
+    ASSERT(ccode_command_stays_in_workspace("cd /tmp && ls", ws) == 0);
+    ASSERT(ccode_command_stays_in_workspace("echo hi > /tmp/x", ws) == 0);
+    ASSERT(ccode_command_stays_in_workspace("echo $HOME", ws) == 0);
+    ASSERT(ccode_command_stays_in_workspace("echo $(cat /etc/shadow)",
+                                            ws) == 0);
+    ASSERT(ccode_command_stays_in_workspace("curl http://example.com",
+                                            ws) == 0);
+    ASSERT(ccode_command_stays_in_workspace("ls /home/bob/project2", ws) == 0);
+    ASSERT(ccode_command_stays_in_workspace(
+               "ls /home/bob/proj/../secret", ws) == 0);
+    ASSERT(ccode_command_stays_in_workspace("", ws) == 0);
+    ASSERT(ccode_command_stays_in_workspace("ls", NULL) == 0);
+    return 1;
+}
+
+/* Auto-approval tiers: reads/network/task/delegation never prompt,
+ * workspace-confined writes do not, escaping writes and delete do. */
+static int test_tool_auto_approval_tiers(void) {
+    ASSERT(test_tool_auto_approved("read_file",
+                                   "{\"file_path\":\"x\"}") == 1);
+    ASSERT(test_tool_auto_approved("glob", "{\"pattern\":\"*.c\"}") == 1);
+    ASSERT(test_tool_auto_approved("grep", "{\"pattern\":\"x\"}") == 1);
+    ASSERT(test_tool_auto_approved("read_tool_output",
+                                   "{\"tool_call_id\":\"call_1\"}") == 1);
+    ASSERT(test_tool_auto_approved("task", "{\"action\":\"list\"}") == 1);
+    ASSERT(test_tool_auto_approved("agent_tool",
+                                   "{\"task\":\"look around\"}") == 1);
+    ASSERT(test_tool_auto_approved("web_search",
+                                   "{\"query\":\"x\"}") == 1);
+    ASSERT(test_tool_auto_approved("web_fetch",
+                                   "{\"url\":\"https://example.com\"}") == 1);
+
+    ASSERT(test_tool_auto_approved("edit_file",
+        "{\"file_path\":\"sub/x.txt\",\"old_string\":\"a\",\"new_string\":\"b\"}") == 1);
+    ASSERT(test_tool_auto_approved("move_file",
+        "{\"source\":\"a.txt\",\"destination\":\"b.txt\"}") == 1);
+    ASSERT(test_tool_auto_approved("bash",
+                                   "{\"command\":\"make -j4\"}") == 1);
+    ASSERT(test_tool_auto_approved("bash",
+        "{\"command\":\"gcc -o build/out src/main.c\"}") == 1);
+
+    ASSERT(test_tool_auto_approved("edit_file",
+        "{\"file_path\":\"../x.txt\",\"old_string\":\"a\",\"new_string\":\"b\"}") == 0);
+    ASSERT(test_tool_auto_approved("edit_file",
+        "{\"file_path\":\"/etc/x\",\"old_string\":\"a\",\"new_string\":\"b\"}") == 0);
+    ASSERT(test_tool_auto_approved("move_file",
+        "{\"source\":\"a.txt\",\"destination\":\"../b.txt\"}") != 1);
+    ASSERT(test_tool_auto_approved("bash",
+        "{\"command\":\"cat /etc/passwd\"}") == 0);
+    ASSERT(test_tool_auto_approved("bash",
+        "{\"command\":\"cd .. && rm -rf x\"}") == 0);
+
+    ASSERT(test_tool_auto_approved("delete_file",
+                                   "{\"file_path\":\"x.txt\"}") == 0);
+    return 1;
+}
+
 static int test_exec_path_reason_names_the_path(void) {
     char *r;
     test_reset_workspace();
@@ -3127,15 +3206,68 @@ static int test_exec_path_reason_names_the_path(void) {
 }
 
 static int test_allowdanger_disables_command_policy(void) {
-    /* Destructive command: refused normally, allowed under --allowdanger. */
+    /* Destroying the running system is hard-refused unless --allowdanger. */
     ASSERT(test_command_policy_refused("rm -rf /", 0) == 1);
     ASSERT(test_command_policy_refused("rm -rf /", 1) == 0);
-    /* Hard sensitive path (credential material). */
-    ASSERT(test_command_policy_refused("cat /etc/shadow", 0) == 1);
+    /* Device/filesystem work is refused (user-only), not silently allowed. */
+    ASSERT(test_command_policy_refused("mkfs.ext4 /dev/sda", 0) == 1);
+    ASSERT(test_command_policy_refused("mkfs.ext4 /dev/sda", 1) == 0);
+    /* A sensitive *read* is approvable now, not hard-refused. */
+    ASSERT(test_command_policy_refused("cat /etc/shadow", 0) == 0);
     ASSERT(test_command_policy_refused("cat /etc/shadow", 1) == 0);
     /* A benign command is never refused. */
     ASSERT(test_command_policy_refused("ls -la", 0) == 0);
     ASSERT(test_command_policy_refused("ls -la", 1) == 0);
+    return 1;
+}
+
+/* The approval ladder: which commands need which confirmation, and which
+ * two classes are never approvable. */
+static int test_command_classification(void) {
+    char why[256];
+    const char *ws = "/home/bob/proj";
+
+    ASSERT(ccode_command_classify("make -j4", ws, why, sizeof(why)) ==
+           CCODE_CMD_ALLOW);
+    ASSERT(ccode_command_classify("gcc -o build/out src/main.c", ws, why,
+                                  sizeof(why)) == CCODE_CMD_ALLOW);
+    ASSERT(ccode_command_classify("fsck disk.img", ws, why, sizeof(why)) ==
+           CCODE_CMD_ALLOW);
+
+    ASSERT(ccode_command_classify("cat ../secret", ws, why, sizeof(why)) ==
+           CCODE_CMD_TIER1);
+    ASSERT(ccode_command_classify("cat /tmp/other", ws, why, sizeof(why)) ==
+           CCODE_CMD_TIER1);
+
+    ASSERT(ccode_command_classify("sudo make install", ws, why,
+                                  sizeof(why)) == CCODE_CMD_TIER2);
+    ASSERT(ccode_command_classify("cat /home/bob/.ssh/id_rsa", ws, why,
+                                  sizeof(why)) == CCODE_CMD_TIER2);
+    ASSERT(ccode_command_classify("chown root x", ws, why, sizeof(why)) ==
+           CCODE_CMD_TIER2);
+
+    ASSERT(ccode_command_classify("reboot", ws, why, sizeof(why)) ==
+           CCODE_CMD_TIER3);
+    ASSERT(ccode_command_classify("shutdown -h now", ws, why, sizeof(why)) ==
+           CCODE_CMD_TIER3);
+    ASSERT(ccode_command_classify("chmod -R 000 /", ws, why, sizeof(why)) ==
+           CCODE_CMD_TIER3);
+    ASSERT(ccode_command_classify(":(){ :|:& };:", ws, why, sizeof(why)) ==
+           CCODE_CMD_TIER3);
+
+    ASSERT(ccode_command_classify("mkfs.ext4 /dev/sda", ws, why,
+                                  sizeof(why)) == CCODE_CMD_ESCALATE);
+    ASSERT(ccode_command_classify("dd if=/dev/zero of=/dev/sda", ws, why,
+                                  sizeof(why)) == CCODE_CMD_ESCALATE);
+    ASSERT(ccode_command_classify("fsck /dev/sda1", ws, why, sizeof(why)) ==
+           CCODE_CMD_ESCALATE);
+
+    ASSERT(ccode_command_classify("rm -rf /", ws, why, sizeof(why)) ==
+           CCODE_CMD_REFUSE);
+    ASSERT(ccode_command_classify("rm -rf /etc", ws, why, sizeof(why)) ==
+           CCODE_CMD_REFUSE);
+    ASSERT(ccode_command_classify("echo c > /proc/sysrq-trigger", ws, why,
+                                  sizeof(why)) == CCODE_CMD_REFUSE);
     return 1;
 }
 
@@ -4781,31 +4913,29 @@ static int test_command_sandbox_enforced(void) {
     char *r;
 
     test_reset_workspace();
+    /* A sensitive read is approvable, so the exec-time check lets it run. */
     r = test_exec_tool("fixtures", "bash", "{\"command\":\"cat /etc/shadow\"}");
     ASSERT(r != NULL);
-    ASSERT(strstr(r, "sensitive paths") != NULL);
-    ASSERT(strstr(r, "\"reason\":\"") != NULL);
-    ASSERT(strstr(r, "etc/shadow") != NULL);
+    ASSERT(strstr(r, "Refused") == NULL);
     free(r);
 
     r = test_exec_tool("fixtures", "bash", "{\"command\":\"rm -rf /\"}");
     ASSERT(r != NULL);
-    ASSERT(strstr(r, "sensitive paths") != NULL);
+    ASSERT(strstr(r, "Refused") != NULL);
     ASSERT(strstr(r, "filesystem root") != NULL);
     free(r);
 
     r = test_exec_tool("fixtures", "bash",
-                       "{\"command\":\"dd if=/dev/zero of=/tmp/x\"}");
+                       "{\"command\":\"mkfs.ext4 /dev/sda\"}");
     ASSERT(r != NULL);
-    ASSERT(strstr(r, "Destructive") != NULL);
-    ASSERT(strstr(r, "mentions destructive command 'dd'") != NULL);
+    ASSERT(strstr(r, "device/filesystem/boot") != NULL);
+    ASSERT(strstr(r, "tell the user") != NULL);
     free(r);
 
     r = test_exec_tool("fixtures", "bash",
-                       "{\"command\":\"cat /etc/shadow\"}");
+                       "{\"command\":\"dd if=/dev/zero of=/dev/sda\"}");
     ASSERT(r != NULL);
-    ASSERT(strstr(r, "sensitive paths") != NULL);
-    ASSERT(strstr(r, "etc/shadow") != NULL);
+    ASSERT(strstr(r, "Refused") != NULL);
     free(r);
 
     r = test_exec_tool("fixtures", "bash", "{\"command\":\"echo hi\"}");
@@ -5412,6 +5542,14 @@ int main(int argc, char **argv) {
                                                        why, sizeof(why));
                 int d = ccode_command_mentions_destructive_why(text, dw,
                                                                sizeof(dw));
+                char cw[256];
+                /* Exercise the confinement predicate and the risk
+                 * classifier too (result unused here): the fuzz corpus then
+                 * covers both token walks. */
+                (void)ccode_command_stays_in_workspace(text,
+                                                       ws[0] ? ws : NULL);
+                (void)ccode_command_classify(text, ws[0] ? ws : NULL,
+                                             cw, sizeof(cw));
                 printf("%d\t%d\t%s\n", s, d, s ? why : (d ? dw : ""));
                 fflush(stdout);
             }
@@ -5543,7 +5681,10 @@ int main(int argc, char **argv) {
     TEST(new_tool_arguments_are_strict);
     TEST(task_results_escape_model_content);
     TEST(allowdanger_disables_command_policy);
+    TEST(command_classification);
     TEST(sensitive_reason_names_the_path);
+    TEST(command_stays_in_workspace);
+    TEST(tool_auto_approval_tiers);
     TEST(exec_path_reason_names_the_path);
     TEST(change_log_retains_truncation_and_denials);
     TEST(bash_git_does_not_discover_parent_repository);

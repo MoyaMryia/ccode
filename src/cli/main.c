@@ -113,13 +113,23 @@ static int json_permission_ask(struct ccode_permission_request *request,
     char line[4096];
     char event[4096];
     char reason[256];
+    const char *phrase = request
+        ? ccode_permission_required_phrase(request->danger_level) : NULL;
     int allow;
 
     if (request) request->deny_reason[0] = '\0';
-    snprintf(event, sizeof(event), "%s: %s (workspace: %s)",
-             request->tool_name ? request->tool_name : "unknown",
-             request->target ? request->target : "",
-             request->workspace_root ? request->workspace_root : ".");
+    if (phrase)
+        snprintf(event, sizeof(event),
+                 "%s: %s (workspace: %s) [type %s to allow]",
+                 request->tool_name ? request->tool_name : "unknown",
+                 request->target ? request->target : "",
+                 request->workspace_root ? request->workspace_root : ".",
+                 phrase);
+    else
+        snprintf(event, sizeof(event), "%s: %s (workspace: %s)",
+                 request->tool_name ? request->tool_name : "unknown",
+                 request->target ? request->target : "",
+                 request->workspace_root ? request->workspace_root : ".");
     json_print_fd(permission->output_fd, "permission_request", event);
     if (ccode_read_line_fd(STDIN_FILENO, STDERR_FILENO, line,
                            sizeof(line)) <= 0)
@@ -133,6 +143,15 @@ static int json_permission_ask(struct ccode_permission_request *request,
                 allow = field(line, "decision", decision,
                               sizeof(decision)) == 0 &&
                         strcmp(decision, "allow") == 0;
+            /* Dangerous tiers cannot be waved through with allow:true;
+             * the response must echo the required confirmation phrase. */
+            if (allow && request && phrase) {
+                char confirm[64];
+                if (field(line, "confirm", confirm, sizeof(confirm)) != 0 ||
+                    !ccode_permission_reply_matches(confirm,
+                                                    request->danger_level))
+                    allow = 0;
+            }
             if (!allow && request &&
                 field(line, "reason", reason, sizeof(reason)) == 0)
                 snprintf(request->deny_reason, sizeof(request->deny_reason),
@@ -142,7 +161,10 @@ static int json_permission_ask(struct ccode_permission_request *request,
             return allow;
         }
     }
-    allow = ccode_permission_parse_reply(line, request);
+    {
+        int reply = ccode_permission_parse_reply(line, request);
+        allow = reply == 1;
+    }
     json_print_fd(permission->output_fd, "permission_result",
                   allow ? "allowed" : "denied");
     return allow;

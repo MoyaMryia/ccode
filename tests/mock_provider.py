@@ -274,6 +274,34 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
             self.close_connection = True
             return
 
+        elif test_mode == "confirm-tiers":
+            # A hard-sensitive path (tier 2) that is harmless to execute:
+            # forces the "Yes" confirmation, then just echoes.
+            has_tool_result = any(msg.get("role") == "tool"
+                                  for msg in req.get("messages", []))
+            if has_tool_result:
+                events = [{"data": json.dumps({
+                    "choices": [{"index": 0,
+                                 "delta": {"content": "tier done"},
+                                 "finish_reason": "stop"}]
+                })}]
+            else:
+                events = [{"data": json.dumps({
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"tool_calls": [{
+                            "index": 0,
+                            "id": "call_tier2",
+                            "type": "function",
+                            "function": {
+                                "name": "bash",
+                                "arguments": '{"command":"echo .aws/credentials"}'
+                            }
+                        }]},
+                        "finish_reason": "tool_calls"
+                    }]
+                })}]
+
         elif test_mode == "tool-calls":
             has_tool_result = any(msg.get("role") == "tool"
                                   for msg in req.get("messages", []))
@@ -456,7 +484,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                             "type": "function",
                             "function": {
                                 "name": "bash",
-                                "arguments": '{"command":"touch must_not_exist_marker.txt"}'
+                                "arguments": '{"command":"cat /dev/null > must_not_exist_marker.txt"}'
                             }
                         }]},
                         "finish_reason": "tool_calls"
@@ -471,8 +499,8 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                             "id": "call_write1",
                             "type": "function",
                             "function": {
-                                "name": "edit_file",
-                                "arguments": '{"file_path":"must_not_exist.txt","old_string":"","new_string":"evil\\n"}'
+                                "name": "bash",
+                                "arguments": '{"command":"cat /dev/null > must_not_exist.txt"}'
                             }
                         }]},
                         "finish_reason": "tool_calls"
@@ -498,7 +526,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                             "type": "function",
                             "function": {
                                 "name": "bash",
-                                "arguments": "{\"command\":\"python3 -c 'import time; time.sleep(30); open(\\\"cancel_marker.txt\\\",\\\"w\\\").close()'\"}"
+                                "arguments": "{\"command\":\"sleep 30 && cat /dev/null > cancel_marker.txt\"}"
                             }
                         }]},
                         "finish_reason": "tool_calls"

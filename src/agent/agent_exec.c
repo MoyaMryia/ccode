@@ -41,26 +41,96 @@ static char *command_reject_json(const char *error, const char *reason) {
     return format_tool_error_reason(error, reason);
 }
 
+/* ESCALATE: refused, and the model is told to hand it to the user instead
+ * of trying to work around the refusal. */
+static char *command_escalate_json(const char *reason) {
+    struct ccode_buf out;
+    ccode_buf_init(&out);
+    if (ccode_buf_append(&out,
+            "{\"error\":\"Refused: device/filesystem/boot modification is "
+            "not executed by the agent\",\"reason\":") != 0 ||
+        ccode_json_append_quoted(&out, reason ? reason : "") != 0 ||
+        ccode_buf_append(&out,
+            ",\"next\":\"If you believe this is genuinely required to "
+            "complete the task, stop and tell the user; do not try to bypass "
+            "this refusal.\"}") != 0) {
+        ccode_buf_free(&out);
+        return ccode_strdup("{\"error\":\"Refused: user-only operation\"}");
+    }
+    return ccode_buf_detach(&out);
+}
+
+static char *classify_refusal(enum ccode_command_class cls, const char *why) {
+    if (cls == CCODE_CMD_REFUSE)
+        return command_reject_json(
+            "Refused: command would destroy the running system", why);
+    if (cls == CCODE_CMD_ESCALATE)
+        return command_escalate_json(why);
+    return NULL;
+}
+
+/* Classify a prepared bash call. Non-bash tools are always ALLOW; under
+ * --allowdanger the filter is off entirely. Returns the class and fills
+ * `reason` with a human-readable explanation. */
+int command_policy_classify(struct agent_context *ctx,
+                            const struct prepared_tool *prepared,
+                            char *reason, size_t reason_size) {
+    const char *workspace;
+    if (reason && reason_size > 0) reason[0] = '\0';
+    if (!prepared || prepared->kind != PREPARED_BASH) return CCODE_CMD_ALLOW;
+    if (ctx && ctx->allow_danger) return CCODE_CMD_ALLOW;
+    workspace = ctx && ctx->workspace_initialized ? ctx->workspace_root : NULL;
+    return (int)ccode_command_classify(prepared->value, workspace,
+                                       reason, reason_size);
+}
+
 char *command_policy_refuse(struct agent_context *ctx,
                             const struct prepared_tool *prepared) {
     char why[256];
-    const char *workspace;
+    enum ccode_command_class cls = (enum ccode_command_class)
+        command_policy_classify(ctx, prepared, why, sizeof(why));
+    return classify_refusal(cls, why);
+}
 
-    if (!prepared) return NULL;
-    if (ctx && ctx->allow_danger) return NULL;
-    workspace = ctx && ctx->workspace_initialized ? ctx->workspace_root : NULL;
-    if (prepared->kind == PREPARED_BASH) {
-        if (ccode_command_is_sensitive_why(prepared->value, workspace,
-                                           why, sizeof(why)))
-            return command_reject_json(
-                "Command may access sensitive paths", why);
-        if (ccode_command_mentions_destructive_why(prepared->value,
-                                                   why, sizeof(why)))
-            return command_reject_json(
-                "Destructive command is not allowed", why);
-        return NULL;
+/* Defense in depth for callers that bypass prepare_tool: only the hard
+ * classes stop execution. Tiered commands are supposed to have been
+ * approved (or auto-approved) upstream. */
+static char *command_argv_refuse(size_t argc, char *const argv[],
+                                 const char *workspace) {
+    char *joined;
+    char why[256];
+    enum ccode_command_class cls = CCODE_CMD_ALLOW;
+    size_t cap = 1;
+    size_t i, pos = 0;
+
+    for (i = 0; i < argc; i++) cap += strlen(argv[i]) + 1;
+    if (cap > 65536) cap = 65536;
+    joined = (char *)malloc(cap);
+    if (!joined) return NULL;
+    joined[0] = '\0';
+    for (i = 0; i < argc; i++) {
+        size_t l = strlen(argv[i]);
+        if (pos + l + 2 > cap) break;
+        if (pos > 0) joined[pos++] = ' ';
+        memcpy(joined + pos, argv[i], l);
+        pos += l;
+        joined[pos] = '\0';
     }
-    return NULL;
+    why[0] = '\0';
+    cls = ccode_command_classify(joined, workspace, why, sizeof(why));
+    if (cls != CCODE_CMD_REFUSE && cls != CCODE_CMD_ESCALATE) {
+        for (i = 0; i < argc; i++) {
+            enum ccode_command_class c2 =
+                ccode_command_classify(argv[i], workspace, why, sizeof(why));
+            if (c2 == CCODE_CMD_REFUSE || c2 == CCODE_CMD_ESCALATE) {
+                cls = c2;
+                break;
+            }
+        }
+    }
+    free(joined);
+    if (cls <= CCODE_CMD_TIER3) return NULL;
+    return classify_refusal(cls, why);
 }
 
 #ifdef _WIN32
@@ -273,17 +343,8 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
     if (!ctx->allow_danger) {
-        char why[256];
-        for (i = 0; i < argc; i++) {
-            if (ccode_command_is_sensitive_why(argv[i], ctx->workspace_root,
-                                               why, sizeof(why)))
-                return command_reject_json(
-                    "Command may access sensitive paths", why);
-            if (ccode_command_mentions_destructive_why(argv[i],
-                                                       why, sizeof(why)))
-                return command_reject_json(
-                    "Destructive command is not allowed", why);
-        }
+        char *refusal = command_argv_refuse(argc, argv, ctx->workspace_root);
+        if (refusal) return refusal;
     }
 
     if (resolve_command_path(argv[0], executable, sizeof(executable)) != 0)
@@ -721,17 +782,8 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     (void)build_git_ceiling_env(ctx->workspace_root, ceiling_env,
                                 sizeof(ceiling_env));
     if (!ctx->allow_danger) {
-        char why[256];
-        for (i = 0; i < argc; i++) {
-            if (ccode_command_is_sensitive_why(argv[i], ctx->workspace_root,
-                                               why, sizeof(why)))
-                return command_reject_json(
-                    "Command may access sensitive paths", why);
-            if (ccode_command_mentions_destructive_why(argv[i],
-                                                       why, sizeof(why)))
-                return command_reject_json(
-                    "Destructive command is not allowed", why);
-        }
+        char *refusal = command_argv_refuse(argc, argv, ctx->workspace_root);
+        if (refusal) return refusal;
     }
 
     if (ccode_run_pipe(stdout_pipe) != 0 || ccode_run_pipe(stderr_pipe) != 0) {

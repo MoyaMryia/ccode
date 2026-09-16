@@ -529,6 +529,21 @@ static int inproc_permission_ask(struct ccode_permission_request *req,
         tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, text.data);
     ccode_buf_free(&text);
     tui_inproc_redraw(ctx, 1);
+    /* Dangerous tiers require a typed phrase, which the TUI input row does
+     * not support yet; fail closed and point at the CLI rather than let a
+     * single keypress wave them through. */
+    if (req && req->danger_level >= CCODE_CONFIRM_YES) {
+        const char *phrase = ccode_permission_required_phrase(req->danger_level);
+        ccode_buf_init(&text);
+        if (ccode_buf_printf(&text,
+                "Dangerous command blocked in the TUI. Approve it with "
+                "ccode-cli by typing \"%s\".",
+                phrase ? phrase : "Yes") == 0)
+            tui_messages_add(ctx->messages, TUI_MSG_SYSTEM, text.data);
+        ccode_buf_free(&text);
+        tui_inproc_redraw(ctx, 1);
+        return 0;
+    }
     for (;;) {
         /* Poll with a short timeout and honor the agent's cancel flag:
          * Ctrl-C inside the blocking wait only raises the flag (SIGINT

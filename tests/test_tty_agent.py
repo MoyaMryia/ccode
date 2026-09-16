@@ -129,16 +129,17 @@ def run_ccode_with_tty(prompt, workspace, enable_tools=False,
 
 
 def test_deny_in_noninteractive():
-    """Without a TTY, tool calls should be denied by default (read tools are
-    enabled by default now, but the non-interactive gate still refuses)."""
+    """Without a TTY a prompt-worthy tool call is denied by default; the
+    fixture forces a prompt by referencing a path outside the workspace."""
     env = os.environ.copy()
     env["CCODE_API_BASE"] = "http://127.0.0.1:%d/v1" % PORT
     env["CCODE_API_KEY"] = "test-key"
     env["CCODE_MODEL"] = "test-model"
     env["CCODE_WORKSPACE"] = TEST_FIXTURE_DIR
+    env["CCODE_WRITE_TOOLS"] = "1"
 
     proc = subprocess.run(
-        [CCODE, "--prompt", "__ccode_test_tool-calls"],
+        [CCODE, "--prompt", "__ccode_test_deny-no-side-effects"],
         env=env,
         capture_output=True,
         timeout=TIMEOUT)
@@ -153,7 +154,8 @@ def test_deny_in_noninteractive():
 
 
 def test_approve_via_tty():
-    """With a TTY and 'y' response, a read-only tool call should be approved."""
+    """Read-only tools auto-approve: they run under a TTY without ever
+    showing a prompt."""
     stdout, stderr, rc = run_ccode_with_tty(
         "__ccode_test_tool-calls",
         TEST_FIXTURE_DIR,
@@ -161,27 +163,28 @@ def test_approve_via_tty():
         approve=True)
     output = stdout.decode() + stderr.decode()
     if "[run]" in output and "read_file" in output:
-        print("  PASS: tool approved via TTY")
+        print("  PASS: read-only tool executed (auto-approved)")
         return True
     else:
-        print("  FAIL: tool was not approved (output: %s)" %
+        print("  FAIL: read-only tool did not run (output: %s)" %
               output[:300])
         return False
 
 
 def test_deny_via_tty():
-    """With a TTY and 'n' response, a tool call should be denied."""
+    """A read-only tool needs no prompt, so a stray 'n' cannot deny it."""
     stdout, stderr, rc = run_ccode_with_tty(
         "__ccode_test_tool-calls",
         TEST_FIXTURE_DIR,
         enable_tools=True,
         approve=False)
     output = stdout.decode() + stderr.decode()
-    if "Permission denied" in output and "(denied)" in output:
-        print("  PASS: tool denied via TTY and recorded in session summary")
+    if ("[run]" in output and "read_file" in output and
+            "Tool request" not in output):
+        print("  PASS: read-only tool ran without a prompt (n ignored)")
         return True
     else:
-        print("  FAIL: tool was not denied (output: %s)" %
+        print("  FAIL: read-only tool prompted or was denied (output: %s)" %
               output[:300])
         return False
 
@@ -204,8 +207,28 @@ def test_approve_write_tool_via_tty():
         return False
 
 
+def test_tiered_confirmation_requires_yes():
+    """A tier-2 command rejects a bare 'y' and only runs after 'Yes'."""
+    stdout, stderr, rc = run_ccode_with_tty(
+        "__ccode_test_confirm-tiers",
+        TEST_FIXTURE_DIR,
+        write_mode=True,
+        answers=[b"y\n", b"Yes\n"])
+    output = stdout.decode() + stderr.decode()
+    if "confirmation too weak" not in output:
+        print("  FAIL: weak 'y' was not rejected (output: %s)" % output[:300])
+        return False
+    if "tier done" not in output:
+        print("  FAIL: command did not run after 'Yes' (output: %s)"
+              % output[:300])
+        return False
+    print("  PASS: tier-2 requires the typed 'Yes'")
+    return True
+
+
 def test_deny_write_and_command_no_side_effects():
-    """Deny both an edit_file creation and a bash command; assert no side effects."""
+    """Deny both prompt-worthy bash commands (out-of-workspace paths);
+    assert neither side effect lands."""
     workspace = os.path.join(
         os.path.dirname(__file__), "fixtures", "tty_deny_%d" % os.getpid())
     os.makedirs(workspace, exist_ok=True)
@@ -230,10 +253,10 @@ def test_deny_write_and_command_no_side_effects():
               (deny_count, output[:300]))
         ok = False
     if os.path.exists(write_target):
-        print("  FAIL: write_file target was created despite denial")
+        print("  FAIL: first denied command created its target")
         ok = False
     if os.path.exists(cmd_marker):
-        print("  FAIL: run_command marker was created despite denial")
+        print("  FAIL: second denied command created its marker")
         ok = False
     if ok:
         print("  PASS: denied write and command produced no side effects")
@@ -253,8 +276,9 @@ def main():
 
     tests = [
         ("deny noninteractive", test_deny_in_noninteractive),
-        ("approve via TTY", test_approve_via_tty),
-        ("deny via TTY", test_deny_via_tty),
+        ("read-only auto-approve (no prompt)", test_approve_via_tty),
+        ("stray n ignored for read-only", test_deny_via_tty),
+        ("tier-2 typed Yes", test_tiered_confirmation_requires_yes),
         ("approve write tool via TTY", test_approve_write_tool_via_tty),
         ("deny write+command no side effects",
          test_deny_write_and_command_no_side_effects),

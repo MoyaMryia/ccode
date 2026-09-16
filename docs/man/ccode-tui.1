@@ -47,7 +47,12 @@ Options mirror
 Backend executable to drive (see DESCRIPTION for the lookup order).
 .TP
 .B \-\-write
-Enable read and write tools (approved interactively in the TUI).
+Enable read and write tools. Workspace-confined calls run without
+confirmation in the TUI; anything that may leave the workspace prompts.
+Dangerous commands that need a typed confirmation are refused in the TUI
+(use
+.BR ccode-cli (1)
+to approve them).
 .TP
 .B \-\-read-only
 Read-only tools (read_file, glob, grep, git_*). This is the default mode.

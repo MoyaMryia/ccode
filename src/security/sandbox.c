@@ -375,3 +375,577 @@ int ccode_command_is_sensitive_why(const char *text, const char *workspace,
 int ccode_command_is_sensitive(const char *text, const char *workspace) {
     return ccode_command_is_sensitive_why(text, workspace, NULL, 0);
 }
+
+/* ── Workspace-confined command check ──
+ *
+ * Sibling of the filter above, but answering a different question: not
+ * "is this command dangerous?" but "can we positively see that it only
+ * touches the workspace?". Only a yes lets `bash` skip the approval
+ * prompt; every uncertain token is a no. */
+
+/* True when one shell token names a path that stays inside `ws`. Absolute
+ * tokens must be anchored at the workspace root; relative tokens survive
+ * the same component walk the file tools use (no "..", no "." interior,
+ * no backslash/colon). Expansions cannot be reasoned about statically, so
+ * any '$' or backtick inside the token forces a refusal. A leading
+ * `NAME=` assignment is peeled so `OUT=build/x` is evaluated on its value. */
+static int token_inside_workspace(const char *tok, size_t len,
+                                  const char *ws) {
+    char buf[4096];
+    const char *p;
+    size_t wl;
+
+    if (len == 0 || len >= sizeof(buf)) return 0;
+    memcpy(buf, tok, len);
+    buf[len] = '\0';
+
+    p = buf;
+    {
+        const char *eq = strchr(buf, '=');
+        if (eq != NULL && eq != buf) {
+            size_t i;
+            int assignment = 1;
+            for (i = 0; buf + i < eq; i++) {
+                if (buf[i] == '/' || buf[i] == '\\' || buf[i] == ':') {
+                    assignment = 0;
+                    break;
+                }
+            }
+            if (assignment) p = eq + 1;
+        }
+    }
+
+    if (*p == '\0') return 1;
+    if (strchr(p, '$') != NULL || strchr(p, '`') != NULL) return 0;
+    if (strchr(p, '\\') != NULL) return 0;
+    if (p[0] == '~') return 0;
+
+    if (p[0] == '/') {
+        wl = strlen(ws);
+        if (wl == 0) return 0;
+        if (strncmp(p, ws, wl) != 0) return 0;
+        if (ws[wl - 1] != '/' && p[wl] != '\0' && p[wl] != '/')
+            return 0;
+        return !span_has_dotdot(p + wl, 0, strlen(p + wl));
+    }
+
+    /* Relative. A leading "./" is a no-op inside the cwd (the workspace),
+     * and "." alone is the workspace root. */
+    while (p[0] == '.' && p[1] == '/') p += 2;
+    if (*p == '\0' || strcmp(p, ".") == 0) return 1;
+    if (strchr(p, ':') != NULL) return 0;
+    {
+        char rel[4096];
+        char *component;
+        char *next;
+        if (strlen(p) >= sizeof(rel)) return 0;
+        memcpy(rel, p, strlen(p) + 1);
+        component = rel;
+        for (;;) {
+            next = strchr(component, '/');
+            if (next) *next = '\0';
+            if (component[0] == '\0' || strcmp(component, ".") == 0 ||
+                strcmp(component, "..") == 0)
+                return 0;
+            if (!next) return 1;
+            component = next + 1;
+        }
+    }
+}
+
+int ccode_command_stays_in_workspace(const char *text, const char *workspace) {
+    const char *p;
+
+    if (!text || text[0] == '\0') return 0;
+    if (!workspace || workspace[0] == '\0') return 0;
+    /* Command substitution defeats any static reasoning. */
+    if (strstr(text, "$(") != NULL || strstr(text, "${") != NULL)
+        return 0;
+
+    p = text;
+    while (*p != '\0') {
+        const char *start;
+        size_t len;
+        int pathlike = 0;
+        size_t i;
+
+        while (*p != '\0' && is_cmd_sep((unsigned char)*p)) p++;
+        start = p;
+        while (*p != '\0' && !is_cmd_sep((unsigned char)*p)) p++;
+        len = (size_t)(p - start);
+        if (len == 0) continue;
+
+        for (i = 0; i < len; i++) {
+            char c = start[i];
+            if (c == '/' || c == '\\' || c == '~' || c == ':' || c == '$') {
+                pathlike = 1;
+                break;
+            }
+        }
+        if (!pathlike && ((len == 1 && start[0] == '.') ||
+                          (len == 2 && start[0] == '.' && start[1] == '.')))
+            pathlike = 1;
+        /* A bare word or flag with no path separator cannot escape. */
+        if (!pathlike) continue;
+        if (!token_inside_workspace(start, len, workspace)) return 0;
+    }
+    return 1;
+}
+
+/* ── Command risk classification ──
+ *
+ * Builds on the checks above to rank a command for the approval ladder.
+ * The two hard classes (ESCALATE, REFUSE) are never approvable in-band;
+ * the tiers are. */
+
+/* A command-position word: the first token of a shell segment, skipping
+ * common wrappers. `allow_suffix` admits dotted variants such as
+ * mkfs.ext4 for the word "mkfs". */
+static int token_starts_with_word(const char *tok, size_t len,
+                                  const char *word, int allow_suffix) {
+    size_t wl = strlen(word);
+    if (len < wl || strncmp(tok, word, wl) != 0) return 0;
+    if (len == wl) return 1;
+    if (!allow_suffix) return 0;
+    return !is_word_char((unsigned char)tok[wl]);
+}
+
+static int is_wrapper_name(const char *tok, size_t len) {
+    static const char *const wrappers[] = {
+        "sudo", "doas", "pkexec", "env", "nice", "nohup", "command",
+        "time"
+    };
+    size_t i;
+    for (i = 0; i < sizeof(wrappers) / sizeof(wrappers[0]); i++) {
+        size_t wl = strlen(wrappers[i]);
+        if (len == wl && strncmp(tok, wrappers[i], wl) == 0) return 1;
+    }
+    return 0;
+}
+
+static int has_command_name(const char *text, const char *word,
+                            int allow_suffix) {
+    size_t i = 0;
+    size_t n = strlen(text);
+    int at_start = 1;
+    while (i < n) {
+        size_t s, e;
+        unsigned char c = (unsigned char)text[i];
+        if (is_cmd_sep(c)) {
+            if (c == ';' || c == '|' || c == '&' || c == '(' || c == ')' ||
+                c == '\n' || c == '\r' || c == '`')
+                at_start = 1;
+            i++;
+            continue;
+        }
+        s = i;
+        while (i < n && !is_cmd_sep((unsigned char)text[i])) i++;
+        e = i;
+        if (!at_start) continue;
+        if (token_starts_with_word(text + s, e - s, word, allow_suffix))
+            return 1;
+        /* Wrappers, options and leading VAR= assignments keep us at the
+         * command position, so "sudo reboot", "env FOO=1 reboot" and
+         * "sudo -u root reboot" are all seen as power commands. */
+        if (is_wrapper_name(text + s, e - s) || text[s] == '-' ||
+            memchr(text + s, '=', e - s) != NULL)
+            continue;
+        at_start = 0;
+    }
+    return 0;
+}
+
+static int has_any_command_name(const char *text, const char *const *words,
+                                size_t count, int allow_suffix) {
+    size_t i;
+    for (i = 0; i < count; i++)
+        if (has_command_name(text, words[i], allow_suffix)) return 1;
+    return 0;
+}
+
+/* True when the token is the filesystem root or a root glob (empty,
+ * slash-only, or slash-plus-star). Leading slashes and trailing globs or
+ * slashes are ignored. */
+static int token_is_root_glob(const char *tok, size_t len) {
+    while (len > 0 && (tok[0] == '/' || tok[0] == '*')) {
+        tok++;
+        len--;
+    }
+    while (len > 0 && (tok[len - 1] == '/' || tok[len - 1] == '*')) len--;
+    return len == 0;
+}
+
+static int text_has_root_token(const char *text) {
+    size_t i = 0;
+    size_t n = strlen(text);
+    while (i < n) {
+        size_t s, e;
+        while (i < n && is_cmd_sep((unsigned char)text[i])) i++;
+        s = i;
+        while (i < n && !is_cmd_sep((unsigned char)text[i])) i++;
+        e = i;
+        if (e > s && token_is_root_glob(text + s, e - s)) return 1;
+    }
+    return 0;
+}
+
+/* Directories whose removal takes the running system with them. */
+static const char *const critical_dirs[] = {
+    "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64",
+    "/boot", "/var", "/home", "/root", "/dev", "/proc", "/sys",
+    "/opt"
+};
+
+static int token_is_critical_dir(const char *tok, size_t len) {
+    char buf[64];
+    size_t i;
+    while (len > 0 && (tok[len - 1] == '*' || tok[len - 1] == '/')) len--;
+    if (len == 0) return 1; /* the root itself, or a bare glob */
+    if (len >= sizeof(buf)) return 0;
+    memcpy(buf, tok, len);
+    buf[len] = '\0';
+    for (i = 0; i < sizeof(critical_dirs) / sizeof(critical_dirs[0]); i++)
+        if (strcmp(buf, critical_dirs[i]) == 0) return 1;
+    return 0;
+}
+
+/* Locate an "rm [options] <critical dir>" pattern. Options are skipped;
+ * only the first operand is judged, which is the dangerous case. */
+static int find_rm_critical(const char *text, size_t *start, size_t *len) {
+    const char *p = text;
+    while ((p = strstr(p, "rm ")) != NULL) {
+        const char *q;
+        if (p != text && is_word_char(p[-1])) {
+            p += 3;
+            continue;
+        }
+        q = p + 3;
+        for (;;) {
+            while (*q == ' ' || *q == '\t') q++;
+            if (*q == '-' && q[1] != '\0' && q[1] != ' ') {
+                while (*q != '\0' && *q != ' ' && *q != '\t' &&
+                       *q != ';' && *q != '&' && *q != '|')
+                    q++;
+                continue;
+            }
+            break;
+        }
+        if (*q != '\0') {
+            size_t s = (size_t)(q - text);
+            size_t e = s;
+            while (text[e] != '\0' && !is_cmd_sep((unsigned char)text[e]))
+                e++;
+            if (token_is_critical_dir(text + s, e - s)) {
+                if (start) *start = s;
+                if (len) *len = e - s;
+                return 1;
+            }
+        }
+        p += 3;
+    }
+    return 0;
+}
+
+/* Raw block/storage device paths under /dev. /dev/null, /dev/zero and the
+ * tty/random family are deliberately not matched. */
+static const char *const blockdev_prefixes[] = {
+    "sd", "hd", "vd", "xvd", "nvme", "mmcblk", "loop", "dm-", "md",
+    "ram", "sr", "disk/", "mapper/", "cciss", "nbd", "rbd", "zd",
+    "pmem", "bcache", "drbd", "dasd"
+};
+
+static int find_block_device(const char *text, size_t *pos) {
+    const char *p = text;
+    while ((p = strstr(p, "/dev/")) != NULL) {
+        const char *name = p + 5;
+        size_t i;
+        for (i = 0; i < sizeof(blockdev_prefixes) /
+                        sizeof(blockdev_prefixes[0]); i++) {
+            size_t pl = strlen(blockdev_prefixes[i]);
+            if (strncmp(name, blockdev_prefixes[i], pl) != 0) continue;
+            {
+                char next = name[pl];
+                if (next == '\0' || isalnum((unsigned char)next) ||
+                    next == '-' || next == '_') {
+                    if (pos) *pos = (size_t)(p - text);
+                    return 1;
+                }
+            }
+        }
+        p += 5;
+    }
+    return 0;
+}
+
+/* Filesystem / partition / boot tooling that is never run by the agent but
+ * may be legitimate for the user to run themselves. */
+static const char *const escalate_commands[] = {
+    "mkfs", "mke2fs", "mkdosfs", "mkntfs", "mkswap", "fdisk", "sfdisk",
+    "cfdisk", "gdisk", "parted", "wipefs", "efibootmgr", "flashrom",
+    "fwupdmgr", "grub-install", "grub2-install", "install-mbr", "lilo",
+    "cryptsetup", "blkdiscard", "hdparm", "nvme", "mdadm", "zpool",
+    "pvremove", "vgremove", "lvremove"
+};
+
+static int is_fsck_command(const char *text) {
+    static const char *const tools[] = {
+        "fsck", "e2fsck", "xfs_repair", "btrfsck", "dosfsck", "ntfsfix"
+    };
+    return has_any_command_name(text, tools,
+                                sizeof(tools) / sizeof(tools[0]), 1);
+}
+
+static int is_device_mknod(const char *text) {
+    return has_command_name(text, "mknod", 0) &&
+           (has_word(text, "b") || has_word(text, "c"));
+}
+
+static int has_find_delete_root(const char *text) {
+    if (!has_command_name(text, "find", 0)) return 0;
+    if (!has_word(text, "-delete") &&
+        !(has_word(text, "-exec") && has_word(text, "rm")))
+        return 0;
+    return text_has_root_token(text);
+}
+
+static int mentions_account_file(const char *text) {
+    static const char *const files[] = {
+        "etc/passwd", "etc/shadow", "etc/gshadow", "etc/sudoers",
+        "etc/sudoers.d"
+    };
+    size_t i;
+    for (i = 0; i < sizeof(files) / sizeof(files[0]); i++)
+        if (find_path_pattern_ci(text, files[i], NULL)) return 1;
+    return 0;
+}
+
+/* A verb or redirection that can overwrite/remove file contents. Used to
+ * separate reading /etc/shadow (approvable) from destroying it (refused). */
+static int has_destructive_file_verb(const char *text) {
+    static const char *const verbs[] = {
+        "rm", "mv", "truncate", "dd", "shred", "tee", "chmod",
+        "chown", "install", "cp"
+    };
+    if (has_any_command_name(text, verbs, sizeof(verbs) / sizeof(verbs[0]), 0))
+        return 1;
+    if (strchr(text, '>') != NULL) return 1;
+    /* In-place stream editors rewrite the target without a redirect. */
+    if ((has_command_name(text, "sed", 0) ||
+         has_command_name(text, "perl", 0)) &&
+        (strstr(text, "-i") != NULL || strstr(text, "--in-place") != NULL))
+        return 1;
+    return 0;
+}
+
+static int is_fork_bomb(const char *text) {
+    return strstr(text, "(){") != NULL || strstr(text, "() {") != NULL ||
+           strstr(text, ":()") != NULL;
+}
+
+static int is_recursive_flag(const char *text) {
+    return strstr(text, "-R") != NULL || strstr(text, "--recursive") != NULL;
+}
+
+static int has_command_substitution(const char *text) {
+    return strstr(text, "$(") != NULL || strstr(text, "${") != NULL ||
+           strchr(text, '`') != NULL;
+}
+
+static const char *const power_commands[] = {
+    "shutdown", "reboot", "poweroff", "halt", "telinit"
+};
+
+enum ccode_command_class ccode_command_classify(const char *text,
+                                                const char *workspace,
+                                                char *reason,
+                                                size_t reason_size) {
+    const char *env;
+    char owner_home[512];
+    size_t pos, start, len;
+    char token[192];
+
+    if (reason && reason_size > 0) reason[0] = '\0';
+    if (!text || text[0] == '\0') return CCODE_CMD_ALLOW;
+    env = getenv("CCODE_DISABLE_COMMAND_FILTER");
+    if (env && strcmp(env, "1") == 0) return CCODE_CMD_ALLOW;
+    derive_owner_home(workspace, owner_home, sizeof(owner_home));
+
+    /* REFUSE: destroys the running system, never approvable. */
+    if (find_rm_root(text, &start, &len)) {
+        command_token(text, start, len, token, sizeof(token));
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "removes the filesystem root ('%s')", token);
+        return CCODE_CMD_REFUSE;
+    }
+    if (find_rm_critical(text, &start, &len)) {
+        command_token(text, start, len, token, sizeof(token));
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "removes a critical system directory ('%s')", token);
+        return CCODE_CMD_REFUSE;
+    }
+    if (has_find_delete_root(text)) {
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "deletes everything below the filesystem root");
+        return CCODE_CMD_REFUSE;
+    }
+    if (mentions_account_file(text) && has_destructive_file_verb(text)) {
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "overwrites or removes an account/credential file");
+        return CCODE_CMD_REFUSE;
+    }
+    if (strstr(text, "sysrq-trigger") != NULL) {
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "writes the kernel sysrq-trigger (crash/reboot)");
+        return CCODE_CMD_REFUSE;
+    }
+    {
+        static const char *const kmem[] = {"dev/mem", "dev/kmem", "dev/port"};
+        size_t i;
+        for (i = 0; i < sizeof(kmem) / sizeof(kmem[0]); i++) {
+            if (!find_path_pattern_ci(text, kmem[i], &pos)) continue;
+            command_token(text, pos, strlen(kmem[i]), token, sizeof(token));
+            if (reason && reason_size > 0)
+                snprintf(reason, reason_size,
+                         "writes raw kernel memory ('%s')", token);
+            return CCODE_CMD_REFUSE;
+        }
+    }
+
+    /* ESCALATE: device / filesystem / partition / boot - hand to the user. */
+    if (find_block_device(text, &pos)) {
+        command_token(text, pos, 5, token, sizeof(token));
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "touches a block device ('%s...')", token);
+        return CCODE_CMD_ESCALATE;
+    }
+    if (has_any_command_name(text, escalate_commands,
+                             sizeof(escalate_commands) /
+                                 sizeof(escalate_commands[0]), 1)) {
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "filesystem/partition/boot modification is user-only");
+        return CCODE_CMD_ESCALATE;
+    }
+    if (is_device_mknod(text)) {
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "creates a device node (mknod b/c)");
+        return CCODE_CMD_ESCALATE;
+    }
+    if (is_fsck_command(text) &&
+        (find_block_device(text, &pos) || text_has_root_token(text))) {
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "filesystem check on a device or the root filesystem");
+        return CCODE_CMD_ESCALATE;
+    }
+
+    /* TIER3: disruptive but recoverable. */
+    if (has_any_command_name(text, power_commands,
+                             sizeof(power_commands) /
+                                 sizeof(power_commands[0]), 0)) {
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size, "powers off or reboots the machine");
+        return CCODE_CMD_TIER3;
+    }
+    if (has_command_name(text, "systemctl", 0) &&
+        (has_word(text, "reboot") || has_word(text, "poweroff") ||
+         has_word(text, "halt"))) {
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size, "powers off or reboots via systemctl");
+        return CCODE_CMD_TIER3;
+    }
+    if (has_command_name(text, "init", 0) &&
+        (has_word(text, "0") || has_word(text, "6"))) {
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size, "changes the init runlevel to 0/6");
+        return CCODE_CMD_TIER3;
+    }
+    if (is_fork_bomb(text)) {
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size, "looks like a fork bomb");
+        return CCODE_CMD_TIER3;
+    }
+    if ((has_command_name(text, "chmod", 0) ||
+         has_command_name(text, "chown", 0)) &&
+        is_recursive_flag(text) && text_has_root_token(text)) {
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "recursive permission/ownership change at the root");
+        return CCODE_CMD_TIER3;
+    }
+
+    /* TIER2: credentials, privilege, opaque. */
+    {
+        static const char *const elev[] = {"sudo", "doas", "pkexec"};
+        if (has_any_command_name(text, elev,
+                                 sizeof(elev) / sizeof(elev[0]), 0)) {
+            if (reason && reason_size > 0)
+                snprintf(reason, reason_size, "runs with elevated privilege");
+            return CCODE_CMD_TIER2;
+        }
+    }
+    if (has_command_substitution(text)) {
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "contains command substitution that cannot be inspected");
+        return CCODE_CMD_TIER2;
+    }
+    {
+        size_t i;
+        for (i = 0; i < sizeof(hard_sensitive_patterns) /
+                        sizeof(hard_sensitive_patterns[0]); i++) {
+            if (!find_path_pattern_ci(text, hard_sensitive_patterns[i], &pos))
+                continue;
+            command_token(text, pos, strlen(hard_sensitive_patterns[i]),
+                          token, sizeof(token));
+            if (reason && reason_size > 0)
+                snprintf(reason, reason_size,
+                         "mentions sensitive path '%s' in '%s'",
+                         hard_sensitive_patterns[i], token);
+            return CCODE_CMD_TIER2;
+        }
+    }
+    {
+        static const char *const attr[] = {"chown", "chattr", "swapoff"};
+        if (has_any_command_name(text, attr,
+                                 sizeof(attr) / sizeof(attr[0]), 0)) {
+            if (reason && reason_size > 0)
+                snprintf(reason, reason_size,
+                         "changes system ownership/attributes");
+            return CCODE_CMD_TIER2;
+        }
+    }
+
+    /* TIER1: outside the workspace / soft-sensitive. */
+    {
+        size_t i;
+        for (i = 0; i < sizeof(soft_sensitive_patterns) /
+                        sizeof(soft_sensitive_patterns[0]); i++) {
+            if (!has_substr_ci(text, soft_sensitive_patterns[i])) continue;
+            if (!find_soft_outside(text, soft_sensitive_patterns[i],
+                                   workspace, owner_home, &start)) continue;
+            command_token(text, start, strlen(soft_sensitive_patterns[i]),
+                          token, sizeof(token));
+            if (reason && reason_size > 0)
+                snprintf(reason, reason_size,
+                         "mentions a path outside the workspace ('%s')",
+                         token);
+            return CCODE_CMD_TIER1;
+        }
+    }
+    if (!ccode_command_stays_in_workspace(text, workspace)) {
+        if (reason && reason_size > 0)
+            snprintf(reason, reason_size,
+                     "mentions a path or expansion outside the workspace");
+        return CCODE_CMD_TIER1;
+    }
+
+    return CCODE_CMD_ALLOW;
+}

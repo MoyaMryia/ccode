@@ -673,6 +673,48 @@ static int is_enabled_tool(const char *name, int write_enabled) {
               strcmp(name, "read_tool_output") == 0));
 }
 
+/* Decide whether a prepared call can run without an approval prompt.
+ *
+ * Always safe: workspace-confined reads, network fetches (web_fetch keeps
+ * its own host/SSRF gate), internal task-list state, and sub-agent
+ * delegation -- a read-write delegate's write tools are approved by its
+ * own loop, and read-only delegates only ever hold non-mutating tools.
+ *
+ * Workspace-confined writes: edit_file and move_file auto-approve only
+ * when every path survives is_workspace_relative_path(); bash only when a
+ * conservative static scan (ccode_command_stays_in_workspace) finds no
+ * path leaving the workspace. delete_file always prompts: unlinking is the
+ * one irreversible operation, so it stays a deliberate confirmation. */
+static int tool_auto_approved(const struct agent_context *ctx,
+                              const struct prepared_tool *prepared) {
+    if (!prepared) return 0;
+    switch (prepared->kind) {
+    case PREPARED_READ_FILE:
+    case PREPARED_READ_TOOL_OUTPUT:
+    case PREPARED_GLOB:
+    case PREPARED_GREP:
+    case PREPARED_WEB_FETCH:
+    case PREPARED_WEB_SEARCH:
+    case PREPARED_TASK_CREATE:
+    case PREPARED_TASK_UPDATE:
+    case PREPARED_TASK_LIST:
+    case PREPARED_AGENT_TOOL:
+        return 1;
+    case PREPARED_EDIT_FILE:
+        return is_workspace_relative_path(prepared->value, 0);
+    case PREPARED_MOVE_FILE:
+        return is_workspace_relative_path(prepared->value, 0) &&
+               is_workspace_relative_path(prepared->destination, 0);
+    case PREPARED_BASH:
+        return ctx != NULL && ctx->workspace_initialized &&
+               ccode_command_stays_in_workspace(prepared->value,
+                                                ctx->workspace_root);
+    case PREPARED_DELETE_FILE:
+    default:
+        return 0;
+    }
+}
+
 static int append_tool_error(const struct ccode_agent_config *cfg,
                              struct ccode_conversation *conv, const char *id,
                              const char *message) {
@@ -1053,6 +1095,9 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         struct ccode_permission_request preq;
                         char *policy_error;
                         char *deny_json;
+                        char danger_reason[256];
+                        int cmd_class;
+
                         preq.tool_name = acc.tool_calls[i].name;
                         preq.target = prepared.display;
                         preq.workspace_root = ctx->workspace_root;
@@ -1060,13 +1105,16 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                                          prepared.kind != PREPARED_BASH &&
                                          prepared.kind != PREPARED_DELETE_FILE &&
                                          prepared.kind != PREPARED_MOVE_FILE;
-                        preq.auto_approve = cfg->auto_approve;
-                        preq.deny_reason[0] = '\0';
-
-                        policy_error = command_policy_refuse(ctx, &prepared);
-                        if (policy_error) {
+                        danger_reason[0] = '\0';
+                        cmd_class = command_policy_classify(ctx, &prepared,
+                                                            danger_reason,
+                                                            sizeof(danger_reason));
+                        if (cmd_class == CCODE_CMD_REFUSE ||
+                            cmd_class == CCODE_CMD_ESCALATE) {
+                            policy_error = command_policy_refuse(ctx, &prepared);
                             change_log_add_denied(ctx, acc.tool_calls[i].name);
-                            if (append_tool_error(cfg, conv, acc.tool_calls[i].id,
+                            if (policy_error &&
+                                append_tool_error(cfg, conv, acc.tool_calls[i].id,
                                                   policy_error) != 0) {
                                 free(policy_error);
                                 ccode_sse_accumulator_destroy(&acc);
@@ -1077,6 +1125,21 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                             free(policy_error);
                             continue;
                         }
+                        preq.danger_level =
+                            (cmd_class >= CCODE_CMD_TIER1 &&
+                             cmd_class <= CCODE_CMD_TIER3) ? cmd_class : 0;
+                        preq.danger_reason = preq.danger_level > 0
+                                             ? danger_reason : NULL;
+                        /* Dangerous tiers force a human confirmation and
+                         * ignore --auto-approve; only --allowdanger (which
+                         * skips classification) can wave them through. */
+                        if (preq.danger_level >= CCODE_CONFIRM_YES)
+                            preq.auto_approve = 0;
+                        else
+                            preq.auto_approve =
+                                cfg->auto_approve ||
+                                tool_auto_approved(ctx, &prepared);
+                        preq.deny_reason[0] = '\0';
 
                         if (!ccode_permission_ask(&preq)) {
                             change_log_add_denied(ctx, acc.tool_calls[i].name);
@@ -1872,6 +1935,9 @@ static void repl_resume(void *self, const char *name) {
     struct repl_cmd *c = self;
     char session_path[4096];
     const char *dir = ccode_session_dir();
+    /* Kept at function scope: `name` may be pointed at it below, and the
+     * pointer is used after the branch. */
+    char recent[CCODE_SESSION_NAME_MAX];
 
     if (!dir) {
         fputs("  Session directory not available.\n", stderr);
@@ -1882,7 +1948,6 @@ static void repl_resume(void *self, const char *name) {
         return;
     }
     if (name[0] == '\0') {
-        char recent[CCODE_SESSION_NAME_MAX];
         if (ccode_session_most_recent(recent, sizeof(recent)) != 0) {
             fputs("  No saved sessions found.\n", stderr);
             return;
@@ -2269,6 +2334,24 @@ int test_command_policy_refused(const char *cmd, int allow_danger) {
     free(refusal);
     agent_ctx.allow_danger = saved;
     return refused;
+}
+/* Returns 1 when `name`/`arguments` would run without an approval prompt, 0
+ * when it would prompt, -1 when the call cannot be prepared. Initializes the
+ * test workspace so the bash confinement check has a root to compare. */
+int test_tool_auto_approved(const char *name, const char *arguments) {
+    struct prepared_tool prepared;
+    const char *error;
+    int approved;
+    if (init_workspace(&agent_ctx, "fixtures") != 0) return -1;
+    memset(&prepared, 0, sizeof(prepared));
+    error = prepare_tool(name, arguments, &prepared);
+    if (error) {
+        prepared_tool_free(&prepared);
+        return -1;
+    }
+    approved = tool_auto_approved(&agent_ctx, &prepared);
+    prepared_tool_free(&prepared);
+    return approved;
 }
 int test_change_log_count(void) { return (int)agent_ctx.change_log.len; }
 const char *test_change_log_serialize(void) { return change_log_serialize(&agent_ctx); }

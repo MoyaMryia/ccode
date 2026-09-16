@@ -88,7 +88,9 @@ Alias for
 .TP
 .B \-\-write
 Enable read and write tools (edit_file, bash,
-web_fetch, ...) with interactive confirmation.
+web_fetch, ...). Workspace-confined calls run without confirmation;
+anything that may leave the workspace prompts interactively, and
+dangerous commands require a typed confirmation.
 .TP
 .B \-\-read-only
 Read-only tools (read_file, glob, grep, read_tool_output). This is the default mode.
@@ -101,8 +103,10 @@ Never enables
 .BR \-\-auto-approve .
 .TP
 .B \-\-auto-approve
-Approve every tool request without asking. Equivalent to
+Approve all remaining tool requests without asking. Equivalent to
 .BR CCODE_AUTO_APPROVE=1 .
+Dangerous bash commands still require their typed confirmation
+(\fBYes\fR or \fBYes, do as I say.\fR).
 .TP
 .B \-\-allowdanger
 DANGER: disable every tool-call security check \em sensitive-path and
