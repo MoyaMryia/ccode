@@ -3094,6 +3094,38 @@ static int test_bash_git_does_not_discover_parent_repository(void) {
     return 1;
 }
 
+static int test_sensitive_reason_names_the_path(void) {
+    char why[256];
+    /* The reason must quote the exact offending token, not just the rule. */
+    ASSERT(ccode_command_is_sensitive_why("cat /home/alice/.bashrc",
+                                          "/home/bob/proj", why,
+                                          sizeof(why)) == 1);
+    ASSERT(strstr(why, "/home/alice/.bashrc") != NULL);
+    ASSERT(ccode_command_is_sensitive_why("cat ~/.ssh/id_rsa",
+                                          "/home/bob/proj", why,
+                                          sizeof(why)) == 1);
+    ASSERT(strstr(why, "~/.ssh/id_rsa") != NULL);
+    ASSERT(ccode_command_is_sensitive_why("rm -rf /", "/home/bob/proj",
+                                          why, sizeof(why)) == 1);
+    ASSERT(strstr(why, "rm -rf /") != NULL);
+    /* A path inside the workspace is still allowed. */
+    ASSERT(ccode_command_is_sensitive_why("cat /home/bob/proj/x",
+                                          "/home/bob/proj", why,
+                                          sizeof(why)) == 0);
+    return 1;
+}
+
+static int test_exec_path_reason_names_the_path(void) {
+    char *r;
+    test_reset_workspace();
+    r = test_exec_read_file("fixtures", "../etc/passwd");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "outside workspace") != NULL);
+    ASSERT(strstr(r, "../etc/passwd") != NULL);
+    free(r);
+    return 1;
+}
+
 static int test_allowdanger_disables_command_policy(void) {
     /* Destructive command: refused normally, allowed under --allowdanger. */
     ASSERT(test_command_policy_refused("rm -rf /", 0) == 1);
@@ -5510,6 +5542,8 @@ int main(int argc, char **argv) {
     TEST(new_tool_arguments_are_strict);
     TEST(task_results_escape_model_content);
     TEST(allowdanger_disables_command_policy);
+    TEST(sensitive_reason_names_the_path);
+    TEST(exec_path_reason_names_the_path);
     TEST(change_log_retains_truncation_and_denials);
     TEST(bash_git_does_not_discover_parent_repository);
     TEST(scan_skips_vcs_directories);

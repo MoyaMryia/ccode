@@ -69,7 +69,9 @@ static int is_word_char(char c) {
            (c >= '0' && c <= '9') || c == '_';
 }
 
-static int is_rm_root(const char *text) {
+/* Set the start/len outputs to the "rm ... /" span when the command
+ * deletes the filesystem root. Returns 1 on a hit. */
+static int find_rm_root(const char *text, size_t *start, size_t *len) {
     const char *p = text;
     while ((p = strstr(p, "rm ")) != NULL) {
         const char *q;
@@ -83,8 +85,11 @@ static int is_rm_root(const char *text) {
         while (*q == ' ') q++;
         if (*q == '/' &&
             (q[1] == ' ' || q[1] == '\0' || q[1] == ';' ||
-             q[1] == '&' || q[1] == '*'))
+             q[1] == '&' || q[1] == '*')) {
+            if (start) *start = (size_t)(p - text);
+            if (len) *len = (size_t)(q - p) + 1;
             return 1;
+        }
         p += 3;
     }
     return 0;
@@ -117,7 +122,8 @@ static int is_filename_char(unsigned char c) {
  * matching "known_hosts_sample.txt" and "proc/mem" from matching
  * "proc/meminfo", while still matching inside a longer path
  * ("/home/u/.ssh/id_rsa"). */
-static int has_path_pattern_ci(const char *text, const char *pat) {
+static int find_path_pattern_ci(const char *text, const char *pat,
+                                size_t *pos) {
     size_t pl = strlen(pat);
     size_t tl = strlen(text);
     size_t i;
@@ -133,6 +139,7 @@ static int has_path_pattern_ci(const char *text, const char *pat) {
         if (i > 0 && is_filename_char((unsigned char)text[i - 1])) continue;
         if (i + pl < tl && is_filename_char((unsigned char)text[i + pl]))
             continue;
+        if (pos) *pos = i;
         return 1;
     }
     return 0;
@@ -248,10 +255,11 @@ static int soft_hit_inside_workspace(const char *text, size_t pos,
     return 1;
 }
 
-/* True when every soft-pattern hit sits inside an allowed root: the workspace
- * or (when known) the workspace owner's own home directory. */
-static int soft_pattern_all_inside(const char *text, const char *pat,
-                                   const char *ws, const char *owner) {
+/* Set *pos to the first soft-pattern hit whose command token is not inside an
+ * allowed root (workspace or the workspace owner's own home). Returns 1 when
+ * such an offending hit exists. */
+static int find_soft_outside(const char *text, const char *pat,
+                             const char *ws, const char *owner, size_t *pos) {
     size_t pl = strlen(pat);
     size_t tl = strlen(text);
     size_t i, j;
@@ -264,11 +272,13 @@ static int soft_pattern_all_inside(const char *text, const char *pat,
         if (j != pl) continue;
         if (!soft_hit_inside_workspace(text, i, ws) &&
             !(owner != NULL && owner[0] != '\0' &&
-              soft_hit_inside_workspace(text, i, owner)))
-            return 0;
+              soft_hit_inside_workspace(text, i, owner))) {
+            if (pos) *pos = i;
+            return 1;
+        }
         i += pl - 1;
     }
-    return 1;
+    return 0;
 }
 
 /* Derive the workspace owner's home prefix ("/home/<user>/" or "/root/") so
@@ -290,40 +300,73 @@ static void derive_owner_home(const char *workspace, char *out, size_t cap) {
     }
 }
 
+/* Copy the shell token containing [pos, pos+len) into out (truncated to
+ * cap-1 bytes + NUL). Quoting this tells the model exactly which argument
+ * tripped the filter. is_cmd_sep() is defined above. */
+static void command_token(const char *text, size_t pos, size_t len,
+                          char *out, size_t cap) {
+    size_t s = pos, e = pos + len;
+    if (cap == 0) return;
+    while (s > 0 && !is_cmd_sep((unsigned char)text[s - 1])) s--;
+    while (text[e] != '\0' && !is_cmd_sep((unsigned char)text[e])) e++;
+    if (e - s >= cap) e = s + cap - 1;
+    memcpy(out, text + s, e - s);
+    out[e - s] = '\0';
+}
+
 int ccode_command_is_sensitive_why(const char *text, const char *workspace,
                                    char *reason, size_t reason_size) {
     const char *env;
     char owner_home[512];
-    size_t i;
+    char token[192];
+    size_t i, start, len;
     if (reason && reason_size > 0) reason[0] = '\0';
     if (!text) return 0;
     env = getenv("CCODE_DISABLE_COMMAND_FILTER");
     if (env && strcmp(env, "1") == 0) return 0;
     derive_owner_home(workspace, owner_home, sizeof(owner_home));
-    if (is_rm_root(text)) {
+    if (find_rm_root(text, &start, &len)) {
+        command_token(text, start, len, token, sizeof(token));
         if (reason && reason_size > 0)
             snprintf(reason, reason_size,
-                     "refuses rm of filesystem root");
+                     "refuses rm of filesystem root: '%s'", token);
         return 1;
     }
     for (i = 0; i < sizeof(hard_sensitive_patterns) /
                       sizeof(hard_sensitive_patterns[0]); i++) {
-        if (!has_path_pattern_ci(text, hard_sensitive_patterns[i])) continue;
-        if (reason && reason_size > 0)
-            snprintf(reason, reason_size,
-                     "mentions sensitive path '%s'",
-                     hard_sensitive_patterns[i]);
+        if (!find_path_pattern_ci(text, hard_sensitive_patterns[i], &start))
+            continue;
+        command_token(text, start, strlen(hard_sensitive_patterns[i]),
+                      token, sizeof(token));
+        if (reason && reason_size > 0) {
+            if (token[0] != '\0')
+                snprintf(reason, reason_size,
+                         "mentions sensitive path '%s' in '%s'",
+                         hard_sensitive_patterns[i], token);
+            else
+                snprintf(reason, reason_size,
+                         "mentions sensitive path '%s'",
+                         hard_sensitive_patterns[i]);
+        }
         return 1;
     }
     for (i = 0; i < sizeof(soft_sensitive_patterns) /
                       sizeof(soft_sensitive_patterns[0]); i++) {
         if (!has_substr_ci(text, soft_sensitive_patterns[i])) continue;
-        if (soft_pattern_all_inside(text, soft_sensitive_patterns[i],
-                                    workspace, owner_home)) continue;
-        if (reason && reason_size > 0)
-            snprintf(reason, reason_size,
-                     "mentions path outside workspace ('%s')",
-                     soft_sensitive_patterns[i]);
+        if (!find_soft_outside(text, soft_sensitive_patterns[i],
+                               workspace, owner_home, &start)) continue;
+        command_token(text, start, strlen(soft_sensitive_patterns[i]),
+                      token, sizeof(token));
+        if (reason && reason_size > 0) {
+            if (token[0] != '\0')
+                snprintf(reason, reason_size,
+                         "mentions path outside workspace: '%s' (rule '%s')",
+                         token, soft_sensitive_patterns[i]);
+            else
+                snprintf(reason, reason_size,
+                         "mentions path outside workspace ('%s')",
+                         soft_sensitive_patterns[i]);
+        }
         return 1;
     }
     return 0;

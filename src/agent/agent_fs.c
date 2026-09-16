@@ -848,7 +848,8 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
                                                     create_leaf,
                                                     sizeof(create_leaf));
         if (create_parent_fd < 0)
-            return ccode_strdup("{\"error\":\"Path outside workspace or parent not found\"}");
+            return format_tool_error_reason("Path outside workspace or parent not found",
+                                       file_path);
         wr = atomic_write_at_parent(create_parent_fd, create_leaf, new_string,
                                     0644, geteuid(), getegid(), NULL);
         close(create_parent_fd);
@@ -862,12 +863,14 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
 
     fd = open_regular_at_workspace(ctx, file_path);
     if (fd < 0)
-        return ccode_strdup("{\"error\":\"Path outside workspace or not found\"}");
+        return format_tool_error_reason("Path outside workspace or not found",
+                                       file_path);
 
     if (fstat(fd, &st) == 0) {
         if (st.st_nlink > 1) {
             close(fd);
-            return ccode_strdup("{\"error\":\"Refusing to edit a hard-linked file\"}");
+            return format_tool_error_reason("Refusing to edit a hard-linked file",
+                                       file_path);
         }
         memset(&file_id, 0, sizeof(file_id));
         file_id.st_dev = st.st_dev;
@@ -901,7 +904,8 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
 
     if (is_binary_content((const unsigned char *)source, read_size)) {
         free(source);
-        return ccode_strdup("{\"error\":\"Refusing to edit binary file\"}");
+        return format_tool_error_reason("Refusing to edit binary file",
+                                       file_path);
     }
 
     old_len = strlen(old_string);
@@ -1161,7 +1165,8 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
 
     fd = open_regular_at_workspace(ctx, file_path);
     if (fd < 0)
-        return ccode_strdup("{\"error\":\"Path outside workspace or not found\"}");
+        return format_tool_error_reason("Path outside workspace or not found",
+                                       file_path);
 
     f = fdopen(fd, "rb");
     if (!f) {
@@ -1647,7 +1652,8 @@ char *exec_glob(struct agent_context *ctx, const char *workspace, const char *pa
     if (path && path[0] != '\0') {
         root_fd = open_directory_at_workspace(ctx, path);
         if (root_fd < 0)
-            return ccode_strdup("{\"error\":\"Path outside workspace or not a directory\"}");
+            return format_tool_error_reason("Path outside workspace or not a directory",
+                                       path);
         rel_dir = path;
     } else {
         root_fd = dup(ctx->workspace_dir_fd);
@@ -1997,7 +2003,8 @@ char *exec_grep(struct agent_context *ctx, const char *workspace, const char *pa
     if (path && path[0] != '\0') {
         root_fd = open_directory_at_workspace(ctx, path);
         if (root_fd < 0)
-            return ccode_strdup("{\"error\":\"Path outside workspace or not a directory\"}");
+            return format_tool_error_reason("Path outside workspace or not a directory",
+                                       path);
         rel_dir = path;
     } else {
         root_fd = dup(ctx->workspace_dir_fd);
@@ -2059,7 +2066,8 @@ char *exec_delete_file(struct agent_context *ctx, const char *workspace, const c
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
     parent_fd = open_parent_at_workspace(ctx, file_path, leaf, sizeof(leaf));
     if (parent_fd < 0)
-        return ccode_strdup("{\"error\":\"Path outside workspace or parent not found\"}");
+        return format_tool_error_reason("Path outside workspace or parent not found",
+                                       file_path);
     if (unlinkat(parent_fd, leaf, 0) != 0) {
         close(parent_fd);
         return ccode_strdup("{\"error\":\"Could not delete file\"}");
@@ -2082,7 +2090,8 @@ char *exec_move_file(struct agent_context *ctx, const char *workspace, const cha
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
     src_parent_fd = open_parent_at_workspace(ctx, source, src_leaf, sizeof(src_leaf));
     if (src_parent_fd < 0)
-        return ccode_strdup("{\"error\":\"Source path outside workspace or parent not found\"}");
+        return format_tool_error_reason(
+                "Source path outside workspace or parent not found", source);
     if (!is_workspace_relative_path(destination, 0)) {
         close(src_parent_fd);
         return ccode_strdup("{\"error\":\"Invalid destination path\"}");
@@ -2090,7 +2099,9 @@ char *exec_move_file(struct agent_context *ctx, const char *workspace, const cha
     dst_parent_fd = open_parent_at_workspace(ctx, destination, dst_leaf, sizeof(dst_leaf));
     if (dst_parent_fd < 0) {
         close(src_parent_fd);
-        return ccode_strdup("{\"error\":\"Destination path outside workspace or parent not found\"}");
+        return format_tool_error_reason(
+                "Destination path outside workspace or parent not found",
+                destination);
     }
     /* rename(2) would silently replace an existing destination; every other
      * mutating tool here refuses on existing targets, so move must too.
