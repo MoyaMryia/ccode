@@ -13,7 +13,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
-#include "platform/platform.h"
+#include "../platform/platform.h"
 
 static inline int ccode_polarssl_transport_send(void *context,
                                                 const unsigned char *data,

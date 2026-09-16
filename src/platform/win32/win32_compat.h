@@ -1,7 +1,7 @@
 /*
  * Native Win32 (MinGW) compatibility layer — force-included header.
  *
- * The Makefile adds `-include src/win32/win32_compat.h` in WIN32=1 mode, so
+ * The Makefile adds `-include src/platform/win32/win32_compat.h` in WIN32=1 mode, so
  * this file is processed before every translation unit. It first pulls in
  * the CRT headers whose symbols it later shadows (include guards make the
  * sources' own #includes no-ops), then defines the shadow macros mapping

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stress 3: real engineering data -- ccode's own source tree.
 
-Copies the repository's src/, docs/, vendor/jsmn and top-level documents
+Copies the repository's src/, docs/, vendor and top-level documents
 into a scratch workspace (edits must never touch the real repo), then
 drives the real ccode-cli over it with a scripted plan whose expected
 outcomes are computed from the real tree at plan-build time. Every tool
@@ -44,8 +44,9 @@ def build_workspace():
     shutil.copytree(os.path.join(REPO_ROOT, "src"), os.path.join(ws, "src"))
     shutil.copytree(os.path.join(REPO_ROOT, "docs"), os.path.join(ws, "docs"))
     os.makedirs(os.path.join(ws, "vendor"))
-    shutil.copytree(os.path.join(REPO_ROOT, "vendor", "jsmn"),
-                    os.path.join(ws, "vendor", "jsmn"))
+    for lib in ("json", "vec", "fdio", "markdown"):
+        shutil.copytree(os.path.join(REPO_ROOT, "vendor", lib),
+                        os.path.join(ws, "vendor", lib))
     for name in ["README.md", "Makefile"]:
         shutil.copy2(os.path.join(REPO_ROOT, name), os.path.join(ws, name))
     return ws

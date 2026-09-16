@@ -1,7 +1,7 @@
 #include "protocol.h"
 
-#include "../json.h"
-#include "../fdio.h"
+#include "../../vendor/json/json.h"
+#include "../../vendor/fdio/fdio.h"
 
 #include <errno.h>
 #include <fcntl.h>

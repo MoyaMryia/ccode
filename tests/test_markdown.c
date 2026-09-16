@@ -1,4 +1,4 @@
-#include "../src/markdown.h"
+#include "../vendor/markdown/markdown.h"
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -36,35 +36,41 @@
 2. 跑聚焦测试和 `make test`（默认 HTTPS 构建即可；`make HTTP_ONLY=1 test` 覆盖纯 HTTP 构建）。
 3. 更新 `FEATURES.md` 里的功能、限制、选项、模式、测试计数、路线图状态。
 4. 只报告你实际跑过的命令和结果。
+5. 提交的时候写原子提交
 
 ## 模块所有权
 
 ```
-combined_main.c        单体 ccode 入口：按参数分发到 TUI（进程内）或 CLI
-main.c                 TUI 入口（ccode_tui_main / 进程内版）
+app/combined_main.c    单体 ccode 入口：按参数分发到 TUI（进程内）或 CLI
+app/main.c             TUI 入口（ccode_tui_main / 进程内版）
 cli/main.c             ccode-cli 入口（JSON Lines 协议 + 交互/单次）
-config.c/h             CLI 和环境变量配置
-http.c/h               URL 校验、socket/TLS/HTTP/SSE 传输
-json.c/h               流式解析服务商响应
-markdown.c/h           行式 markdown→ANSI（含控制字符/双向覆盖符消毒）
+app/config.c/h         CLI 和环境变量配置
+app/commands.c/h       slash 命令注册表与分发
+net/http.c/h           URL 校验、socket/TLS/HTTP/SSE 传输
+vendor/json/*   流式解析服务商响应（含 zserge/jsmn 分词器 fork，MIT）
+vendor/vec/*    通用可增长容器（ccode_buf / ccode_vec）
+vendor/fdio/*   fd 全量写入
+vendor/markdown/* 行式 markdown→ANSI（含控制字符/双向覆盖符消毒）
+text/lineedit.c/h      最小 raw-mode 行编辑器
 agent/message.c/h      对话所有权、请求序列化
 agent/agent_results.c  超长工具结果存档（<session>.results/，内容寻址）与 read_tool_output 取回
 agent/agent.c/h        agent 循环、工具校验、本地执行、工作区、渲染开关
 tools/tools.c/h        按启用模式决定上游函数
-permissions/*          安全终端渲染和用户审批
+security/*             安全终端渲染、用户审批和命令/路径沙箱
 platform/platform.h    平台抽象接口（exe 路径、逃逸检测、写沙箱、send flags）
 platform/platform_*.c  每个平台一个实现文件
+platform/retro/*       libc5 兼容层（只在 RETRO=1 时启用）
+platform/win32/*       Windows（MinGW/Cygwin）移植层
 tui/tui.c              TUI 事件循环（含进程内 agent 集成）
-vendor/jsmn/*          供应商解析器，别随便改
 tests/*                本地回归套件
 ```
 
 - 工具模式从来不是权限。`agent.c` 在执行前必须校验工具名、参数、边界、工作区、审批。
-- `config.c` 只是门控功能模式，不是唯一授权点。
-- `permissions.c` 负责终端安全显示。别在别处直接打印模型生成的文本。
+- `app/config.c` 只是门控功能模式，不是唯一授权点。
+- `security/permissions.c` 负责终端安全显示。别在别处直接打印模型生成的文本。
 - `message.c` 分配失败时必须保持事务性，不能半途改坏对话状态。
 - HTTP/TLS 传输要跟工具策略解耦。
-- 平台特定代码（`/proc`、`readlink` exe、Landlock）只能出现在 `platform/platform_*.c`。主代码调 `ccode_platform_*()`，不直接碰平台 API。`compat/`（补缺 POSIX）与 `platform/`（平台分歧）正交，互不依赖。
+- 平台特定代码（`/proc`、`readlink` exe、Landlock）只能出现在 `platform/platform_*.c`。主代码调 `ccode_platform_*()`，不直接碰平台 API。`platform/retro/`（补缺 POSIX）与 `platform/platform_*.c`（平台分歧）正交，互不依赖；`platform/win32/` 是 Windows 移植层。`vendor/` 放自研可复用库（json/vec/fdio/markdown），不能反向依赖 `src/`。
 
 ## 文件系统规则
 
@@ -86,7 +92,7 @@ tests/*                本地回归套件
 - 所有模型可见的字符串都要 JSON 转义（工具结果、状态、路径、命令输出、错误）。
 - 显式保留错误和截断状态。有上限的结果绝不能看起来是完整的。
 - 用 `ccode_fprint_safe()`（或同等级的审计例程）渲染模型/工具派生的字符串，转义控制字符、C1、双向覆盖符、坏 UTF-8。
-- `markdown.c` 是同等审计例程：所有经它输出的文本（含代码块内容）必须过 `emit_text()` 消毒，不能因解析 markdown 结构而放行控制字符。
+- `vendor/markdown/markdown.c` 是同等审计例程：所有经它输出的文本（含代码块内容）必须过 `emit_text()` 消毒，不能因解析 markdown 结构而放行控制字符。
 - 永远别拿模型文本当格式字符串。
 
 ## 权限规则

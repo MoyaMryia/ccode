@@ -14,8 +14,8 @@
 #endif
 
 #include "agent_internal.h"
-#include "../fdio.h"
-#include "../vec.h"
+#include "../../vendor/fdio/fdio.h"
+#include "../../vendor/vec/vec.h"
 
 #include <stdio.h>
 #include <stdlib.h>

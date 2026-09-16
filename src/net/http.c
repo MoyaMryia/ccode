@@ -1,7 +1,7 @@
 #include "http.h"
-#include "json.h"
-#include "permissions/permissions.h"
-#include "platform/platform.h"
+#include "../../vendor/json/json.h"
+#include "../security/permissions.h"
+#include "../platform/platform.h"
 #include "tls_backend.h"
 
 #include <arpa/inet.h>

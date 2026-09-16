@@ -4,7 +4,7 @@
  * <linux/types.h> (pulled in transitively by the socket headers), so
  * here we only re-expose what the sources expect and fill the gaps.
  * On glibc a real <stdint.h> exists; don't shadow it (SIZE_MAX etc.
- * would be lost). The -Isrc/compat path is harmless because the real
+ * would be lost). The -Isrc/platform/retro path is harmless because the real
  * header wins via its own include guard once we forward to it. */
 #if defined(__GLIBC__) && !defined(CCODE_RETRO_FORCE_SHIM)
 #include_next <stdint.h>

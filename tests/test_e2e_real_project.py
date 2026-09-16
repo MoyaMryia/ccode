@@ -16,7 +16,7 @@ task end to end:
 Every tool result is verified exactly against the saved session, and the
 final workspace state (fixed source, freshly built binary, corrected --help
 text) is re-checked independently of the agent. The planted defect (wrong
-usage text for -p in src/config.c) is observable in the built binary, so a
+usage text for -p in src/app/config.c) is observable in the built binary, so a
 vacuous pass is impossible: only a real edit + real compile + real run
 produce the expected --help output.
 
@@ -36,7 +36,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stress_common import CCODE, MOCK_PROVIDER, REPO_ROOT, free_port, ok, step
 
-DEFECT_FILE = "src/config.c"
+DEFECT_FILE = "src/app/config.c"
 DEFECT_OLD = "Send one prompt then exit"
 DEFECT_BAD = "Send two prompts then exit"
 BIG_STDOUT_BYTES = 5 + 200000 + 11  # START + yes A|head -c 200000 + ENDMARK9999
@@ -44,7 +44,7 @@ BIG_STDERR_BYTES = 200000 + 7       # yes E|head -c 200000 + ENDERR2
 QUOTES_BYTES = 49500                # 2x escaping overflows the field budget
 
 PROMPT = ("__ccode_test_stress-fixture "
-          "任务：src/config.c 的 usage 文本把 -p 的说明写错了"
+          "任务：src/app/config.c 的 usage 文本把 -p 的说明写错了"
           "（写成了 %s，应为 %s）。"
           "定位、修复、重新构建并用 --help 验证，最后 git diff 展示改动。"
           % (DEFECT_BAD, DEFECT_OLD))
@@ -282,7 +282,7 @@ def main():
         check("glob saw the defect file",
               DEFECT_FILE in (r("call_glob").get("files") or []), "")
         grep = r("call_grep")
-        want_line = "src/config.c:%d:" % defect_line
+        want_line = "src/app/config.c:%d:" % defect_line
         check("grep found exactly the planted line",
               grep.get("count") == 1 and
               (grep.get("matches") or [""])[0].startswith(want_line) and

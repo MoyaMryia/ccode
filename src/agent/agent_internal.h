@@ -10,7 +10,7 @@
 #include <time.h>
 #include <poll.h>
 
-#include "../../vendor/jsmn/jsmn.h"
+#include "../../vendor/json/json.h"
 
 /* Limits shared across the agent translation units. */
 #define MAX_TOOL_OUTPUT (1024 * 50)

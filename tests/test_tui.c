@@ -2,7 +2,7 @@
 #include "../src/tui/messages.h"
 #include "../src/tui/protocol.h"
 #include "../src/tui/render.h"
-#include "../src/json.h"
+#include "../vendor/json/json.h"
 
 #include <stdio.h>
 #include <stdlib.h>

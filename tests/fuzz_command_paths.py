@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stress harness for ccode's command path filter (src/sandbox.c).
+"""Stress harness for ccode's command path filter (src/security/sandbox.c).
 
 Pipes commands to `tests/test_agent --filter-probe`, which calls
 ccode_command_is_sensitive_why() and ccode_command_mentions_destructive_why()

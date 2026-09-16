@@ -1,10 +1,10 @@
 /* Unit tests for the read-only tool implementations in agent.c.
  *
  * Compile: cc -std=c99 -DCCODE_UNIT_TEST -DCCODE_HTTP_ONLY=1 \
- *              -Isrc -Ivendor/jsmn \
+ *             -Isrc -Ivendor/json \
  *              -o test_agent tests/test_agent.c \
- *              src/agent/agent.c src/json.c src/tools/tools.c \
- *              src/permissions/permissions.c vendor/jsmn/jsmn.c
+ *              src/agent/agent.c vendor/json/json.c src/tools/tools.c \
+ *              src/security/permissions.c
  */
 
 #define CCODE_UNIT_TEST 1
@@ -29,11 +29,11 @@
 #include "../src/agent/message.h"
 #include "../src/agent/agent.h"
 #include "../src/agent/agent_internal.h"
-#include "../src/json.h"
-#include "../src/webfetch.h"
-#include "../src/websearch.h"
-#include "../src/models.h"
-#include "../src/sandbox.h"
+#include "../vendor/json/json.h"
+#include "../src/net/webfetch.h"
+#include "../src/net/websearch.h"
+#include "../src/net/models.h"
+#include "../src/security/sandbox.h"
 #include "../src/platform/platform.h"
 
 /* Test-only exports declared in agent.c. */

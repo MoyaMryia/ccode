@@ -1,11 +1,11 @@
 # Build artifacts
-ccode
-ccode-cli
-ccode-tui
+/ccode
+/ccode-cli
+/ccode-tui
 *.exe
-.build/
+/.build/
 *.o
-ansi-style-demo
+/ansi-style-demo
 
 # Test binaries
 tests/test_json

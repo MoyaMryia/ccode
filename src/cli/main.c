@@ -7,14 +7,14 @@
 #include <time.h>
 
 #include "../agent/agent.h"
-#include "../config.h"
-#include "../fdio.h"
-#include "../json.h"
-#include "../vec.h"
-#include "../commands.h"
-#include "../lineedit.h"
-#include "../permissions/permissions.h"
-#include "../models.h"
+#include "../app/config.h"
+#include "../../vendor/fdio/fdio.h"
+#include "../../vendor/json/json.h"
+#include "../../vendor/vec/vec.h"
+#include "../app/commands.h"
+#include "../text/lineedit.h"
+#include "../security/permissions.h"
+#include "../net/models.h"
 #include "../platform/platform.h"
 
 struct json_permission_context {

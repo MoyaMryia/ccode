@@ -27,18 +27,18 @@ override CPPFLAGS += -D_DARWIN_C_SOURCE
 endif
 
 # ── Retro i386 / BasicLinux 3.5.1 (libc5 / kernel 2.2.26) build mode ──
-# Activated by RETRO=1. Targets i586 and force-includes src/compat/compat.h
+# Activated by RETRO=1. Targets i586 and force-includes src/platform/retro/compat.h
 # to shim openat, fstatat, O_CLOEXEC, getaddrinfo, clock_gettime and stdint.h.
 # TLS: mbedTLS 2.28 cannot build on gcc 2.7/egcs 1.1.2, so the retro build
 # links the vendored PolarSSL 1.3.9 backend (CCODE_TLS_POLARSSL) instead of
-# forcing HTTP_ONLY; see src/tls_backend.h.
+# forcing HTTP_ONLY; see src/net/tls_backend.h.
 # Old gcc (2.7.2.3 / egcs 1.1.2) lacks -Wextra/-Wpedantic; -pedantic would
 # choke on the GNU-extension `long long`, so it is filtered too.
 # See docs/BASICLINUX.md for the full target matrix and QEMU verification.
 ifeq ($(RETRO),1)
-override CPPFLAGS += -include src/compat/compat.h
-# compat/ holds shim headers (poll.h, stdint.h) for libc5.
-override CPPFLAGS += -Isrc/compat
+override CPPFLAGS += -include src/platform/retro/compat.h
+# platform/retro/ holds shim headers (poll.h, stdint.h) for libc5.
+override CPPFLAGS += -Isrc/platform/retro
 # gcc 2.7.2.3 / egcs 1.1.2 predate -std=c9x and -Wextra/-Wpedantic. The
 # sources are C89 (mid-block declarations were hoisted by scripts/c89ify.py;
 # `long long` remains as a GNU extension), so only the flags need dropping:
@@ -124,13 +124,13 @@ endif
 ifneq ($(findstring mingw,$(HOST_MACH)),)
 PLATFORM_SRC = src/platform/platform_win32.c
 endif
-AGENT_SRC = src/fdio.c src/commands.c src/agent/agent.c src/agent/agent_cancel.c src/agent/agent_fs.c src/agent/agent_args.c src/agent/agent_prepare.c src/agent/agent_exec.c src/agent/agent_output.c src/agent/agent_results.c src/agent/message.c
-SRC = src/fdio.c src/commands.c src/main.c src/config.c src/tui/tui.c src/tui/term.c src/tui/render.c src/tui/input.c src/tui/messages.c src/tui/status.c src/tui/theme.c src/tui/protocol.c src/markdown.c src/json.c vendor/jsmn/jsmn.c $(PLATFORM_SRC)
-TEST_JSON_SRC = tests/test_json.c src/json.c vendor/jsmn/jsmn.c $(RETRO_SRC)
-TEST_AGENT_SRC = tests/test_agent.c $(AGENT_SRC) src/json.c src/http.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c src/tui/input.c src/lineedit.c $(PLATFORM_SRC) $(RETRO_SRC)
+AGENT_SRC = vendor/fdio/fdio.c src/app/commands.c src/agent/agent.c src/agent/agent_cancel.c src/agent/agent_fs.c src/agent/agent_args.c src/agent/agent_prepare.c src/agent/agent_exec.c src/agent/agent_output.c src/agent/agent_results.c src/agent/message.c
+SRC = vendor/fdio/fdio.c src/app/commands.c src/app/main.c src/app/config.c src/tui/tui.c src/tui/term.c src/tui/render.c src/tui/input.c src/tui/messages.c src/tui/status.c src/tui/theme.c src/tui/protocol.c vendor/markdown/markdown.c vendor/json/json.c $(PLATFORM_SRC)
+TEST_JSON_SRC = tests/test_json.c vendor/json/json.c $(RETRO_SRC)
+TEST_AGENT_SRC = tests/test_agent.c $(AGENT_SRC) vendor/json/json.c src/net/http.c src/net/webfetch.c src/net/websearch.c src/security/sandbox.c src/net/models.c src/tools/tools.c src/security/permissions.c vendor/markdown/markdown.c src/tui/input.c src/text/lineedit.c $(PLATFORM_SRC) $(RETRO_SRC)
 TEST_PERMISSIONS_SRC = $(wildcard tests/test_permissions.c)
-TEST_TUI_SRC = tests/test_tui.c src/fdio.c
-TEST_MD_SRC = tests/test_markdown.c src/markdown.c src/json.c vendor/jsmn/jsmn.c $(RETRO_SRC)
+TEST_TUI_SRC = tests/test_tui.c vendor/fdio/fdio.c
+TEST_MD_SRC = tests/test_markdown.c vendor/markdown/markdown.c vendor/json/json.c $(RETRO_SRC)
 TTY_TEST := $(shell python3 -c "import pty" 2>/dev/null && echo 1)
 TEST_TARGETS = test-json test-agent test-http
 TEST_TARGETS += test-tui
@@ -171,8 +171,8 @@ endif
 # Requires: i686-w64-mingw32-gcc (apt: gcc-mingw-w64-i686).
 ifeq ($(WIN32),1)
 override CPPFLAGS += -D_WIN32_WINNT=0x0501 -DCCODE_WIN32=1 \
-	-Isrc/win32/include -Ivendor/musl-regex \
-	-include src/win32/win32_compat.h \
+	-Isrc/platform/win32/include -Ivendor/musl-regex \
+	-include src/platform/win32/win32_compat.h \
 	-DMBEDTLS_PLATFORM_STD_SNPRINTF=__mingw_snprintf \
 	-DMBEDTLS_PLATFORM_STD_VSNPRINTF=__mingw_vsnprintf
 # gnu99: the compat header uses the GNU ,##__VA_ARGS__ variadic-macro idiom.
@@ -180,7 +180,7 @@ override CFLAGS := -Os -std=gnu99 -Wall -Wextra $(filter-out -std=c99 -Wpedantic
 override LDFLAGS += -static -static-libgcc \
 	-Wl,--major-subsystem-version,5,--minor-subsystem-version,1
 LDLIBS += -lws2_32 -ladvapi32
-WIN32_PORT_SRC = src/win32/win32_compat.c src/win32/win32_console.c \
+WIN32_PORT_SRC = src/platform/win32/win32_compat.c src/platform/win32/win32_console.c \
 	vendor/musl-regex/fnmatch.c vendor/musl-regex/regcomp.c \
 	vendor/musl-regex/regexec.c vendor/musl-regex/regerror.c \
 	vendor/musl-regex/tre-mem.c
@@ -190,12 +190,12 @@ endif
 ifeq ($(RETRO),1)
 BUILD_MODE = retro
 # NB: do NOT define CCODE_HTTP_ONLY here - it would win the CCODE_TLS_BACKEND
-# derivation in src/tls_backend.h (http-only instead of the PolarSSL backend).
+# derivation in src/net/tls_backend.h (http-only instead of the PolarSSL backend).
 override CPPFLAGS += -DCCODE_RETRO=1
 # Vendored PolarSSL 1.3.9 provides the TLS backend on the retro toolchain
 # (gcc 2.7/egcs 1.1.2 cannot build mbedTLS 2.28); compat shims give it
-# stdint.h/inttypes.h via -Isrc/compat. CCODE_TLS_BACKEND is derived in
-# src/tls_backend.h from CCODE_HTTP_ONLY/CCODE_RETRO.
+# stdint.h/inttypes.h via -Isrc/platform/retro. CCODE_TLS_BACKEND is derived in
+# src/net/tls_backend.h from CCODE_HTTP_ONLY/CCODE_RETRO.
 override CPPFLAGS += -Ivendor/polarssl-1.3.9/include
 POLARSSL_OBJ = $(addprefix $(OBJDIR)/,$(POLARSSL_SRC:.c=.o))
 # On a glibc host, enable the shim so the retro path compiles and links
@@ -205,9 +205,9 @@ POLARSSL_OBJ = $(addprefix $(OBJDIR)/,$(POLARSSL_SRC:.c=.o))
 ifneq ($(RETRO_NATIVE),1)
 override CPPFLAGS += -DCCODE_RETRO_HOST_TEST=1
 endif
-RETRO_COMPAT_OBJ = $(OBJDIR)/src/compat/compat.o
-RETRO_SRC = src/compat/compat.c
-CLI_SRC += src/compat/compat.c
+RETRO_COMPAT_OBJ = $(OBJDIR)/src/platform/retro/compat.o
+RETRO_SRC = src/platform/retro/compat.c
+CLI_SRC += src/platform/retro/compat.c
 else
 RETRO_SRC =
 endif
@@ -235,7 +235,7 @@ TUI_BIN = $(OBJDIR)/ccode-tui.exe
 CLI_BIN = $(OBJDIR)/ccode-cli.exe
 COMBINED_BIN = $(OBJDIR)/ccode.exe
 endif
-CLI_SRC = src/cli/main.c src/config.c src/http.c src/json.c src/webfetch.c src/websearch.c src/sandbox.c src/models.c $(AGENT_SRC) src/tools/tools.c src/permissions/permissions.c src/markdown.c vendor/jsmn/jsmn.c src/tui/input.c src/lineedit.c $(PLATFORM_SRC)
+CLI_SRC = src/cli/main.c src/app/config.c src/net/http.c vendor/json/json.c src/net/webfetch.c src/net/websearch.c src/security/sandbox.c src/net/models.c $(AGENT_SRC) src/tools/tools.c src/security/permissions.c vendor/markdown/markdown.c src/tui/input.c src/text/lineedit.c $(PLATFORM_SRC)
 ifeq ($(WIN32),1)
 CLI_SRC += $(WIN32_PORT_SRC)
 endif
@@ -245,9 +245,9 @@ endif
 # WIN32=1: 单体 = CLI + 进程内 TUI（控制台 API 渲染，win32_console.c 解释
 # ANSI；fork 后端 protocol.c 与 termios 不可用，故排除）。
 ifeq ($(WIN32),1)
-COMBINED_SRC = $(sort src/combined_main.c $(filter-out src/tui/protocol.c,$(SRC)) $(CLI_SRC))
+COMBINED_SRC = $(sort src/app/combined_main.c $(filter-out src/tui/protocol.c,$(SRC)) $(CLI_SRC))
 else
-COMBINED_SRC = $(sort src/combined_main.c src/main.c src/cli/main.c $(SRC) $(CLI_SRC))
+COMBINED_SRC = $(sort src/app/combined_main.c src/app/main.c src/cli/main.c $(SRC) $(CLI_SRC))
 endif
 
 # ── Binary size optimization ──
@@ -406,7 +406,7 @@ endif
 fuzz-tool-args: tests/test_agent
 	python3 ./tests/fuzz_tool_args.py --probe ./tests/test_agent
 
-# Stress the command path filter (src/sandbox.c) for false positives/misses.
+# Stress the command path filter (src/security/sandbox.c) for false positives/misses.
 fuzz-command-paths: tests/test_agent
 	python3 ./tests/fuzz_command_paths.py --probe ./tests/test_agent
 
@@ -431,7 +431,7 @@ ifneq ($(TEST_PERMISSIONS_SRC),)
 test-permissions: tests/test_permissions
 	./tests/test_permissions
 
-tests/test_permissions: tests/test_permissions.c src/permissions/permissions.c src/json.c vendor/jsmn/jsmn.c src/lineedit.c src/tui/input.c $(RETRO_SRC)
+tests/test_permissions: tests/test_permissions.c src/security/permissions.c vendor/json/json.c src/text/lineedit.c src/tui/input.c $(RETRO_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 endif
 
@@ -441,7 +441,7 @@ test-http: ccode-cli
 test-tui: tests/test_tui
 	./tests/test_tui
 
-tests/test_tui: $(TEST_TUI_SRC) src/tui/input.c src/tui/messages.c src/tui/render.c src/tui/protocol.c src/markdown.c src/json.c vendor/jsmn/jsmn.c $(RETRO_SRC)
+tests/test_tui: $(TEST_TUI_SRC) src/tui/input.c src/tui/messages.c src/tui/render.c src/tui/protocol.c vendor/markdown/markdown.c vendor/json/json.c $(RETRO_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 
 # 单体 ccode 的进程内 TUI slash 命令（pty 驱动，需要 Python3）。

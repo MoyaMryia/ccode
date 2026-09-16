@@ -4,8 +4,66 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#include "../vendor/jsmn/jsmn.h"
-#include "vec.h"
+#include "../vec/vec.h"
+
+/* ── JSON tokenizer (derived from zserge/jsmn) ───────────────────────────
+ * The ccode_jsmn_* token types, parser state and functions below are a
+ * renamed/hardened fork of zserge/jsmn <https://github.com/zserge/jsmn>,
+ * merged into this module so the JSON layer ships as a single translation
+ * unit. See json.c for the implementation and the retained MIT notice.
+ *
+ * Copyright (c) 2010 Serge A. Zaitsev
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE. */
+
+typedef enum {
+    CCODE_JSMN_UNDEFINED = 0,
+    CCODE_JSMN_OBJECT = 1,
+    CCODE_JSMN_ARRAY = 2,
+    CCODE_JSMN_STRING = 3,
+    CCODE_JSMN_PRIMITIVE = 4
+} ccode_jsmntype_t;
+
+typedef struct {
+    ccode_jsmntype_t type;
+    int start;
+    int end;
+    int size;
+} ccode_jsmntok_t;
+
+typedef struct {
+    unsigned int pos;
+    unsigned int toknext;
+    int toksuper;
+} ccode_jsmn_parser;
+
+void ccode_jsmn_init(ccode_jsmn_parser *parser);
+int ccode_jsmn_parse(ccode_jsmn_parser *parser, const char *js, size_t len,
+                     ccode_jsmntok_t *tokens, unsigned int num_tokens);
+
+int ccode_jsmn_token_streq(const char *js, ccode_jsmntok_t *tok,
+                           const char *s);
+
+/* Decode the four hex digits at s into *value (value may be NULL). Returns 0
+ * on success, -1 when any character is not a hex digit. Shared \uXXXX
+ * decoder for JSON escapes. */
+int ccode_jsmn_hex4(const char *s, unsigned int *value);
 
 #define CCODE_MAX_SSE_TOOL_CALLS 64
 #define CCODE_MAX_SSE_CONTENT_LEN (1024U * 100U)

@@ -40,7 +40,7 @@
  *     (caller falls back to argv[0]/PATH search), detect_escaped may
  *     return 0 when no procfs is available, sandbox_apply may return -1
  *     when no sandbox is available (command filter remains the fallback).
- *   - The retro compat layer (src/compat/) is orthogonal: it fills in
+ *   - The retro compat layer (src/platform/retro/) is orthogonal: it fills in
  *     missing POSIX APIs via shadow macros. This layer handles control-
  *     flow divergence. They do not depend on each other.
  */

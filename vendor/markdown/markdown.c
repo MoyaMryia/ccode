@@ -1,7 +1,7 @@
 #include "markdown.h"
 
-#include "json.h"
-#include "vec.h"
+#include "../json/json.h"
+#include "../vec/vec.h"
 
 #include <stdlib.h>
 #include <string.h>

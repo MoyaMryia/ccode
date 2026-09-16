@@ -1,7 +1,7 @@
 #include "permissions.h"
 
-#include "../json.h"
-#include "../lineedit.h"
+#include "../../vendor/json/json.h"
+#include "../text/lineedit.h"
 
 #include <stdio.h>
 #include <stdlib.h>

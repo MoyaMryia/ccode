@@ -71,7 +71,7 @@ make RETRO=1 ccode-cli                                    # 宿主 glibc -m32 �
 make RETRO=1 RETRO_NATIVE=1 CC=gcc-egcs-1.1.2 ccode-cli   # guest 原生 i386 工具链
 ```
 
-- `RETRO=1`：强制包含 `src/compat/compat.h`、`-Isrc/compat`，目标 i586，TLS 后端换成 vendored PolarSSL 1.3.9（老编译器编不了 mbedTLS 2.28）。
+- `RETRO=1`：强制包含 `src/platform/retro/compat.h`、`-Isrc/platform/retro`，目标 i586，TLS 后端换成 vendored PolarSSL 1.3.9（老编译器编不了 mbedTLS 2.28）。
 - `RETRO_NATIVE=1`：跳过 `-m32/-march/-isystem`（老 gcc 不认），过滤 `-std=c99/-Wextra/-Wpedantic/-pedantic`（gcc 2.7 没有前三者，`-pedantic` 会呛 GNU 扩展 `long long`）。源码已是 C89（`scripts/c89ify.py` 把 mid-block 声明都上移了）。
 - 宿主冒烟：`make RETRO=1 test-json test-agent test-permissions test-markdown`。
 - 体积优化：宿主冒烟（现代 gcc -m32）开函数分节 + 链接期垃圾回收 + 符号裁剪；guest 原生（egcs 1.1.2 / gcc 2.7.2.3）只做 `-s` 符号裁剪——老 gcc 缺 `-fdata-sections`，libc5 静态链接配老 binutils 的 `--gc-sections` 不可靠。guest 实测产物：`ccode` 约 324K、`ccode-cli` 约 306K。
@@ -83,11 +83,11 @@ make RETRO=1 RETRO_NATIVE=1 CC=gcc-egcs-1.1.2 ccode-cli   # guest 原生 i386 �
 | `snprintf` 截断时 | 返回 -1（不是 C99 的返回所需长度），但 NUL 结尾正常 |
 | `%zu` / `%lld` / `%llu` | 不支持 → 已全改 `%lu`/`%ld` + 显式强转 |
 | 函数中部声明变量 | egcs 1.1.2 不支持 → `scripts/c89ify.py` 已把约 160 处上移 |
-| `openat`/`fstatat`/`renameat`/`unlinkat` | 不存在 → `src/compat/compat.c` 经 `/proc/self/fd/<n>` 重构 |
+| `openat`/`fstatat`/`renameat`/`unlinkat` | 不存在 → `src/platform/retro/compat.c` 经 `/proc/self/fd/<n>` 重构 |
 | `O_CLOEXEC` / `O_PATH` | 不存在 → 自定义位 + `fcntl` / `O_RDONLY` 回退 |
 | `getaddrinfo` | 不存在 → `gethostbyname` 适配器（仅 IPv4） |
 | `clock_gettime` | 不存在 → `gettimeofday` 回退 |
-| `<stdint.h>` / `<poll.h>` | 不存在 → `src/compat/` 自带 shim 头 |
+| `<stdint.h>` / `<poll.h>` | 不存在 → `src/platform/retro/` 自带 shim 头 |
 | mbedTLS 2.28 | 老编译器编不了 → retro 用 PolarSSL 1.3.9 |
 | Landlock | 无 → 优雅降级到命令过滤 |
 | `/proc/<pid>/stat` | 2.2 内核有 ✓ |

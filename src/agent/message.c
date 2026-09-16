@@ -3,8 +3,7 @@
 #endif
 
 #include "message.h"
-#include "../json.h"
-#include "../../vendor/jsmn/jsmn.h"
+#include "../../vendor/json/json.h"
 
 #include <stdio.h>
 #include <stdlib.h>

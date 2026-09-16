@@ -8,11 +8,11 @@
 #include "status.h"
 #include "term.h"
 #include "theme.h"
-#include "../json.h"
-#include "../commands.h"
-#include "../models.h"
+#include "../../vendor/json/json.h"
+#include "../app/commands.h"
+#include "../net/models.h"
 #include "../platform/platform.h"
-#include "../permissions/permissions.h"
+#include "../security/permissions.h"
 
 #include <signal.h>
 #include <limits.h>

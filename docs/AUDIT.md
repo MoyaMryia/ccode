@@ -14,9 +14,9 @@
 
 | 位置 | 用途 |
 |------|------|
-| `src/http.c` `resolve_with_deadline` | 真实主机名的 DNS 解析加超时，fork 子进程跑 `getaddrinfo`（数值 IP 直连不 fork） |
+| `src/net/http.c` `resolve_with_deadline` | 真实主机名的 DNS 解析加超时，fork 子进程跑 `getaddrinfo`（数值 IP 直连不 fork） |
 | `src/agent/agent_exec.c` | 执行命令，fork 出 shell / 命令子进程 |
-| `src/webfetch.c` | 网页抓取 |
+| `src/net/webfetch.c` | 网页抓取 |
 | `src/agent/agent.c` `run_pending_subagents` | 并行子代理：每轮最多 8 个只读子代理各 fork 一进程跑完整 agent loop，结果按 4 字节长度头 + 载荷经管道回传，父进程 poll 同时排空所有管道 |
 | `src/tui/protocol.c` | 分离式 TUI 拉起 `ccode-cli` 后端 |
 
@@ -57,7 +57,7 @@ REPL(agent.c)、JSON 后端(backend_command)、进程内 TUI(inproc_handle_comma
 
 ### 5. 每请求 fork 一次做 DNS 超时
 
-`src/http.c` `resolve_with_deadline()` 已收敛一半：数值 IP 字面量（IPv4/IPv6）直接构造 `sockaddr`，不再 fork `getaddrinfo` 子进程；只有真实主机名还需要 deadline-bounded DNS 子进程。完全去掉 fork 需要可移植的非阻塞 DNS（线程/c-ares/平台 API），属独立重构，暂缓。
+`src/net/http.c` `resolve_with_deadline()` 已收敛一半：数值 IP 字面量（IPv4/IPv6）直接构造 `sockaddr`，不再 fork `getaddrinfo` 子进程；只有真实主机名还需要 deadline-bounded DNS 子进程。完全去掉 fork 需要可移植的非阻塞 DNS（线程/c-ares/平台 API），属独立重构，暂缓。
 
 ## 2026-09-12 工具面收敛（19 -> 12）
 
@@ -98,7 +98,7 @@ stress_real_project.py（本仓库源码树，glob/grep/分页/bash/md5/edit
 
 ## 2026-09-12 已收敛的重复
 
-- `write_all` 循环 ×3 → `src/fdio.c` `ccode_fd_write_all`
+- `write_all` 循环 ×3 → `vendor/fdio/fdio.c` `ccode_fd_write_all`
 - auto 会话链生成 ×3 → `ccode_session_mint_auto`
 - 会话元数据填充 ×5 → `ccode_session_meta_init`
 - 会话列表渲染 ×2 → `ccode_session_list_text`(进程内 TUI 改用共享文本)
@@ -117,7 +117,7 @@ stress_real_project.py（本仓库源码树，glob/grep/分页/bash/md5/edit
 
 | topic | 做法 |
 |---|---|
-| `vector` | `src/vec.h`（`ccode_buf`/`ccode_vec`）统一历史、会话数组、SSE 累加器、结果 blob、markdown line buffer、TUI 消息/文本/session_path 等 |
+| `vector` | `vendor/vec/vec.h`（`ccode_buf`/`ccode_vec`）统一历史、会话数组、SSE 累加器、结果 blob、markdown line buffer、TUI 消息/文本/session_path 等 |
 | `json` | 解析/解转义/hex/字段提取统一到 json.c；新增 `ccode_json_append_quoted/int`、`ccode_json_fprint_string`、`ccode_json_get_string/_dup/_bool`；工具 schema、会话保存、change-log、resize 等构建器收敛 |
 | `dup` | HTTP/TLS 响应循环抽成 transport-neutral `stream_chat_loop`；PolarSSL send/recv 抽进 `tls_polarssl_transport.h`；8 份平台文件抽进 `platform_common.h`；终端转义抽成 `ccode_cp_safe_escape` |
 | `readline` | `lineedit.c` 长成 fd 版统一入口 `ccode_read_line_fd`；TUI 的键解码/协议分帧作为独立层保留（AUDIT #2） |
@@ -143,7 +143,7 @@ stress_real_project.py（本仓库源码树，glob/grep/分页/bash/md5/edit
   在 Linux 上以 `-fsyntax-only` 验证 fallback 路径）。仅剩 http.c 三份
   `ccode_stream_chat`（AUDIT #1，独立大重构）。
 
-- **dispatch（部分）**：新增 `src/commands.c/.h` 命令注册表（`ccode_command_table`
+- **dispatch（部分）**：新增 `src/app/commands.c/.h` 命令注册表（`ccode_command_table`
   + `ccode_commands_help()`），REPL `print_repl_help`、JSON 后端 `/help`、TUI `/help`
   三处文本改为单一来源，消除命令清单漂移。剩 3 处结构性的三张分派表本身
   （vtable 化，属大重构）。
@@ -217,7 +217,7 @@ stress_real_project.py（本仓库源码树，glob/grep/分页/bash/md5/edit
 
 ### vector 收敛进度（2026-09-13）
 
-已新增共享容器层 `src/vec.h`（header-only）：`struct ccode_buf`（NUL 结尾
+已新增共享容器层 `vendor/vec/vec.h`（header-only）：`struct ccode_buf`（NUL 结尾
 可增长字符串，`reserve/append/append_n/append_c/detach/free`）与
 `struct ccode_vec`（定长元素泛型数组，`reserve/push/at/clear/free`）。
 `ccode_append_cstr` 改为其薄包装。

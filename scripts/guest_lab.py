@@ -332,7 +332,7 @@ def main():
          60 * scale),
         ('tls', 'cd /root && make -C vendor/polarssl-1.3.9/library '
                 'CC=gcc-egcs-1.1.2 CFLAGS="-O2 -I../include '
-                '-include /root/src/compat/compat.h -I/root/src/compat"',
+                '-include /root/src/platform/retro/compat.h -I/root/src/platform/retro"',
          900 * scale),
         ('build', 'cd /root && make RETRO=1 RETRO_NATIVE=1 '
                   'CC=%s %s' % (args.cc, args.targets), 900 * scale),

@@ -41,28 +41,37 @@ ccode-tui（TUI 前端）           ccode-cli（CLI 后端）
 
 ```
 src/
-├── combined_main.c      # 单体 ccode 入口（按参数分发 TUI / CLI）
-├── main.c               # TUI 入口（ccode_tui_main / 进程内版）
-├── config.c/h           # 解析命令行参数和环境变量
+├── app/                 # 应用入口与全局胶水
+│   ├── combined_main.c  # 单体 ccode 入口（按参数分发 TUI / CLI）
+│   ├── main.c           # TUI 入口（ccode_tui_main / 进程内版）
+│   ├── config.c/h       # 解析命令行参数和环境变量
+│   └── commands.c/h     # slash 命令注册表与分发
+├── net/                 # 网络传输与网络型工具
+│   ├── http.c/h         # HTTP/TLS 传输、SSE 流式接收（三态 TLS 后端）
+│   ├── tls_backend.h    # TLS 后端选择
+│   ├── tls_polarssl_transport.h # PolarSSL socket 回调
+│   ├── models.c/h       # API 模型列表查询
+│   ├── webfetch.c/h     # web_fetch 工具
+│   └── websearch.c/h    # web_search 工具
+├── text/                # 终端文本处理
+│   └── lineedit.c/h     # 最小 raw-mode 行编辑器
+├── security/            # 安全边界
+│   ├── sandbox.c/h      # 写沙箱 + 命令级过滤
+│   └── permissions.c/h  # 工具执行前的权限审批
 ├── agent/
 │   ├── agent.c/h        # agent 主循环、工具调度、工作区管理
 │   ├── agent_*.c        # 按功能拆分的实现：fs/args/prepare/exec/output/cancel
 │   └── message.c/h      # 对话管理、请求序列化、会话持久化（v5 格式）
 ├── cli/
 │   └── main.c           # ccode-cli 入口（JSON Lines 协议）
-├── http.c/h             # HTTP/TLS 传输、SSE 流式接收（三态 TLS 后端）
-├── json.c/h             # 流式 JSON 解析器
-├── markdown.c/h         # Markdown → ANSI 流式渲染
-├── models.c/h           # API 模型列表查询
-├── webfetch.c/h         # web_fetch 工具
-├── websearch.c/h        # web_search 工具
-├── sandbox.c/h          # 写沙箱 + 命令级过滤
-├── compat/              # libc5 兼容层（只在 RETRO=1 时启用）
-├── platform/            # 平台抽象层（每个系统一个实现文件）
+├── platform/            # 平台抽象层
+│   ├── platform.h       # 平台接口（exe 路径、逃逸检测、写沙箱、send flags）
+│   ├── platform_common.h # 各平台实现共享的胶水
+│   ├── platform_*.c     # 每个系统一个实现文件
+│   ├── retro/           # libc5 兼容层（只在 RETRO=1 时启用）
+│   └── win32/           # Windows (MinGW/Cygwin) 移植层
 ├── tools/
 │   └── tools.c/h        # 工具定义和 JSON schema
-├── permissions/
-│   └── permissions.c/h  # 工具执行前的权限审批
 └── tui/
     ├── tui.c/h          # 事件循环、前后端进程管理
     ├── term.c/h         # raw mode、窗口大小、备用屏幕
@@ -73,14 +82,18 @@ src/
     ├── theme.c/h        # 颜色主题、Unicode 符号
     └── protocol.c/h     # JSON Lines 协议编解码
 vendor/
-├── jsmn/                # 轻量 JSON 解析器
+├── json/                # 流式 JSON 解析器（内嵌 zserge/jsmn 分词器 fork）
+├── vec/                 # 通用可增长容器（ccode_buf / ccode_vec）
+├── fdio/                # fd 全量写入
+├── markdown/            # Markdown → ANSI 流式渲染
 ├── mbedtls/             # mbedTLS 2.28.9（现代宿主默认 TLS 后端）
+├── musl-regex/          # Windows 构建的 fnmatch/regex 实现
 └── polarssl-1.3.9/      # PolarSSL 1.3.9（retro 构建的 TLS 后端）
 ```
 
 ## 核心模块
 
-### config.c — 配置入口
+### app/config.c — 配置入口
 
 从命令行参数和环境变量里读出配置，填进 `struct ccode_config`。常用项：
 
@@ -102,7 +115,7 @@ vendor/
 
 主循环：收到输入 → 拼 Chat Completions 请求（含历史、工具定义、系统提示）→ 发请求、解析 SSE 流 → 碰到工具调用就验证参数、执行、把结果喂回去 → 继续。两次 Ctrl-C：第一次标记取消，第二次强制退出。
 
-### http.c — 网络传输
+### net/http.c — 网络传输
 
 用 POSIX socket + TLS。TLS 有三档后端，构建时选一档：
 
@@ -114,11 +127,11 @@ vendor/
 
 SSE 按行解析 `data:` 事件，支持重定向、超时控制。
 
-### json.c — JSON 解析
+### vendor/json/json.c — JSON 解析
 
-基于嵌入的 jsmn。流式安全：拒绝 NUL、格式错误的 Unicode、超长字符串；拒绝未知/重复字段；严格校验类型。
+分词器是从 zserge/jsmn 改名/加固后并入本模块的 fork（`ccode_jsmn_*`，MIT，保留原作者版权声明）。流式安全：拒绝 NUL、格式错误的 Unicode、超长字符串；拒绝未知/重复字段；严格校验类型。
 
-### markdown.c — 渲染
+### vendor/markdown/markdown.c — 渲染
 
 逐行把 Markdown 转成 ANSI：标题、加粗、斜体、行内代码、代码块（带边框和语言标识）、列表、引用、链接（OSC-8）。所有输出都做控制字符和双向覆盖符的消毒。
 
@@ -131,7 +144,7 @@ SSE 按行解析 `data:` 事件，支持重定向、超时控制。
 | 只读 | `read_file`（带大小上限和截断标记）、`glob`、`grep`、`read_tool_output`（按 `tool_call_id` 取回被存档的超长工具输出窗口） |
 | 读写 | `edit_file`（原子写入；空 `old_string` 创建新文件，拒绝覆盖）、`bash`（支持 `timeout_ms`）、`delete_file` / `move_file`、`web_fetch` / `web_search`、`agent_tool`（子代理）、`task`（action=create/update/list） |
 
-### permissions/ — 审批
+### security/permissions.c — 审批
 
 默认所有工具请求都拒绝，等用户确认。可以装自定义 handler（TUI 用对话框，JSON 模式走协议消息）。`--auto-approve` 跳过审批。
 
@@ -158,9 +171,9 @@ SSE 按行解析 `data:` 事件，支持重定向、超时控制。
 
 - 找不到路径就退回 argv[0] 加 PATH 搜索；
 - 没有 procfs 的系统，逃逸检测直接返回 0（靠父进程杀进程组兜底）；
-- 没有写沙箱的系统，`sandbox.c` 里的命令过滤就是唯一防线。
+- 没有写沙箱的系统，`security/sandbox.c` 里的命令过滤就是唯一防线。
 
-`compat/` 和 `platform/` 是两回事：`compat/` 负责给老系统补缺失的 POSIX API，`platform/` 负责处理各系统行为差异，互不依赖。
+`platform/retro/` 和 `platform/platform_*.c` 是两回事：前者给老系统补缺失的 POSIX API，后者处理各系统行为差异，互不依赖。`platform/win32/` 是 Windows（MinGW/Cygwin）移植层。`vendor/` 放 ccode 自己可复用的库（json/vec/fdio/markdown），与 `src/` 的应用代码分开。
 
 ## 数据流
 

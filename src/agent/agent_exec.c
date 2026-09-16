@@ -6,17 +6,16 @@
 
 #include "agent.h"
 #include "message.h"
-#include "../http.h"
-#include "../json.h"
-#include "../webfetch.h"
-#include "../websearch.h"
-#include "../sandbox.h"
-#include "../models.h"
+#include "../net/http.h"
+#include "../../vendor/json/json.h"
+#include "../net/webfetch.h"
+#include "../net/websearch.h"
+#include "../security/sandbox.h"
+#include "../net/models.h"
 #include "../tools/tools.h"
-#include "../permissions/permissions.h"
-#include "../markdown.h"
+#include "../security/permissions.h"
+#include "../../vendor/markdown/markdown.h"
 #include "../platform/platform.h"
-#include "../../vendor/jsmn/jsmn.h"
 
 #include <stdio.h>
 #include <stdlib.h>

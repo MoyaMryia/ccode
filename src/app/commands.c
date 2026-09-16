@@ -1,5 +1,5 @@
 #include "commands.h"
-#include "json.h"   /* ccode_buf */
+#include "../../vendor/json/json.h"   /* ccode_buf */
 
 #include <stdio.h>
 #include <stdlib.h>

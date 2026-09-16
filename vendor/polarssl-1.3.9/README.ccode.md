@@ -35,5 +35,5 @@ modern host build keeps mbedTLS (or can link system OpenSSL dynamically).
 ```sh
 make -C vendor/polarssl-1.3.9/library \
   CC=gcc-egcs-1.1.2 \
-  CFLAGS="-O2 -I../include -include src/compat/compat.h -Isrc/compat"
+  CFLAGS="-O2 -I../include -include src/platform/retro/compat.h -Isrc/platform/retro"
 ```

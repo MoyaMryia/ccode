@@ -3,10 +3,10 @@
 #endif
 
 #include "webfetch.h"
-#include "permissions/permissions.h"
-#include "platform/platform.h"
+#include "../security/permissions.h"
+#include "../platform/platform.h"
 #include "tls_backend.h"
-#include "json.h"
+#include "../../vendor/json/json.h"
 
 #include <arpa/inet.h>
 #include <ctype.h>

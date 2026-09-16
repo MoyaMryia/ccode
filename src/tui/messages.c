@@ -1,8 +1,8 @@
 #include "messages.h"
 #include "render.h"
 #include "theme.h"
-#include "../json.h"
-#include "../markdown.h"
+#include "../../vendor/json/json.h"
+#include "../../vendor/markdown/markdown.h"
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,5 +1,5 @@
 #include "config.h"
-#include "tui/tui.h"
+#include "../tui/tui.h"
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -33,34 +33,34 @@ GATES = {
 }
 
 MUTANTS = [
-    # ── command-path filter (src/sandbox.c) ──────────────────────────────
+    # ── command-path filter (src/security/sandbox.c) ──────────────────────────────
     dict(label="hard-match boundary after removed", area="sandbox",
-         file="src/sandbox.c", gates=["agent", "cmd"],
+         file="src/security/sandbox.c", gates=["agent", "cmd"],
          old="        if (i + pl < tl && is_filename_char((unsigned char)text[i + pl]))\n"
              "            continue;\n",
          new=""),
     dict(label="soft hit always considered inside workspace", area="sandbox",
-         file="src/sandbox.c", gates=["agent", "cmd"],
+         file="src/security/sandbox.c", gates=["agent", "cmd"],
          old="    if (!ws || ws[0] == '\\0') return 0;\n    wl = strlen(ws);\n"
              "    while (s > 0 && !is_cmd_sep((unsigned char)text[s - 1])) s--;",
          new="    wl = strlen(ws);\n    return 1;\n"
              "    while (s > 0 && !is_cmd_sep((unsigned char)text[s - 1])) s--;"),
     dict(label=".. climb check disabled", area="sandbox",
-         file="src/sandbox.c", gates=["agent", "cmd"],
+         file="src/security/sandbox.c", gates=["agent", "cmd"],
          old="    for (i = from; i < to; i++) {\n        if (text[i] != '.') continue;",
          new="    for (i = from; 0 && i < to; i++) {\n        if (text[i] != '.') continue;"),
     dict(label="rm -rf / detection disabled", area="sandbox",
-         file="src/sandbox.c", gates=["agent", "cmd"],
+         file="src/security/sandbox.c", gates=["agent", "cmd"],
          old="    while ((p = strstr(p, \"rm \")) != NULL) {",
          new="    while (0 && (p = strstr(p, \"rm \")) != NULL) {"),
     dict(label="destructive-command detection disabled", area="sandbox",
-         file="src/sandbox.c", gates=["agent"],
+         file="src/security/sandbox.c", gates=["agent"],
          old="    for (i = 0; i < sizeof(destructive_commands) / sizeof(destructive_commands[0]); i++) {\n"
              "        if (!has_word(text, destructive_commands[i])) continue;",
          new="    for (i = 0; 0 && i < sizeof(destructive_commands) / sizeof(destructive_commands[0]); i++) {\n"
              "        if (!has_word(text, destructive_commands[i])) continue;"),
     dict(label="owner-home tolerance removed", area="sandbox",
-         file="src/sandbox.c", gates=["agent", "cmd"],
+         file="src/security/sandbox.c", gates=["agent", "cmd"],
          old="        if (!soft_hit_inside_workspace(text, i, ws) &&\n"
              "            !(owner != NULL && owner[0] != '\\0' &&\n"
              "              soft_hit_inside_workspace(text, i, owner)))\n"
@@ -85,7 +85,7 @@ MUTANTS = [
          old='        "~/", "~\\\\", "$HOME/", "${HOME}/"\n',
          new='        "~/", "~\\\\"\n'),
 
-    # ── tool-call argument parser (agent_prepare.c, agent_internal.h, jsmn) ─
+    # ── tool-call argument parser (agent_prepare.c, agent_internal.h, json.c) ─
     dict(label="envelope wrap cap 8 -> 1", area="toolargs",
          file="src/agent/agent_internal.h", gates=["agent", "args"],
          old="#define CCODE_MAX_TOOL_ARG_WRAP 8\n",
@@ -95,7 +95,7 @@ MUTANTS = [
          old="    if (!only_whitespace_after_root(s, &tokens[0])) return 0;\n",
          new="    if (0) return 0;\n"),
     dict(label="jsmn primitive-before-bracket flush disabled", area="toolargs",
-         file="vendor/jsmn/jsmn.c", gates=["agent", "args"],
+         file="vendor/json/json.c", gates=["agent", "args"],
          old="            if (token_start >= 0 && token_type == CCODE_JSMN_PRIMITIVE) {\n"
              "                if (push_token(parser, CCODE_JSMN_PRIMITIVE, token_start,\n"
              "                               (int)parser->pos, tokens, num_tokens) != 0)\n"
@@ -143,15 +143,15 @@ MUTANTS = [
          old="    if (stderr_tail.len > 0 && ctx->results_dir[0] != '\\0') {\n",
          new="    if (0 && stderr_tail.len > 0 && ctx->results_dir[0] != '\\0') {\n"),
 
-    # ── web_fetch (src/webfetch.c) ──────────────────────────────────────
+    # ── web_fetch (src/net/webfetch.c) ──────────────────────────────────────
     dict(label="webfetch result margin too small", area="webfetch",
-         file="src/webfetch.c", gates=["agent"],
+         file="src/net/webfetch.c", gates=["agent"],
          old="            size_t rcap = strlen(escaped) + strlen(esc_url) +\n"
              "                          strlen(esc_ct) + 128;\n",
          new="            size_t rcap = strlen(escaped) + strlen(esc_url) +\n"
              "                          strlen(esc_ct) + 1;\n"),
     dict(label="webfetch relative dot folding disabled", area="webfetch",
-         file="src/webfetch.c", gates=["agent"],
+         file="src/net/webfetch.c", gates=["agent"],
          old="        while (loc[0] == '.' &&\n"
              "               (loc[1] == '/' ||\n"
              "                (loc[1] == '.' && (loc[2] == '/' || loc[2] == '\\0')))) {\n",

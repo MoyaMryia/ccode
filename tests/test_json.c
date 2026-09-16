@@ -1,9 +1,8 @@
 /* Unit tests for the JSON module.
- * Compile: cc -std=c99 -o test_json test_json.c ../src/json.c ../vendor/jsmn/jsmn.c
+ * Compile: cc -std=c99 -o test_json test_json.c ../vendor/json/json.c
  */
 
-#include "../src/json.h"
-#include "../vendor/jsmn/jsmn.h"
+#include "../vendor/json/json.h"
 
 #include <stdio.h>
 #include <stdint.h>

@@ -1,7 +1,7 @@
 #ifndef CCODE_SANDBOX_H
 #define CCODE_SANDBOX_H
 
-#include "platform/platform.h"
+#include "../platform/platform.h"
 
 #include <stddef.h>
 

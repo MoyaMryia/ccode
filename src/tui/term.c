@@ -8,7 +8,7 @@
  * virtual key events directly. Output escapes are interpreted by
  * win32_console.c, which this file toggles via set_tui_mode. */
 
-#include "../win32/win32_compat.h"
+#include "../platform/win32/win32_compat.h"
 
 #include <stdio.h>
 #include <stdlib.h>

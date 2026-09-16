@@ -324,7 +324,7 @@ def main():
         ('unpack', 'cd /root && tar xf ccode-src.tar && ls Makefile src', 60),
         ('tls', 'cd /root && make -C vendor/polarssl-1.3.9/library '
                 'CC=gcc-egcs-1.1.2 CFLAGS="-O2 -I../include '
-                '-include /root/src/compat/compat.h -I/root/src/compat"', 900),
+                '-include /root/src/platform/retro/compat.h -I/root/src/platform/retro"', 900),
         ('build', 'cd /root && make RETRO=1 RETRO_NATIVE=1 '
                   'CC=%s %s' % (args.cc, args.targets), 900),
         ('help', 'cd /root && ./ccode-cli --help', 60),

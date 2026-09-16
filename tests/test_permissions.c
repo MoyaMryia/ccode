@@ -2,7 +2,7 @@
 #define _XOPEN_SOURCE 600
 #endif
 
-#include "../src/permissions/permissions.h"
+#include "../src/security/permissions.h"
 
 #include <assert.h>
 #include <fcntl.h>
