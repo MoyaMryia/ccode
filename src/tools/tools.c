@@ -208,15 +208,6 @@ fail:
     return NULL;
 }
 
-char *ccode_build_tools_json(void) {
-    const char *names[sizeof(ccode_tool_definitions) /
-                       sizeof(ccode_tool_definitions[0])];
-    size_t i;
-    for (i = 0; i < ccode_tool_definitions_count; i++)
-        names[i] = ccode_tool_definitions[i].name;
-    return build_tools_json_named(names, ccode_tool_definitions_count);
-}
-
 char *ccode_build_readonly_tools_json(void) {
     static const char *const names[] = {"read_file", "glob", "grep",
                                         "read_tool_output"};

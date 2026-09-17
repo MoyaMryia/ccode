@@ -196,17 +196,22 @@ int main(void) {
 
         tier.danger_level = CCODE_CONFIRM_YES;
         assert(ccode_permission_parse_reply("y\n", &tier) == -1);
-        assert(ccode_permission_parse_reply("yes\n", &tier) == 1);
+        assert(ccode_permission_parse_reply("yes\n", &tier) == -1);
+        assert(ccode_permission_parse_reply("YES\n", &tier) == -1);
         assert(ccode_permission_parse_reply("Yes\n", &tier) == 1);
         assert(ccode_permission_parse_reply("Yes, do as I say.\n", &tier) == 1);
+        assert(ccode_permission_parse_reply("Yes, do as I say\n", &tier) == -1);
         assert(ccode_permission_parse_reply("n\n", &tier) == 0);
 
         tier.danger_level = CCODE_CONFIRM_YES_DO_AS_I_SAY;
         assert(ccode_permission_parse_reply("Yes\n", &tier) == -1);
         assert(ccode_permission_parse_reply("yes\n", &tier) == -1);
+        assert(ccode_permission_parse_reply("YES, DO AS I SAY.\n",
+                                            &tier) == -1);
+        assert(ccode_permission_parse_reply("yes, do as i say.\n",
+                                            &tier) == -1);
+        assert(ccode_permission_parse_reply("Yes, do as I say\n", &tier) == -1);
         assert(ccode_permission_parse_reply("Yes, do as I say.\n", &tier) == 1);
-        assert(ccode_permission_parse_reply("yes, do as i say\n", &tier) == 1);
-        assert(ccode_permission_parse_reply("Yes, do as I say\n", &tier) == 1);
         assert(ccode_permission_parse_reply("n\n", &tier) == 0);
 
         assert(ccode_permission_required_phrase(0) == NULL);
@@ -215,7 +220,11 @@ int main(void) {
         p3 = ccode_permission_required_phrase(CCODE_CONFIRM_YES_DO_AS_I_SAY);
         assert(p3 != NULL && strcmp(p3, "Yes, do as I say.") == 0);
         assert(ccode_permission_reply_matches("y", CCODE_CONFIRM_YES) == 0);
+        assert(ccode_permission_reply_matches("yes", CCODE_CONFIRM_YES) == 0);
         assert(ccode_permission_reply_matches("Yes", CCODE_CONFIRM_YES) == 1);
+        assert(ccode_permission_reply_matches(
+                   "yes, do as i say.",
+                   CCODE_CONFIRM_YES_DO_AS_I_SAY) == 0);
         assert(ccode_permission_reply_matches(
                    "Yes, do as I say.",
                    CCODE_CONFIRM_YES_DO_AS_I_SAY) == 1);

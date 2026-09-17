@@ -770,13 +770,4 @@ int ccode_win32_default_ca_file(char *buf, size_t cap) {
     return -1;
 }
 
-/* ── HOME fallback ── */
-
-const char *ccode_win32_home(void) {
-    const char *home = getenv("HOME");
-    if (!home || !home[0]) home = getenv("USERPROFILE");
-    if (!home || !home[0]) home = getenv("HOMEDRIVE");
-    return home;
-}
-
 #endif /* _WIN32 */

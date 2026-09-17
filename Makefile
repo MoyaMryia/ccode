@@ -133,6 +133,7 @@ TEST_TUI_SRC = tests/test_tui.c vendor/fdio/fdio.c
 TEST_MD_SRC = tests/test_markdown.c vendor/markdown/markdown.c vendor/json/json.c $(RETRO_SRC)
 TTY_TEST := $(shell python3 -c "import pty" 2>/dev/null && echo 1)
 TEST_TARGETS = test-json test-agent test-http
+TEST_TARGETS += test-dead-code
 TEST_TARGETS += test-tui
 ifneq ($(TTY_TEST),)
 TEST_TARGETS += test-lineedit
@@ -470,6 +471,11 @@ test-tui-real: ccode ccode-tui ccode-cli
 test-markdown: tests/test_markdown
 	./tests/test_markdown
 
+# External-linkage functions that are defined but never referenced anywhere.
+# `static` unused definitions already fail the build via -Wunused-function.
+test-dead-code:
+	python3 ./scripts/check_dead_functions.py
+
 tests/test_markdown: $(TEST_MD_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 
@@ -554,4 +560,4 @@ asan: clean
 repro: clean
 	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 SIZE_CFLAGS= SIZE_LDFLAGS= CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic -Werror $(X86_GNU_FLAGS) -ffile-prefix-map=$(PWD)=."
 
-.PHONY: ccode ccode-tui ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-lineedit test-markdown test-tui-commands test-tui-real test-tty test-e2e test-streaming retro-test asan repro test-sandbox fuzz-tool-args fuzz-tool-args-asan fuzz-command-paths fuzz-paths mutate
+.PHONY: ccode ccode-tui ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-lineedit test-markdown test-dead-code test-tui-commands test-tui-real test-tty test-e2e test-streaming retro-test asan repro test-sandbox fuzz-tool-args fuzz-tool-args-asan fuzz-command-paths fuzz-paths mutate

@@ -19,10 +19,6 @@ void tui_render_fill_line(int row, int cols, const char *text) {
     if (text) tui_render_text(text, cols);
 }
 
-void tui_render_clear_screen(void) {
-    fputs("\033[2J\033[H", stdout);
-}
-
 int tui_render_text(const char *text, int max_cols) {
     return tui_render_text_n(text, strlen(text ? text : ""), max_cols);
 }
@@ -129,19 +125,4 @@ void tui_render_text_part(const char *text, size_t length, int max_cols,
 
 void tui_render_cursor(int visible) {
     fputs(visible ? "\033[?25h" : "\033[?25l", stdout);
-}
-
-void tui_render_box(int row, int col, int height, int width) {
-    int r, c;
-    if (height < 2 || width < 2) return;
-    for (r = 0; r < height; r++) {
-        tui_render_move(row + r, col);
-        for (c = 0; c < width; c++) {
-            if ((r == 0 || r == height - 1) && (c == 0 || c == width - 1))
-                fputc('+', stdout);
-            else if (r == 0 || r == height - 1) fputc('-', stdout);
-            else if (c == 0 || c == width - 1) fputc('|', stdout);
-            else fputc(' ', stdout);
-        }
-    }
 }

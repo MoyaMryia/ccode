@@ -3098,21 +3098,21 @@ static int test_bash_git_does_not_discover_parent_repository(void) {
 static int test_sensitive_reason_names_the_path(void) {
     char why[256];
     /* The reason must quote the exact offending token, not just the rule. */
-    ASSERT(ccode_command_is_sensitive_why("cat /home/alice/.bashrc",
-                                          "/home/bob/proj", why,
-                                          sizeof(why)) == 1);
+    ASSERT(ccode_command_classify("cat /home/alice/.bashrc",
+                                  "/home/bob/proj", why,
+                                  sizeof(why)) == CCODE_CMD_TIER1);
     ASSERT(strstr(why, "/home/alice/.bashrc") != NULL);
-    ASSERT(ccode_command_is_sensitive_why("cat ~/.ssh/id_rsa",
-                                          "/home/bob/proj", why,
-                                          sizeof(why)) == 1);
+    ASSERT(ccode_command_classify("cat ~/.ssh/id_rsa",
+                                  "/home/bob/proj", why,
+                                  sizeof(why)) == CCODE_CMD_TIER2);
     ASSERT(strstr(why, "~/.ssh/id_rsa") != NULL);
-    ASSERT(ccode_command_is_sensitive_why("rm -rf /", "/home/bob/proj",
-                                          why, sizeof(why)) == 1);
+    ASSERT(ccode_command_classify("rm -rf /", "/home/bob/proj",
+                                  why, sizeof(why)) == CCODE_CMD_REFUSE);
     ASSERT(strstr(why, "rm -rf /") != NULL);
     /* A path inside the workspace is still allowed. */
-    ASSERT(ccode_command_is_sensitive_why("cat /home/bob/proj/x",
-                                          "/home/bob/proj", why,
-                                          sizeof(why)) == 0);
+    ASSERT(ccode_command_classify("cat /home/bob/proj/x",
+                                  "/home/bob/proj", why,
+                                  sizeof(why)) == CCODE_CMD_ALLOW);
     return 1;
 }
 
@@ -4835,44 +4835,51 @@ static int test_command_sensitive_paths(void) {
     size_t i;
     for (i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++) {
         char why[256];
-        ASSERT(ccode_command_is_sensitive(blocked[i], NULL) == 1);
-        ASSERT(ccode_command_is_sensitive_why(blocked[i], NULL,
-                                              why, sizeof(why)) == 1);
+        why[0] = '\0';
+        ASSERT(ccode_command_classify(blocked[i], NULL, why, sizeof(why)) !=
+               CCODE_CMD_ALLOW);
         ASSERT(why[0] != '\0');
     }
     for (i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++)
-        ASSERT(ccode_command_is_sensitive(allowed[i], NULL) == 0);
+        ASSERT(ccode_command_classify(allowed[i], NULL, NULL, 0) <=
+               CCODE_CMD_TIER1);
     /* Workspace tolerance: paths under the workspace root pass even
      * though they match soft patterns like /root/. */
-    ASSERT(ccode_command_is_sensitive("gcc -o /root/x /root/x.c",
-                                      "/root") == 0);
-    ASSERT(ccode_command_is_sensitive("ls -la /root/.ssh/id_rsa",
-                                      "/root") == 1);  /* hard pattern */
-    ASSERT(ccode_command_is_sensitive("cat /root/secret.txt", "/root") == 0);
-    ASSERT(ccode_command_is_sensitive("cat /root/secret.txt",
-                                      "/home/user/proj") == 1);
+    ASSERT(ccode_command_classify("gcc -o /root/x /root/x.c", "/root",
+                                  NULL, 0) == CCODE_CMD_ALLOW);
+    ASSERT(ccode_command_classify("ls -la /root/.ssh/id_rsa", "/root",
+                                  NULL, 0) == CCODE_CMD_TIER2);
+    ASSERT(ccode_command_classify("cat /root/secret.txt", "/root",
+                                  NULL, 0) == CCODE_CMD_ALLOW);
+    ASSERT(ccode_command_classify("cat /root/secret.txt", "/home/user/proj",
+                                  NULL, 0) == CCODE_CMD_TIER1);
     /* A workspace mention must not whitelist a *different* outside path. */
-    ASSERT(ccode_command_is_sensitive(
+    ASSERT(ccode_command_classify(
         "cat /home/dev/proj/x /home/bob/.config/secret",
-        "/home/dev/proj") == 1);
-    ASSERT(ccode_command_is_sensitive(
+        "/home/dev/proj", NULL, 0) == CCODE_CMD_TIER1);
+    ASSERT(ccode_command_classify(
         "cat /home/dev/proj/x:/home/bob/.config/secret",
-        "/home/dev/proj") == 1);
+        "/home/dev/proj", NULL, 0) == CCODE_CMD_TIER1);
     /* ...and ".." cannot climb back out. */
-    ASSERT(ccode_command_is_sensitive(
+    ASSERT(ccode_command_classify(
         "cat /home/dev/proj/../../bob/.config/secret",
-        "/home/dev/proj") == 1);
-    ASSERT(ccode_command_is_sensitive(
-        "F=/home/dev/proj/x cat $F", "/home/dev/proj") == 0);
-    /* The workspace owner's own home is tolerated as well. */
-    ASSERT(ccode_command_is_sensitive("cat /home/dev/.config/x",
-                                      "/home/dev/proj") == 0);
-    ASSERT(ccode_command_is_sensitive("git -C /home/dev/other status",
-                                      "/home/dev/proj") == 0);
-    ASSERT(ccode_command_is_sensitive("cat /root/.config/x",
-                                      "/root/proj") == 0);
-    ASSERT(ccode_command_is_sensitive("cat /home/bob/.config/x",
-                                      "/home/dev/proj") == 1);
+        "/home/dev/proj", NULL, 0) == CCODE_CMD_TIER1);
+    ASSERT(ccode_command_classify("F=/home/dev/proj/x cat $F",
+                                  "/home/dev/proj", NULL, 0) <=
+           CCODE_CMD_TIER1);
+    /* Soft patterns under the workspace owner's home are tolerated, but a
+     * path outside the workspace still needs the ordinary confirmation. */
+    ASSERT(ccode_command_classify("cat /home/dev/.config/x",
+                                  "/home/dev/proj", NULL, 0) ==
+           CCODE_CMD_TIER1);
+    ASSERT(ccode_command_classify("git -C /home/dev/other status",
+                                  "/home/dev/proj", NULL, 0) ==
+           CCODE_CMD_TIER1);
+    ASSERT(ccode_command_classify("cat /root/.config/x", "/root/proj",
+                                  NULL, 0) == CCODE_CMD_TIER1);
+    ASSERT(ccode_command_classify("cat /home/bob/.config/x",
+                                  "/home/dev/proj", NULL, 0) ==
+           CCODE_CMD_TIER1);
     return 1;
 }
 
@@ -4896,13 +4903,14 @@ static int test_command_destructive_words(void) {
     size_t i;
     for (i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++) {
         char why[256];
-        ASSERT(ccode_command_mentions_destructive(blocked[i]) == 1);
-        ASSERT(ccode_command_mentions_destructive_why(blocked[i],
-                                                      why, sizeof(why)) == 1);
+        why[0] = '\0';
+        ASSERT(ccode_command_classify(blocked[i], NULL, why, sizeof(why)) !=
+               CCODE_CMD_ALLOW);
         ASSERT(why[0] != '\0');
     }
     for (i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++)
-        ASSERT(ccode_command_mentions_destructive(allowed[i]) == 0);
+        ASSERT(ccode_command_classify(allowed[i], "/home/dev/proj", NULL, 0)
+               == CCODE_CMD_ALLOW);
     return 1;
 }
 
@@ -5510,13 +5518,13 @@ int main(int argc, char **argv) {
 
     if (argc == 2 && strcmp(argv[1], "--filter-probe") == 0) {
         /* Framed probe for tests/fuzz_command_paths.py: read
-         * <len ws><ws><len text><text> records and print
-         * "<sensitive>\t<destructive>\t<reason>" per command. */
+         * <len ws><ws><len text><text> records and print "<class>\t<reason>"
+         * per command, where <class> is the ccode_command_class value. */
         for (;;) {
             unsigned char hdr[4];
             unsigned int wlen, tlen;
             char *ws, *text;
-            char why[256], dw[256];
+            char cw[256];
             size_t r = fread(hdr, 1, 4, stdin);
             if (r == 0) return 0;      /* clean EOF */
             if (r != 4) return 2;
@@ -5534,23 +5542,14 @@ int main(int argc, char **argv) {
             text = (char *)malloc(tlen + 1);
             if (!text || fread(text, 1, tlen, stdin) != tlen) return 2;
             text[tlen] = '\0';
-            why[0] = '\0';
-            dw[0] = '\0';
+            cw[0] = '\0';
+            /* Exercise the confinement predicate too: the fuzz corpus then
+             * covers its token walk alongside the classifier. */
+            (void)ccode_command_stays_in_workspace(text, ws[0] ? ws : NULL);
             {
-                int s = ccode_command_is_sensitive_why(text,
-                                                       ws[0] ? ws : NULL,
-                                                       why, sizeof(why));
-                int d = ccode_command_mentions_destructive_why(text, dw,
-                                                               sizeof(dw));
-                char cw[256];
-                /* Exercise the confinement predicate and the risk
-                 * classifier too (result unused here): the fuzz corpus then
-                 * covers both token walks. */
-                (void)ccode_command_stays_in_workspace(text,
-                                                       ws[0] ? ws : NULL);
-                (void)ccode_command_classify(text, ws[0] ? ws : NULL,
-                                             cw, sizeof(cw));
-                printf("%d\t%d\t%s\n", s, d, s ? why : (d ? dw : ""));
+                int cls = ccode_command_classify(text, ws[0] ? ws : NULL,
+                                                 cw, sizeof(cw));
+                printf("%d\t%s\n", cls, cw);
                 fflush(stdout);
             }
             free(ws);

@@ -145,15 +145,6 @@ static int find_path_pattern_ci(const char *text, const char *pat,
     return 0;
 }
 
-/* Destructive commands that are never useful inside a coding workspace.
- * Detected as whole words so names like "dd" do not hit unrelated text.
- * NB: chmod is NOT here - `chmod +x script.sh` is a routine dev command
- * and refusing it produced a stream of tool errors. */
-static const char *const destructive_commands[] = {
-    "mkfs", "fdisk", "parted", "dd", "shutdown", "reboot", "poweroff",
-    "halt", "chown", "chattr", "mknod", "fsck", "swapoff",
-};
-
 static int has_word(const char *haystack, const char *word) {
     size_t wl = strlen(word);
     size_t hl = strlen(haystack);
@@ -166,37 +157,6 @@ static int has_word(const char *haystack, const char *word) {
             return 1;
     }
     return 0;
-}
-
-int ccode_command_mentions_destructive_why(const char *text,
-                                           char *reason, size_t reason_size) {
-    const char *env;
-    size_t i;
-    if (reason && reason_size > 0) reason[0] = '\0';
-    if (!text) return 0;
-    env = getenv("CCODE_DISABLE_COMMAND_FILTER");
-    if (env && strcmp(env, "1") == 0) return 0;
-    for (i = 0; i < sizeof(destructive_commands) / sizeof(destructive_commands[0]); i++) {
-        if (!has_word(text, destructive_commands[i])) continue;
-        if (strcmp(destructive_commands[i], "dd") == 0) {
-            /* dd without operands reads stdin to stdout and is harmless;
-             * require typical device/file operands to reduce false hits. */
-            if (strstr(text, "if=") == NULL && strstr(text, "of=") == NULL &&
-                strstr(text, "bs=") == NULL && strstr(text, "count=") == NULL &&
-                strstr(text, "seek=") == NULL)
-                continue;
-        }
-        if (reason && reason_size > 0)
-            snprintf(reason, reason_size,
-                     "mentions destructive command '%s'",
-                     destructive_commands[i]);
-        return 1;
-    }
-    return 0;
-}
-
-int ccode_command_mentions_destructive(const char *text) {
-    return ccode_command_mentions_destructive_why(text, NULL, 0);
 }
 
 /* Command-token separators used for workspace tolerance: whitespace and the
@@ -312,68 +272,6 @@ static void command_token(const char *text, size_t pos, size_t len,
     if (e - s >= cap) e = s + cap - 1;
     memcpy(out, text + s, e - s);
     out[e - s] = '\0';
-}
-
-int ccode_command_is_sensitive_why(const char *text, const char *workspace,
-                                   char *reason, size_t reason_size) {
-    const char *env;
-    char owner_home[512];
-    char token[192];
-    size_t i, start, len;
-    if (reason && reason_size > 0) reason[0] = '\0';
-    if (!text) return 0;
-    env = getenv("CCODE_DISABLE_COMMAND_FILTER");
-    if (env && strcmp(env, "1") == 0) return 0;
-    derive_owner_home(workspace, owner_home, sizeof(owner_home));
-    if (find_rm_root(text, &start, &len)) {
-        command_token(text, start, len, token, sizeof(token));
-        if (reason && reason_size > 0)
-            snprintf(reason, reason_size,
-                     "refuses rm of filesystem root: '%s'", token);
-        return 1;
-    }
-    for (i = 0; i < sizeof(hard_sensitive_patterns) /
-                      sizeof(hard_sensitive_patterns[0]); i++) {
-        if (!find_path_pattern_ci(text, hard_sensitive_patterns[i], &start))
-            continue;
-        command_token(text, start, strlen(hard_sensitive_patterns[i]),
-                      token, sizeof(token));
-        if (reason && reason_size > 0) {
-            if (token[0] != '\0')
-                snprintf(reason, reason_size,
-                         "mentions sensitive path '%s' in '%s'",
-                         hard_sensitive_patterns[i], token);
-            else
-                snprintf(reason, reason_size,
-                         "mentions sensitive path '%s'",
-                         hard_sensitive_patterns[i]);
-        }
-        return 1;
-    }
-    for (i = 0; i < sizeof(soft_sensitive_patterns) /
-                      sizeof(soft_sensitive_patterns[0]); i++) {
-        if (!has_substr_ci(text, soft_sensitive_patterns[i])) continue;
-        if (!find_soft_outside(text, soft_sensitive_patterns[i],
-                               workspace, owner_home, &start)) continue;
-        command_token(text, start, strlen(soft_sensitive_patterns[i]),
-                      token, sizeof(token));
-        if (reason && reason_size > 0) {
-            if (token[0] != '\0')
-                snprintf(reason, reason_size,
-                         "mentions path outside workspace: '%s' (rule '%s')",
-                         token, soft_sensitive_patterns[i]);
-            else
-                snprintf(reason, reason_size,
-                         "mentions path outside workspace ('%s')",
-                         soft_sensitive_patterns[i]);
-        }
-        return 1;
-    }
-    return 0;
-}
-
-int ccode_command_is_sensitive(const char *text, const char *workspace) {
-    return ccode_command_is_sensitive_why(text, workspace, NULL, 0);
 }
 
 /* ── Workspace-confined command check ──

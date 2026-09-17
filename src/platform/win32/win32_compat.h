@@ -172,7 +172,6 @@ int ccode_win32_kill(pid_t pid, int sig);
 int ccode_win32_inet_pton(int af, const char *src, void *dst);
 /* ccode_win32_poll is declared by the <poll.h> shim (needs struct pollfd). */
 int ccode_win32_ansi_ok(void);
-const char *ccode_win32_home(void);
 int ccode_win32_default_ca_file(char *buf, size_t cap);
 
 /* TUI console renderer (win32_console.c): ANSI-interpreting stdout for the
@@ -180,9 +179,6 @@ int ccode_win32_default_ca_file(char *buf, size_t cap);
  * through the escape interpreter; otherwise they are CRT passthroughs. */
 void ccode_win32_console_set_tui_mode(int on);
 int ccode_win32_console_tui_active(void);
-DWORD ccode_win32_console_saved_input_mode(void);
-void ccode_win32_console_save_input_mode(DWORD mode);
-void ccode_win32_console_cursor(int visible);
 int ccode_win32_fputs(const char *s, FILE *f);
 int ccode_win32_fputc(int c, FILE *f);
 int ccode_win32_putchar(int c);

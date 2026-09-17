@@ -45,7 +45,6 @@ static HANDLE tui_out_orig = NULL;  /* stdout's original buffer */
 static HANDLE tui_out_alt = NULL;   /* alternate screen buffer */
 static WORD tui_attr_default = 0x07;
 static WORD tui_attr_current = 0x07;
-static DWORD tui_orig_in_mode = 0;
 static int tui_cursor_visible = 1;
 
 /* Escape parser state */
@@ -114,14 +113,6 @@ void ccode_win32_console_set_tui_mode(int on) {
 
 int ccode_win32_console_tui_active(void) {
     return tui_console_active;
-}
-
-DWORD ccode_win32_console_saved_input_mode(void) {
-    return tui_orig_in_mode;
-}
-
-void ccode_win32_console_save_input_mode(DWORD mode) {
-    tui_orig_in_mode = mode;
 }
 
 /* ── Geometry helpers ── */
@@ -537,11 +528,6 @@ int ccode_win32_printf(const char *fmt, ...) {
     ret = ccode_win32_vfprintf(stdout, fmt, ap);
     va_end(ap);
     return ret;
-}
-
-/* Cursor visibility passthrough for render.c-style direct API users. */
-void ccode_win32_console_cursor(int visible) {
-    if (tui_console_active) con_set_visible(visible);
 }
 
 #endif /* _WIN32 */

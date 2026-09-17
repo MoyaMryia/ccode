@@ -72,15 +72,6 @@ void ccode_fprint_safe_text(FILE *stream, const char *value,
     fprint_safe_limit(stream, value, null_value, (size_t)-1, 1);
 }
 
-static int str_ieq(const char *a, const char *b) {
-    while (*a != '\0' && *b != '\0') {
-        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return 0;
-        a++;
-        b++;
-    }
-    return *a == '\0' && *b == '\0';
-}
-
 /* Trim leading/trailing blanks in place and return the new start. */
 static char *trim_in_place(char *s) {
     size_t len;
@@ -92,9 +83,10 @@ static char *trim_in_place(char *s) {
     return s;
 }
 
+/* Dangerous confirmations are exact and case-sensitive: the user must type
+ * the literal phrase, period included. */
 static int matches_yes_do_as_i_say(const char *s) {
-    return str_ieq(s, "yes, do as i say.") ||
-           str_ieq(s, "yes, do as i say");
+    return strcmp(s, "Yes, do as I say.") == 0;
 }
 
 const char *ccode_permission_required_phrase(int danger_level) {
@@ -122,7 +114,7 @@ int ccode_permission_reply_matches(const char *line, int danger_level) {
     if (danger_level >= CCODE_CONFIRM_YES_DO_AS_I_SAY)
         return matches_yes_do_as_i_say(p);
     if (danger_level >= CCODE_CONFIRM_YES)
-        return str_ieq(p, "yes") || matches_yes_do_as_i_say(p);
+        return strcmp(p, "Yes") == 0 || matches_yes_do_as_i_say(p);
 
     /* Ordinary prompt: the first word is y / yes. */
     tl = 0;

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Stress harness for ccode's command path filter (src/security/sandbox.c).
+"""Stress harness for ccode's command risk classifier
+(src/security/sandbox.c).
 
 Pipes commands to `tests/test_agent --filter-probe`, which calls
-ccode_command_is_sensitive_why() and ccode_command_mentions_destructive_why()
-and reports the verdict. The goal is to surface:
+ccode_command_classify() and reports the class (0 ALLOW, 1 TIER1, 2 TIER2,
+3 TIER3, 4 ESCALATE, 5 REFUSE). The goal is to surface:
 
-  * false positives -- legitimate developer commands that get refused;
-  * false negatives -- clearly malicious commands that slip through;
+  * false positives -- legitimate developer commands that get hard-refused
+    or needlessly escalated to a typed confirmation;
+  * false negatives -- clearly malicious commands that slip through ALLOW;
   * the workspace-tolerance bypass: any command that merely mentions the
     workspace root suppresses all soft-pattern checks.
 
@@ -301,14 +303,17 @@ def main():
         if i >= len(lines):
             print("FAIL: no output for case %d" % i)
             return 1
-        parts = lines[i].split("\t", 2)
-        sens = parts[0] == "1"
-        assert parts[1] in ("0", "1")
-        refused = sens or parts[1] == "1"
-        reason = parts[2] if len(parts) > 2 else ""
-        if expect == "allow" and refused:
+        parts = lines[i].split("\t", 1)
+        cls = int(parts[0])
+        reason = parts[1] if len(parts) > 1 else ""
+        # Classifier values: 0 ALLOW, 1 TIER1, 2 TIER2, 3 TIER3,
+        # 4 ESCALATE, 5 REFUSE. ESCALATE/REFUSE are hard-refused; anything
+        # above ALLOW at least forces a human confirmation.
+        hard_refused = cls >= 4
+        gated = cls != 0
+        if expect == "allow" and hard_refused:
             false_pos.append((ws, cmd, note, reason))
-        elif expect == "refuse" and not refused:
+        elif expect == "refuse" and not gated:
             misses.append((ws, cmd, note))
 
     if err.strip():
