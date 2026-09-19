@@ -67,33 +67,37 @@ def build_plan(rng, files, n_steps):
             # a chunk boundary never splits the pair (tool_call_id lives only
             # inside one ccode run).
             target = rng.choice(big)
-            plan.append(step(cid, "read_file", {"file_path": rel(target)}))
+            plan.append(step(cid, "str_replace_editor",
+                             {"command": "view", "file_path": rel(target)}))
             if len(plan) < n_steps:
                 plan.append(step("call_%05d" % len(plan), "read_tool_output",
                                  {"tool_call_id": cid,
                                   "offset": rng.randint(0, 40000),
                                   "limit": rng.choice([1024, 16384, 65536])}))
         elif kind < 0.62:
-            plan.append(step(cid, "read_file",
-                             {"file_path": rel(rng.choice(normal))}))
+            plan.append(step(cid, "str_replace_editor",
+                             {"command": "view",
+                              "file_path": rel(rng.choice(normal))}))
         elif kind < 0.7:
             if rng.random() < 0.5:
-                # Create a fresh file via edit_file (empty old_string).
+                # Create a fresh file via str_replace (empty old_string).
                 name = "created_%s_%04d.txt" % (rand_name(rng).replace(" ", "_"),
                                                 len(plan))
                 EDIT_TARGETS.append(name)
-                plan.append(step(cid, "edit_file",
-                                 {"file_path": name, "old_string": "",
+                plan.append(step(cid, "str_replace_editor",
+                                 {"command": "str_replace", "file_path": name,
+                                  "old_string": "",
                                   "new_string": rand_text(rng, 30)}))
             elif EDIT_TARGETS:
                 # Replace a planted snippet in a file we created earlier.
                 name = rng.choice(EDIT_TARGETS)
-                plan.append(step(cid, "edit_file",
-                                 {"file_path": name,
+                plan.append(step(cid, "str_replace_editor",
+                                 {"command": "str_replace", "file_path": name,
                                   "old_string": "alpha", "new_string": "ALPHA"}))
             else:
-                plan.append(step(cid, "edit_file",
-                                 {"file_path": "fresh_edit_%04d.txt" % len(plan),
+                plan.append(step(cid, "str_replace_editor",
+                                 {"command": "str_replace",
+                                  "file_path": "fresh_edit_%04d.txt" % len(plan),
                                   "old_string": "", "new_string": "x\n"}))
         elif kind < 0.74:
             plan.append(step(cid, "move_file",
@@ -149,7 +153,7 @@ def build_plan(rng, files, n_steps):
                 ("no_such_tool", {"x": 1}),
                 ("glob", {"pattern": ""}),
                 ("grep", {"pattern": "[invalid"}),
-                ("read_file", {}),
+                ("str_replace_editor", {}),
                 ("bash", {"command": "cat ~/.ssh/id_rsa"}),
                 ("task", {"action": "frobnicate"}),
                 ("read_tool_output", {"tool_call_id": "bogus-id"}),

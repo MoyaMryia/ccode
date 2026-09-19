@@ -14,6 +14,7 @@ static void tui_fill_agent(struct ccode_agent_config *agent_cfg,
     agent_cfg->prompt = config->prompt;
     agent_cfg->tools_enabled = config->tools_enabled;
     agent_cfg->read_only_tools = config->read_only_tools;
+    agent_cfg->minimal_mode = config->minimal_mode;
     agent_cfg->interactive = config->interactive;
     agent_cfg->auto_approve = config->auto_approve;
     agent_cfg->allow_danger = config->allow_danger;

@@ -8,6 +8,10 @@ struct ccode_config {
     const char *prompt;
     int tools_enabled;
     int read_only_tools;
+    /* Minimal mode (deepseek-harness `minimal` preset style): fixed one-line
+     * system prompt and exactly the str_replace_editor + bash tool pair.
+     * Implies write tools. */
+    int minimal_mode;
     int interactive;
     int tui;
     int json;

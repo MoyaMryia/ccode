@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""End-to-end battle test: all 12 tools on a real project (this repo).
+"""End-to-end battle test: all 11 tools on a real project (this repo).
 
 Spins up the real mock provider (tests/mock_provider.py), scripts every
 model reply as a tool-call plan, then drives the real ccode-cli over a
 throwaway copy of this repository (git archive HEAD) to finish one coding
 task end to end:
 
-  explore (glob/grep) -> read the defect -> record a task -> fix (edit_file)
+  explore (glob/grep) -> read the defect -> record a task -> fix (str_replace)
   -> real rebuild (make) -> behavior check on the built binary -> git diff
   -> file ops (create / duplicate-create refusal / move / move-onto-existing
   refusal / delete) -> web_fetch + web_search against the mock's loopback
@@ -75,7 +75,7 @@ def setup_workspace(root):
         f.write(src.replace(DEFECT_OLD, DEFECT_BAD, 1))
 
     # Quote-dense file under the 50 KiB raw cap that still overflows the
-    # escaped-length budget: read_file must flag and archive it.
+    # escaped-length budget: editor view must flag and archive it.
     with open(os.path.join(ws, "quotes.txt"), "w") as f:
         f.write('"' * QUOTES_BYTES)
 
@@ -111,13 +111,14 @@ def build_plan(port):
              {"pattern": "**/*.c", "path": "src"}),
         step("call_grep", "grep",
              {"pattern": DEFECT_BAD, "include": "*.c"}),
-        step("call_read", "read_file", {"file_path": DEFECT_FILE}),
+        step("call_read", "str_replace_editor",
+             {"command": "view", "file_path": DEFECT_FILE}),
         step("call_task_new", "task",
              {"action": "create",
               "content": "Fix usage text defect in " + DEFECT_FILE}),
-        step("call_edit", "edit_file",
-             {"file_path": DEFECT_FILE, "old_string": DEFECT_BAD,
-              "new_string": DEFECT_OLD}),
+        step("call_edit", "str_replace_editor",
+             {"command": "str_replace", "file_path": DEFECT_FILE,
+              "old_string": DEFECT_BAD, "new_string": DEFECT_OLD}),
         step("call_make", "bash",
              {"command": "CCACHE_DISABLE=1 make ccode-cli"}),
         step("call_verify", "bash",
@@ -127,12 +128,12 @@ def build_plan(port):
              {"command": "grep -c '%s' %s" % (DEFECT_BAD, DEFECT_FILE)}),
         step("call_diff", "bash",
              {"command": "git --no-pager diff --stat"}),
-        step("call_mk", "edit_file",
-             {"file_path": "scratch_a.txt", "old_string": "",
-              "new_string": "created by the battle test\n"}),
-        step("call_mk_dup", "edit_file",
-             {"file_path": "scratch_a.txt", "old_string": "",
-              "new_string": "must be refused\n"}),
+        step("call_mk", "str_replace_editor",
+             {"command": "str_replace", "file_path": "scratch_a.txt",
+              "old_string": "", "new_string": "created by the battle test\n"}),
+        step("call_mk_dup", "str_replace_editor",
+             {"command": "str_replace", "file_path": "scratch_a.txt",
+              "old_string": "", "new_string": "must be refused\n"}),
         step("call_mv", "move_file",
              {"source": "scratch_a.txt", "destination": "scratch_b.txt"}),
         step("call_mv_x", "move_file",
@@ -151,7 +152,8 @@ def build_plan(port):
         step("call_window_err", "read_tool_output",
              {"tool_call_id": "call_big", "stream": "stderr",
               "offset": 199000, "limit": 65536}),
-        step("call_readq", "read_file", {"file_path": "quotes.txt"}),
+        step("call_readq", "str_replace_editor",
+             {"command": "view", "file_path": "quotes.txt"}),
         step("call_readq_win", "read_tool_output",
              {"tool_call_id": "call_readq", "offset": 40000,
               "limit": 65536}),
@@ -192,7 +194,7 @@ def main():
     root = tempfile.mkdtemp(prefix="ccode_e2e_real_")
     mock = None
     try:
-        print("=== ccode battle test: all 12 tools on the real repo tree ===")
+        print("=== ccode battle test: all 11 tools on the real repo tree ===")
         ws, defect_line = setup_workspace(root)
         n_c = count_src_c_files(ws)
         port = free_port()
@@ -288,7 +290,7 @@ def main():
               (grep.get("matches") or [""])[0].startswith(want_line) and
               DEFECT_BAD in (grep.get("matches") or [""])[0],
               "matches=%s" % (grep.get("matches") or [])[:2])
-        check("read_file returned the defect inline",
+        check("editor view returned the defect inline",
               DEFECT_BAD in r("call_read").get("content", "") and
               "truncated" not in r("call_read"), "")
 
@@ -299,7 +301,7 @@ def main():
               "result=%s" % r("call_task_new"))
 
         # -- the fix ------------------------------------------------------
-        check("edit_file applied the fix", r("call_edit").get("ok") is True,
+        check("str_replace applied the fix", r("call_edit").get("ok") is True,
               "result=%s" % r("call_edit"))
 
         # -- real build + behavior ---------------------------------------
@@ -328,7 +330,7 @@ def main():
               "stdout=%r" % diff.get("stdout", "")[:120])
 
         # -- file ops: create / refusals / move / delete -------------------
-        check("edit_file created scratch_a.txt",
+        check("str_replace created scratch_a.txt",
               r("call_mk").get("ok") is True, "")
         dup = r("call_mk_dup")
         check("duplicate create refused",

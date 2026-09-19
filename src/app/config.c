@@ -31,8 +31,12 @@ void ccode_print_usage(const char *program) {
         "      --api-base URL     OpenAI-compatible API base URL\n"
         "      --api-key KEY      API key (defaults to CCODE_API_KEY)\n"
         "      --model NAME       Model name (defaults to CCODE_MODEL)\n"
-        "      --read-only        Read-only tools (read, glob, grep; the default)\n"
-        "      --write            Enable read and write_file tools with confirmation\n"
+        "      --read-only        Read-only tools (editor view, glob, grep; the default)\n"
+        "      --write            Enable the editor's str_replace command, bash and\n"
+        "                         more, with confirmation\n"
+        "      --minimal          Minimal mode (deepseek-harness style): fixed\n"
+        "                         one-line system prompt and exactly two tools,\n"
+        "                         str_replace_editor and bash\n"
         "      --default          Fast start: interactive + read/write tools + thinking (never auto-approve)\n"
         "      --debug            --default plus raw tool-call JSON diagnostics\n"
         "      --auto-approve     Auto-approve all tool requests\n"
@@ -52,6 +56,8 @@ void ccode_print_usage(const char *program) {
         "  -h, --help             Show this help\n"
         "\n"
         "Environment:\n"
+        "  CCODE_MINIMAL              Set 1 for minimal mode (fixed one-line system\n"
+        "                             prompt; str_replace_editor + bash tools)\n"
         "  CCODE_SESSION_DIR          Session storage directory\n"
         "  CCODE_SESSION_AUTO_SAVE    Mint auto-*.json chain and save each turn (default: 1;\n"
         "                             0 = persist only with explicit session flags)\n"
@@ -93,6 +99,12 @@ static int opt_api_key(struct ccode_config *c, const char *v) { c->api_key = v; 
 static int opt_model(struct ccode_config *c, const char *v) { c->model = v; return 0; }
 static int opt_read_only(struct ccode_config *c, const char *v) { (void)v; c->read_only_tools = 1; return 0; }
 static int opt_write(struct ccode_config *c, const char *v) { (void)v; c->tools_enabled = 1; return 0; }
+static int opt_minimal(struct ccode_config *c, const char *v) {
+    (void)v;
+    c->minimal_mode = 1;
+    c->tools_enabled = 1;
+    return 0;
+}
 static int opt_default(struct ccode_config *c, const char *v) {
     (void)v;
     c->interactive = 1;
@@ -168,6 +180,7 @@ static const struct ccode_option ccode_options[] = {
     {"--model", NULL, 1, opt_model},
     {"--read-only", NULL, 0, opt_read_only},
     {"--write", NULL, 0, opt_write},
+    {"--minimal", NULL, 0, opt_minimal},
     {"--default", NULL, 0, opt_default},
     {"--debug", NULL, 0, opt_debug},
     {"--interactive", "-i", 0, opt_interactive},
@@ -257,6 +270,16 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
         config->read_only_tools = 1;
         if (ro && ro[0] == '0') config->read_only_tools = 0;
         config->tools_enabled = (wo && wo[0] == '1') ? 1 : 0;
+    }
+    {
+        /* CCODE_MINIMAL=1 selects the minimal composition (deepseek-harness
+         * `minimal` preset style): fixed one-line prompt, the
+         * str_replace_editor + bash tool pair only. */
+        const char *mn = getenv("CCODE_MINIMAL");
+        if (mn && mn[0] == '1') {
+            config->minimal_mode = 1;
+            config->tools_enabled = 1;
+        }
     }
     {
         const char *aa = getenv("CCODE_AUTO_APPROVE");

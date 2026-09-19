@@ -19,8 +19,11 @@
 
 ### 工具
 
-- `read_file` / `edit_file` / `glob` / `grep`（支持正则）；`edit_file` 空
-  `old_string` 原子创建新文件，pre-rename 校验要求目标不存在，永不覆盖
+- `str_replace_editor` / `glob` / `grep`（支持正则）；编辑器 `command=view`
+  读文件（原 `read_file`，50 KiB 上限、超限截断并归档），`command=str_replace`
+  按 `old_string`/`new_string` 字面替换（原 `edit_file`；空 `old_string` 原子创建
+  新文件，pre-rename 校验要求目标不存在，永不覆盖）。2026-09-19 按 deepseek-harness
+  极简精神合并：一个编辑器工具覆盖"看 + 改"，为 minimal 模式的双工具组合铺路
 - `bash`（唯一命令工具；可选 `timeout_ms`，默认 120s 上限 300s；审批
   display 显式构造，超长报错不静默截断；静态扫描确认所有路径 token 都在
   工作区内时自动放行，否则弹审批）
@@ -29,11 +32,22 @@
 - `delete_file` / `move_file`（限工作区内）
 - `web_fetch`（带域名黑名单、请求限流、大小上限；跟随 3xx 跳转，支持绝对/协议相对/根相对/相对 `Location`，相对目标折叠 `./` 与 `../`，超限报 `Too many redirects`；解析 1.1 chunked 响应并在末尾去分块；响应头逐行按 CRLF 截断，`content_type`/`url` 进 JSON 前转义）。响应体超过 `max_size` 时读满上限并显式标 `truncated`——修掉了旧版在 64 KiB 处静默丢数据、以及在带 `truncated` 后缀时结果 JSON 缓冲溢出的两个 bug；读超时或短于 `Content-Length` 也标 `truncated`，结果 JSON 构造带长度校验
 - `web_search`（Bing 端点可配）
-- `agent_tool`（子代理，独立循环、默认只读、深度上限 3）；只读子代理并行 fork 运行，其自身的只读工具（read_file/glob/grep/read_tool_output，均限工作区内）自动放行——子进程在自己的进程组里读控制终端会触发 SIGTTIN 停住并让父进程 poll 死等，且多个子进程争抢同一 stdin，所以不再逐次弹审批
+- `agent_tool`（子代理，独立循环、默认只读、深度上限 3）；只读子代理并行 fork 运行，其自身的只读工具（编辑器 view/glob/grep/read_tool_output，均限工作区内）自动放行——子进程在自己的进程组里读控制终端会触发 SIGTTIN 停住并让父进程 poll 死等，且多个子进程争抢同一 stdin，所以不再逐次弹审批
 - 工具面收敛（2026-09-12）：19 -> 12 个。删 `git_*`（git 经 `bash` 执行，
   `GIT_CEILING_DIRECTORIES` 下沉为所有命令子进程统一环境）、`run_command`
   （并入 `bash`）、`write_file`（并入 `edit_file` 创建语义）、`task_*` 三件
-  （合并为 `task` 单工具）。只读面为 read_file/glob/grep/read_tool_output
+  （合并为 `task` 单工具）。只读面为 editor view/glob/grep/read_tool_output
+- 工具面收敛二（2026-09-19，deepseek-harness 极简精神）：12 -> 11 个，
+  `read_file` + `edit_file` 合并为 `str_replace_editor`（`command=view|str_replace`，
+  对齐 dsh-tool-str-replace-editor）。只读组合按名字放行编辑器、在执行处按
+  kind 拒绝 `str_replace` 命令（工具目录跨模式稳定，利于请求前缀缓存）
+- Minimal 模式（`--minimal` / `CCODE_MINIMAL=1`，deepseek-harness `minimal`
+  preset 精神）：固定一句话 system prompt（"You are a helpful software
+  engineer assistant."，即完整提示，等价其 `complete: true` +
+  `includeRuntimeContext: false`），工具面只有 `str_replace_editor` + `bash`
+  两件，每轮的变更日志/任务清单摘要不再注入对话；含 compaction 的安全网保留
+  （只在逼近上下文窗口时触发，不污染前缀）。隐含写工具；与 `--read-only`/
+  `--write` 同给时 minimal 优先
 - 工具调用参数解析：容忍模型把参数包进一层或多层 `{"arguments": ...}`（对象与 JSON 字符串形式混合），最多 8 层；超限报 `nested too deep`，信封值非对象/字符串、或信封带尾随数据时明确拒绝；多键信封不再被误判。校验失败时错误附带该工具的参数 schema（`expected parameters: ...`），让模型知道该传什么，而不是只回一句 `Invalid ... arguments`
 - 工具字符串参数堆分配（`prepared_tool` 的 value/content/path/old/new/argv 等），不再受旧 4095 字节上限，只受整包 `MAX_TOOL_OUTPUT`（50KB）约束；`web_search` 结果会话重载的 100KB 栈缓冲也改堆分配。valgrind（单测 + 800 例 fuzz-tool-args）0 error / 0 leak
 - 工具调用参数转义：流式收到的原始转义参数在存入对话前只解码一次，回灌请求时只转义一次，历史里的 assistant tool_call 不再双重转义（旧行为会把 `{"command":"ls"}` 回灌成 `{\"command\":\"ls\"}`，把模型带偏、越纠越乱）

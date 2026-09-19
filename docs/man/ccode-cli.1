@@ -106,10 +106,18 @@ Model name (defaults to
 .BR CCODE_MODEL ).
 .TP
 .B \-\-write
-Enable read and write tools.
+Enable the editor's str_replace command, bash, and the remaining
+write-capable tools.
 .TP
 .B \-\-read-only
-Read-only tools (read_file, glob, grep, read_tool_output). The default.
+Read-only tools (editor view, glob, grep, read_tool_output). The default.
+.TP
+.B \-\-minimal
+Minimal mode in the spirit of deepseek-harness's \fBminimal\fR agent
+preset: a fixed one-sentence system prompt and exactly two tools,
+str_replace_editor and bash. Per-turn change-log/task summaries are not
+injected into the conversation. Implies
+.BR \-\-write .
 .TP
 .B \-\-default
 Fast start: interactive REPL plus read/write tools plus thinking
@@ -323,6 +331,10 @@ Set 1 to enable read-only tools (already the default).
 .B CCODE_WRITE_TOOLS
 Set 1 to enable write tools (same as
 .BR \-\-write ).
+.TP
+.B CCODE_MINIMAL
+Set 1 for minimal mode (same as
+.BR \-\-minimal ).
 .TP
 .B CCODE_AUTO_APPROVE
 Set 1 to skip interactive approval.

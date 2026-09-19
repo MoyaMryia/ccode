@@ -130,7 +130,7 @@ MUTANTS = [
          old="    if (rename(old_path, new_path) != 0) return -1;\n"
              "    rename_results_dir(dir, old_name, new_name);\n",
          new="    if (rename(old_path, new_path) != 0) return -1;\n"),
-    dict(label="read_file skips oversized archive", area="results",
+    dict(label="editor view skips oversized archive", area="results",
          file="src/agent/agent_fs.c", gates=["agent"],
          old="    if (file_size > read_limit && ctx->results_dir[0] != '\\0') {\n",
          new="    if (0 && file_size > read_limit && ctx->results_dir[0] != '\\0') {\n"),

@@ -121,6 +121,17 @@ const char *ccode_coding_agent_system_prompt(void) {
     return ccode_system_prompt;
 }
 
+/* The deepseek-harness `minimal` persona, transplanted verbatim: one sentence
+ * is the complete prompt (its `complete: true`), with no workspace text, no
+ * guidance and no runtime context. Tool usage is carried entirely by the two
+ * tool descriptions of the minimal composition. */
+static const char ccode_minimal_prompt[] =
+    "You are a helpful software engineer assistant.";
+
+const char *ccode_minimal_system_prompt(void) {
+    return ccode_minimal_prompt;
+}
+
 /* ── Unified conversation rendering ──
  *
  * Shared by the live turn loop and the resumed-session transcript so both

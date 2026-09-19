@@ -54,6 +54,9 @@ void test_reset_workspace(void);
 const char *test_workspace_root(void);
 char *test_exec_tool(const char *workspace, const char *name,
                       const char *arguments);
+char *ccode_build_readonly_tools_json(void);
+char *ccode_build_write_tools_json(void);
+char *ccode_build_minimal_tools_json(void);
 int test_decode_string(const char *json, char *dest, size_t dest_size);
 int test_prepare_tool_display(const char *name, const char *arguments,
                               char *dest, size_t dest_size);
@@ -382,7 +385,7 @@ static int test_assistant_content_round_trip_is_byte_stable(void) {
     ASSERT(ccode_conversation_add(&live, CCODE_ROLE_SYSTEM, "sys") == 0);
     ASSERT(ccode_conversation_add(&live, CCODE_ROLE_USER, "go") == 0);
     ASSERT(ccode_conversation_add(&live, CCODE_ROLE_ASSISTANT, NULL) == 0);
-    ASSERT(ccode_conversation_add_tool_call(&live, "call_1", "read_file",
+    ASSERT(ccode_conversation_add_tool_call(&live, "call_1", "str_replace_editor",
                                             "{\"file_path\":\"a\"}") == 0);
     ASSERT(ccode_conversation_add_tool_result(&live, "call_1",
                                               "{\"ok\":true}") == 0);
@@ -416,7 +419,7 @@ static int test_assistant_empty_content_serializes_as_null(void) {
 
     ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "") == 0);
-    ASSERT(ccode_conversation_add_tool_call(&conv, "call_1", "read_file",
+    ASSERT(ccode_conversation_add_tool_call(&conv, "call_1", "str_replace_editor",
                                             "{}") == 0);
     req = ccode_conversation_build_request(&conv, "m", NULL, 0, NULL);
     ASSERT(req != NULL);
@@ -438,7 +441,7 @@ static int test_reasoning_content_round_trips(void) {
     ASSERT(ccode_conversation_add(&live, CCODE_ROLE_ASSISTANT, "answer") == 0);
     ASSERT(ccode_conversation_set_reasoning(&live,
         "step one\nstep two \"quoted\"") == 0);
-    ASSERT(ccode_conversation_add_tool_call(&live, "call_1", "read_file",
+    ASSERT(ccode_conversation_add_tool_call(&live, "call_1", "str_replace_editor",
                                             "{}") == 0);
     ASSERT(ccode_conversation_save(&live, path, NULL, NULL, NULL) == 0);
 
@@ -1325,8 +1328,8 @@ static int test_glob_normalize(void) {
 static int test_home_relative_paths_are_rejected(void) {
     char display[2048];
 
-    ASSERT(test_prepare_tool_display("read_file",
-        "{\"file_path\":\"~/secret.txt\"}",
+    ASSERT(test_prepare_tool_display("str_replace_editor",
+        "{\"command\":\"view\",\"file_path\":\"~/secret.txt\"}",
         display, sizeof(display)) != 0);
     ASSERT(test_prepare_tool_display("glob",
         "{\"pattern\":\"*.c\",\"path\":\"~/src\"}",
@@ -1670,8 +1673,8 @@ static int test_edit_file_rejects_binary(void) {
     bin[0] = 0; bin[1] = 0;
     write_file("fixtures/edit_bin.bin", bin, sizeof(bin));
     test_reset_workspace();
-    r = test_exec_tool("fixtures", "edit_file",
-               "{\"file_path\":\"edit_bin.bin\",\"old_string\":\"a\",\"new_string\":\"b\"}");
+    r = test_exec_tool("fixtures", "str_replace_editor",
+               "{\"command\":\"str_replace\",\"file_path\":\"edit_bin.bin\",\"old_string\":\"a\",\"new_string\":\"b\"}");
     ASSERT(r != NULL);
     ASSERT(strstr(r, "binary") != NULL);
     free(r);
@@ -1740,7 +1743,7 @@ static int test_tool_security_refusal_has_reason(void) {
     memset(&prepared, 0, sizeof(prepared));
 
     /* Home-relative path: the refusal must name the value and the rule. */
-    err = prepare_tool("read_file", "{\"file_path\":\"~/secret\"}",
+    err = prepare_tool("str_replace_editor", "{\"command\":\"view\",\"file_path\":\"~/secret\"}",
                        &prepared);
     ASSERT(err != NULL);
     ASSERT(strstr(err, "Home-relative paths are not allowed") != NULL);
@@ -1766,30 +1769,30 @@ static int test_tool_arguments_are_strict(void) {
     size_t i;
 
     test_reset_workspace();
-    r = test_exec_tool("fixtures", "read_file",
-                       "{\"file_path\":\"sample_text.txt\",\"file_path\":\"sample_small.txt\"}");
-    ASSERT(r != NULL && strstr(r, "Invalid read_file arguments") != NULL);
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"view\",\"file_path\":\"sample_text.txt\",\"file_path\":\"sample_small.txt\"}");
+    ASSERT(r != NULL && strstr(r, "Invalid str_replace_editor arguments") != NULL);
     free(r);
 
-    r = test_exec_tool("fixtures", "read_file",
-                       "{\"wrapper\":{\"file_path\":\"sample_text.txt\"}}");
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"wrapper\":{\"command\":\"view\",\"file_path\":\"sample_text.txt\"}}");
     ASSERT(r != NULL && strstr(r, "error") != NULL);
     free(r);
 
     /* Wrapped {"arguments": ...} envelope (OpenAI-wire-style, which models
      * copy from the conversation history) must be unwrapped and work. */
-    r = test_exec_tool("fixtures", "read_file",
-                       "{\"arguments\":{\"file_path\":\"sample_text.txt\"}}");
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"arguments\":{\"command\":\"view\",\"file_path\":\"sample_text.txt\"}}");
     ASSERT(r != NULL && strstr(r, "error") == NULL);
     free(r);
 
-    r = test_exec_tool("fixtures", "read_file",
-                       "{\"arguments\":\"{\\\"file_path\\\":\\\"sample_text.txt\\\"}\"}");
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"arguments\":\"{\\\"command\\\":\\\"view\\\",\\\"file_path\\\":\\\"sample_text.txt\\\"}\"}");
     ASSERT(r != NULL && strstr(r, "error") == NULL);
     free(r);
 
-    r = test_exec_tool("fixtures", "read_file",
-                       "{\"arguments\":{\"file_path\":\"sample_text.txt\","
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"arguments\":{\"command\":\"view\",\"file_path\":\"sample_text.txt\","
                        "\"extra\":1}}");
     ASSERT(r != NULL && strstr(r, "error") != NULL);
     free(r);
@@ -1880,39 +1883,39 @@ static void wrap_string_envelope(char *dst, size_t cap, const char *inner) {
 static int test_tool_argument_shapes(void) {
     static const struct arg_shape cases[] = {
         /* plain payloads */
-        { "read_file", "{\"file_path\":\"x\"}", NULL },
+        { "str_replace_editor", "{\"command\":\"view\",\"file_path\":\"x\"}", NULL },
         { "grep", "{\"pattern\":\"n\",\"path\":\"src\",\"context\":1}", NULL },
         { "bash", "{\"command\":\"true\",\"timeout_ms\":1000}", NULL },
 
         /* single object envelope; the multi-key inner payloads are the
          * exact shape that overflowed the old 8-token unwrap buffer */
-        { "read_file", "{\"arguments\":{\"file_path\":\"x\"}}", NULL },
+        { "str_replace_editor", "{\"arguments\":{\"command\":\"view\",\"file_path\":\"x\"}}", NULL },
         { "grep", "{\"arguments\":{\"pattern\":\"n\",\"path\":\"src\",\"context\":1}}", NULL },
         { "grep", "{\"arguments\":{\"pattern\":\"n\",\"include\":\"*.c\",\"path\":\"src\",\"context\":0}}", NULL },
         { "bash", "{\"arguments\":{\"command\":\"echo a b\",\"timeout_ms\":1000}}", NULL },
         { "web_fetch", "{\"arguments\":{\"url\":\"http://127.0.0.1/\",\"method\":\"GET\",\"timeout\":5}}", NULL },
 
         /* single JSON-string envelope */
-        { "read_file", "{\"arguments\":\"{\\\"file_path\\\":\\\"x\\\"}\"}", NULL },
+        { "str_replace_editor", "{\"arguments\":\"{\\\"command\\\":\\\"view\\\",\\\"file_path\\\":\\\"x\\\"}\"}", NULL },
         { "grep", "{\"arguments\":\"{\\\"pattern\\\":\\\"n\\\",\\\"path\\\":\\\"src\\\",\\\"context\\\":1}\"}", NULL },
         { "bash", "{\"arguments\":\"{\\\"command\\\":\\\"true\\\",\\\"timeout_ms\\\":1000}\"}", NULL },
 
         /* malformed / not JSON at all */
-        { "read_file", "", "Could not parse tool arguments" },
-        { "read_file", "[]", "Could not parse tool arguments" },
-        { "read_file", "{\"file_path\":", "Could not parse tool arguments" },
-        { "read_file", "{\"file_path\":\"x\"} trailing", "Could not parse tool arguments" },
-        { "read_file", "{\"arguments\":\"{bad}\"}", "Could not parse tool arguments" },
+        { "str_replace_editor", "", "Could not parse tool arguments" },
+        { "str_replace_editor", "[]", "Could not parse tool arguments" },
+        { "str_replace_editor", "{\"file_path\":", "Could not parse tool arguments" },
+        { "str_replace_editor", "{\"command\":\"view\",\"file_path\":\"x\"} trailing", "Could not parse tool arguments" },
+        { "str_replace_editor", "{\"arguments\":\"{bad}\"}", "Could not parse tool arguments" },
 
         /* envelope whose value is neither an object nor a string */
-        { "read_file", "{\"arguments\":42}", "envelope" },
+        { "str_replace_editor", "{\"arguments\":42}", "envelope" },
 
         /* extra outer key is not a valid envelope: per-tool rejection */
-        { "read_file", "{\"arguments\":{\"file_path\":\"x\"},\"extra\":1}",
-          "Invalid read_file arguments" },
+        { "str_replace_editor", "{\"arguments\":{\"command\":\"view\",\"file_path\":\"x\"},\"extra\":1}",
+          "Invalid str_replace_editor arguments" },
         /* envelope stripped, bad payload: per-tool rejection */
-        { "read_file", "{\"arguments\":{}}", "Invalid read_file arguments" },
-        { "read_file", "{\"arguments\":{\"file_path\":\"~/.ssh/id_rsa\"}}",
+        { "str_replace_editor", "{\"arguments\":{}}", "Invalid str_replace_editor arguments" },
+        { "str_replace_editor", "{\"arguments\":{\"command\":\"view\",\"file_path\":\"~/.ssh/id_rsa\"}}",
           "Home-relative paths are not allowed" },
 
         /* hostile intents stay rejected after any unwrapping */
@@ -1920,40 +1923,40 @@ static int test_tool_argument_shapes(void) {
           "Home-relative paths are not allowed" },
         { "bash", "{\"arguments\":{\"command\":\"cat ~/secret\"}}",
           "Home-relative paths are not allowed" },
-        { "edit_file", "{\"file_path\":\"~/x\",\"old_string\":\"a\",\"new_string\":\"b\"}",
+        { "str_replace_editor", "{\"command\":\"str_replace\",\"file_path\":\"~/x\",\"old_string\":\"a\",\"new_string\":\"b\"}",
           "Home-relative paths are not allowed" },
 
         /* whitespace/formatting around the envelope must not matter */
-        { "read_file", "  { \"arguments\" : { \"file_path\" : \"x\" } }  ", NULL },
-        { "read_file", "{\n\"arguments\":\n{\"file_path\":\"x\"}\n}", NULL },
+        { "str_replace_editor", "  { \"arguments\" : { \"command\" : \"view\", \"file_path\" : \"x\" } }  ", NULL },
+        { "str_replace_editor", "{\n\"arguments\":\n{\"command\":\"view\",\"file_path\":\"x\"}\n}", NULL },
 
         /* envelope value of the wrong JSON type */
-        { "read_file", "{\"arguments\":null}", "envelope" },
-        { "read_file", "{\"arguments\":true}", "envelope" },
-        { "read_file", "{\"arguments\":[1,2]}", "envelope" },
-        { "read_file", "{\"arguments\":[]}", "envelope" },
+        { "str_replace_editor", "{\"arguments\":null}", "envelope" },
+        { "str_replace_editor", "{\"arguments\":true}", "envelope" },
+        { "str_replace_editor", "{\"arguments\":[1,2]}", "envelope" },
+        { "str_replace_editor", "{\"arguments\":[]}", "envelope" },
 
         /* strictness: trailing data / multiple roots / BOM / raw control */
-        { "read_file", "{\"arguments\":{\"file_path\":\"x\"}}x",
+        { "str_replace_editor", "{\"arguments\":{\"command\":\"view\",\"file_path\":\"x\"}}x",
           "Could not parse tool arguments" },
-        { "read_file",
-          "{\"arguments\":{\"file_path\":\"x\"}}{\"arguments\":{\"file_path\":\"y\"}}",
+        { "str_replace_editor",
+          "{\"arguments\":{\"command\":\"view\",\"file_path\":\"x\"}}{\"arguments\":{\"file_path\":\"y\"}}",
           "Could not parse tool arguments" },
-        { "read_file", "\xEF\xBB\xBF{\"file_path\":\"x\"}",
+        { "str_replace_editor", "\xEF\xBB\xBF{\"command\":\"view\",\"file_path\":\"x\"}",
           "Could not parse tool arguments" },
-        { "read_file", "{\"file_path\":\"a\nb\"}",
+        { "str_replace_editor", "{\"file_path\":\"a\nb\"}",
           "Could not parse tool arguments" },
 
         /* an escaped key name is not the literal envelope key */
-        { "read_file", "{\"argu\\u006dents\":{\"file_path\":\"x\"}}",
-          "Invalid read_file arguments" },
+        { "str_replace_editor", "{\"argu\\u006dents\":{\"command\":\"view\",\"file_path\":\"x\"}}",
+          "Invalid str_replace_editor arguments" },
 
         /* duplicate / unknown keys that only appear after unwrapping */
-        { "read_file",
-          "{\"arguments\":{\"file_path\":\"x\",\"file_path\":\"y\"}}",
-          "Invalid read_file arguments" },
-        { "read_file", "{\"arguments\":{\"file_path\":\"x\",\"extra\":1}}",
-          "Invalid read_file arguments" },
+        { "str_replace_editor",
+          "{\"arguments\":{\"command\":\"view\",\"file_path\":\"x\",\"file_path\":\"y\"}}",
+          "Invalid str_replace_editor arguments" },
+        { "str_replace_editor", "{\"arguments\":{\"command\":\"view\",\"file_path\":\"x\",\"extra\":1}}",
+          "Invalid str_replace_editor arguments" },
         { "grep", "{\"arguments\":{\"pattern\":\"n\",\"pattern\":\"m\"}}",
           "Invalid grep arguments" },
 
@@ -1984,12 +1987,12 @@ static int test_tool_argument_shapes(void) {
           "Invalid grep arguments" },
 
         /* a full function-call object is not a bare envelope: clear error */
-        { "read_file", "{\"name\":\"read_file\",\"arguments\":{\"file_path\":\"x\"}}",
-          "Invalid read_file arguments" },
-        { "read_file",
+        { "str_replace_editor", "{\"name\":\"read_file\",\"arguments\":{\"command\":\"view\",\"file_path\":\"x\"}}",
+          "Invalid str_replace_editor arguments" },
+        { "str_replace_editor",
           "{\"type\":\"function\",\"function\":{\"name\":\"read_file\","
-          "\"arguments\":\"{\\\"file_path\\\":\\\"x\\\"}\"}}",
-          "Invalid read_file arguments" },
+          "\"arguments\":\"{\\\"command\\\":\\\"view\\\",\\\"file_path\\\":\\\"x\\\"}\"}}",
+          "Invalid str_replace_editor arguments" },
     };
     char obj_a[16384];
     char obj_b[16384];
@@ -2004,7 +2007,7 @@ static int test_tool_argument_shapes(void) {
     }
 
     /* mixed object/string envelopes, increasing depth */
-    cur = "{\"file_path\":\"x\"}";
+    cur = "{\"command\":\"view\",\"file_path\":\"x\"}";
     for (d = 1; d <= 4; d++) {
         if ((d % 2) == 1) {
             wrap_object_envelope(obj_a, sizeof(obj_a), cur);
@@ -2013,7 +2016,7 @@ static int test_tool_argument_shapes(void) {
             wrap_string_envelope(obj_b, sizeof(obj_b), cur);
             cur = obj_b;
         }
-        if (test_prepare_tool_error("read_file", cur) != NULL) {
+        if (test_prepare_tool_error("str_replace_editor", cur) != NULL) {
             fprintf(stderr, "    mixed envelope depth %d: expected OK\n", d);
             failed++;
         }
@@ -2021,12 +2024,12 @@ static int test_tool_argument_shapes(void) {
 
     /* object-only envelopes: up to the wrap cap passes; one past it must be
      * a clear "nested too deep" error, not a per-tool message */
-    cur = "{\"file_path\":\"x\"}";
+    cur = "{\"command\":\"view\",\"file_path\":\"x\"}";
     for (d = 1; d <= CCODE_MAX_TOOL_ARG_WRAP; d++) {
         char *dst = (cur == obj_a) ? obj_b : obj_a;
         wrap_object_envelope(dst, sizeof(obj_a), cur);
         cur = dst;
-        if (test_prepare_tool_error("read_file", cur) != NULL) {
+        if (test_prepare_tool_error("str_replace_editor", cur) != NULL) {
             fprintf(stderr, "    object envelope depth %d: expected OK\n", d);
             failed++;
         }
@@ -2035,7 +2038,7 @@ static int test_tool_argument_shapes(void) {
         char *dst = (cur == obj_a) ? obj_b : obj_a;
         const char *e;
         wrap_object_envelope(dst, sizeof(obj_a), cur);
-        e = test_prepare_tool_error("read_file", dst);
+        e = test_prepare_tool_error("str_replace_editor", dst);
         if (e == NULL || strstr(e, "nested too deep") == NULL) {
             fprintf(stderr,
                     "    depth past cap: expected 'nested too deep', got '%s'\n",
@@ -2046,13 +2049,13 @@ static int test_tool_argument_shapes(void) {
 
     /* string-only envelopes: deep escaping grows fast, but must still unwrap
      * to the cap and then stop with a clear error instead of running away */
-    cur = "{\"file_path\":\"x\"}";
+    cur = "{\"command\":\"view\",\"file_path\":\"x\"}";
     for (d = 1; d <= CCODE_MAX_TOOL_ARG_WRAP; d++) {
         char *dst = (cur == obj_a) ? obj_b : obj_a;
         wrap_string_envelope(dst, sizeof(obj_a), cur);
         cur = dst;
     }
-    if (test_prepare_tool_error("read_file", cur) != NULL) {
+    if (test_prepare_tool_error("str_replace_editor", cur) != NULL) {
         fprintf(stderr, "    string envelope depth 8: expected OK\n");
         failed++;
     }
@@ -2060,7 +2063,7 @@ static int test_tool_argument_shapes(void) {
         char *dst = (cur == obj_a) ? obj_b : obj_a;
         const char *e;
         wrap_string_envelope(dst, sizeof(obj_a), cur);
-        e = test_prepare_tool_error("read_file", dst);
+        e = test_prepare_tool_error("str_replace_editor", dst);
         if (e == NULL || strstr(e, "nested too deep") == NULL) {
             fprintf(stderr,
                     "    string depth past cap: expected 'nested too deep', got '%s'\n",
@@ -2070,14 +2073,14 @@ static int test_tool_argument_shapes(void) {
     }
 
     /* absurd nesting depth: the cap must trip, not crash or run away */
-    cur = "{\"file_path\":\"x\"}";
+    cur = "{\"command\":\"view\",\"file_path\":\"x\"}";
     for (d = 1; d <= 50; d++) {
         char *dst = (cur == obj_a) ? obj_b : obj_a;
         wrap_object_envelope(dst, sizeof(obj_a), cur);
         cur = dst;
     }
     {
-        const char *e = test_prepare_tool_error("read_file", cur);
+        const char *e = test_prepare_tool_error("str_replace_editor", cur);
         if (e == NULL || strstr(e, "nested too deep") == NULL) {
             fprintf(stderr,
                     "    deep object nesting: expected 'nested too deep', got '%s'\n",
@@ -2109,29 +2112,29 @@ static int test_tool_argument_shapes(void) {
      * {"error": ...} rather than crash, hang, or be silently accepted */
     {
         static const struct arg_shape bad_cases[] = {
-            { "read_file", "{", "\"error\"" },
-            { "read_file", "}", "\"error\"" },
-            { "read_file", "{\"file_path\"}", "\"error\"" },
-            { "read_file", "{\"file_path\" \"x\"}", "\"error\"" },
-            { "read_file", "{\"file_path\":}", "\"error\"" },
-            { "read_file", "{\"file_path\":\"x\",}", "\"error\"" },
-            { "read_file", "{\"file_path\":'x'}", "\"error\"" },
-            { "read_file", "{\"file_path\":\"x\"", "\"error\"" },
-            { "read_file", "{\"file_path\":\"x\"}}", "\"error\"" },
-            { "read_file", "{file_path:\"x\"}", "\"error\"" },
-            { "read_file", "// c\n{\"file_path\":\"x\"}", "\"error\"" },
-            { "read_file", "\"just a string\"", "\"error\"" },
-            { "read_file", "123", "\"error\"" },
-            { "read_file", "true", "\"error\"" },
-            { "read_file", "null", "\"error\"" },
-            { "read_file", "[{\"file_path\":\"x\"}]", "\"error\"" },
-            { "read_file", "{\"unknown\":\"x\"}", "\"error\"" },
-            { "read_file", "{\"file_path\":\"\\uD800\"}", "\"error\"" },
-            { "read_file", "{\"file_path\":\"\\u0000\"}", "\"error\"" },
-            { "read_file", "{\"arguments\":", "\"error\"" },
-            { "read_file", "{\"arguments\":{\"file_path\":\"x\"}", "\"error\"" },
-            { "read_file", "{\"arguments\":{\"file_path\":\"x\"}}}", "\"error\"" },
-            { "read_file", "{\"arguments\":{\"arguments\":", "\"error\"" },
+            { "str_replace_editor", "{", "\"error\"" },
+            { "str_replace_editor", "}", "\"error\"" },
+            { "str_replace_editor", "{\"file_path\"}", "\"error\"" },
+            { "str_replace_editor", "{\"file_path\" \"x\"}", "\"error\"" },
+            { "str_replace_editor", "{\"file_path\":}", "\"error\"" },
+            { "str_replace_editor", "{\"command\":\"view\",\"file_path\":\"x\",}", "\"error\"" },
+            { "str_replace_editor", "{\"file_path\":'x'}", "\"error\"" },
+            { "str_replace_editor", "{\"command\":\"view\",\"file_path\":\"x\"", "\"error\"" },
+            { "str_replace_editor", "{\"command\":\"view\",\"file_path\":\"x\"}}", "\"error\"" },
+            { "str_replace_editor", "{file_path:\"x\"}", "\"error\"" },
+            { "str_replace_editor", "// c\n{\"command\":\"view\",\"file_path\":\"x\"}", "\"error\"" },
+            { "str_replace_editor", "\"just a string\"", "\"error\"" },
+            { "str_replace_editor", "123", "\"error\"" },
+            { "str_replace_editor", "true", "\"error\"" },
+            { "str_replace_editor", "null", "\"error\"" },
+            { "str_replace_editor", "[{\"command\":\"view\",\"file_path\":\"x\"}]", "\"error\"" },
+            { "str_replace_editor", "{\"unknown\":\"x\"}", "\"error\"" },
+            { "str_replace_editor", "{\"file_path\":\"\\uD800\"}", "\"error\"" },
+            { "str_replace_editor", "{\"file_path\":\"\\u0000\"}", "\"error\"" },
+            { "str_replace_editor", "{\"arguments\":", "\"error\"" },
+            { "str_replace_editor", "{\"arguments\":{\"command\":\"view\",\"file_path\":\"x\"}", "\"error\"" },
+            { "str_replace_editor", "{\"arguments\":{\"command\":\"view\",\"file_path\":\"x\"}}}", "\"error\"" },
+            { "str_replace_editor", "{\"arguments\":{\"arguments\":", "\"error\"" },
             { "bash", "{\"timeout_ms\":1000}", "\"error\"" },
             { "bash", "{\"command\":true}", "\"error\"" },
             { "bash", "{\"command\":null}", "\"error\"" },
@@ -2139,7 +2142,7 @@ static int test_tool_argument_shapes(void) {
             { "grep", "{\"pattern\":}", "\"error\"" },
             { "grep", "{\"context\":1}", "\"error\"" },
             { "glob", "{\"pattern\":[\"x\"]}", "\"error\"" },
-            { "edit_file", "{\"file_path\":\"x\"}", "\"error\"" },
+            /*GUARD*/ { "str_replace_editor", "GUARD-PAYLOAD", "\"error\"" },
             { "bash", "{\"command\":\"echo hi\",}", "\"error\"" },
             { "invalid_tool", "{\"x\":1}", "\"error\"" },
         };
@@ -2154,7 +2157,7 @@ static int test_tool_argument_shapes(void) {
         const char *e;
         while (n < 52000) big[n++] = 'a';
         memcpy(big + n, "\"}", 3);
-        e = test_prepare_tool_error("read_file", big);
+        e = test_prepare_tool_error("str_replace_editor", big);
         if (e == NULL || strstr(e, "too large") == NULL) {
             fprintf(stderr,
                     "    oversized payload: expected 'too large', got '%s'\n",
@@ -2176,8 +2179,8 @@ static int test_tool_arguments_decode_json_strings(void) {
     test_mkdir_p("fixtures/json_decode/slash");
     write_file("fixtures/json_decode/escaped name.txt", "decoded", 7);
     test_reset_workspace();
-    r = test_exec_tool("fixtures/json_decode", "read_file",
-                       "{\"file_path\":\"escaped\\u0020name.txt\"}");
+    r = test_exec_tool("fixtures/json_decode", "str_replace_editor",
+                       "{\"command\":\"view\",\"file_path\":\"escaped\\u0020name.txt\"}");
     ASSERT(r != NULL && strstr(r, "decoded") != NULL);
     free(r);
 
@@ -2364,8 +2367,8 @@ static int test_edit_file_creation_arguments_are_strict(void) {
 
     unlink("fixtures/decoded-write.txt");
     test_reset_workspace();
-    r = test_exec_tool("fixtures", "edit_file",
-                       "{\"file_path\":\"decoded-write.txt\","
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"str_replace\",\"file_path\":\"decoded-write.txt\","
                        "\"old_string\":\"\","
                        "\"new_string\":\"line\\nvalue\"}");
     ASSERT(r != NULL && strstr(r, "\"ok\":true") != NULL);
@@ -2373,13 +2376,13 @@ static int test_edit_file_creation_arguments_are_strict(void) {
     read = test_exec_read_file("fixtures", "decoded-write.txt");
     ASSERT(read != NULL && strstr(read, "line\\nvalue") != NULL);
     free(read);
-    r = test_exec_tool("fixtures", "edit_file",
-                       "{\"file_path\":\"x\",\"old_string\":\"\","
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"str_replace\",\"command\":\"view\",\"file_path\":\"x\",\"old_string\":\"\","
                        "\"new_string\":\"y\",\"extra\":\"z\"}");
-    ASSERT(r != NULL && strstr(r, "Invalid edit_file arguments") != NULL);
+    ASSERT(r != NULL && strstr(r, "Invalid str_replace_editor arguments") != NULL);
     free(r);
-    r = test_exec_tool("fixtures", "edit_file",
-                       "{\"file_path\":\"decoded-write.txt\","
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"str_replace\",\"file_path\":\"decoded-write.txt\","
                        "\"old_string\":\"\",\"new_string\":\"evil\"}");
     ASSERT(r != NULL && strstr(r, "Could not create file") != NULL);
     free(r);
@@ -2511,8 +2514,8 @@ static int test_edit_file_multiple_match(void) {
 static int test_edit_file_creation_requires_parent(void) {
     char *r;
     test_reset_workspace();
-    r = test_exec_tool("fixtures", "edit_file",
-                       "{\"file_path\":\"no_such_dir/x.txt\","
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"str_replace\",\"file_path\":\"no_such_dir/x.txt\","
                        "\"old_string\":\"\",\"new_string\":\"y\"}");
     ASSERT(r != NULL && strstr(r, "parent not found") != NULL);
     free(r);
@@ -2525,8 +2528,8 @@ static int test_edit_file_rejects_symlink(void) {
     unlink("fixtures/edit_link.txt");
     make_symlink("edit_real_target.txt", "fixtures/edit_link.txt");
     test_reset_workspace();
-    r = test_exec_tool("fixtures", "edit_file",
-                       "{\"file_path\":\"edit_link.txt\","
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"str_replace\",\"file_path\":\"edit_link.txt\","
                        "\"old_string\":\"original\",\"new_string\":\"changed\"}");
     ASSERT(r != NULL && strstr(r, "Path outside workspace or not found") != NULL);
     free(r);
@@ -2541,15 +2544,15 @@ static int test_edit_file_rejects_symlink(void) {
 static int test_edit_file_arguments_are_strict(void) {
     char *r;
     test_reset_workspace();
-    r = test_exec_tool("fixtures", "edit_file",
-                       "{\"file_path\":\"x\",\"old_string\":\"a\","
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"str_replace\",\"command\":\"view\",\"file_path\":\"x\",\"old_string\":\"a\","
                        "\"new_string\":\"b\",\"extra\":\"c\"}");
-    ASSERT(r != NULL && strstr(r, "Invalid edit_file arguments") != NULL);
+    ASSERT(r != NULL && strstr(r, "Invalid str_replace_editor arguments") != NULL);
     free(r);
-    r = test_exec_tool("fixtures", "edit_file",
-                       "{\"file_path\":\"x\",\"file_path\":\"y\","
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"str_replace\",\"command\":\"view\",\"file_path\":\"x\",\"file_path\":\"y\","
                        "\"old_string\":\"a\",\"new_string\":\"b\"}");
-    ASSERT(r != NULL && strstr(r, "Invalid edit_file arguments") != NULL);
+    ASSERT(r != NULL && strstr(r, "Invalid str_replace_editor arguments") != NULL);
     free(r);
     return 1;
 }
@@ -3155,8 +3158,8 @@ static int test_command_stays_in_workspace(void) {
 /* Auto-approval tiers: reads/network/task/delegation never prompt,
  * workspace-confined writes do not, escaping writes and delete do. */
 static int test_tool_auto_approval_tiers(void) {
-    ASSERT(test_tool_auto_approved("read_file",
-                                   "{\"file_path\":\"x\"}") == 1);
+    ASSERT(test_tool_auto_approved("str_replace_editor",
+                                   "{\"command\":\"view\",\"file_path\":\"x\"}") == 1);
     ASSERT(test_tool_auto_approved("glob", "{\"pattern\":\"*.c\"}") == 1);
     ASSERT(test_tool_auto_approved("grep", "{\"pattern\":\"x\"}") == 1);
     ASSERT(test_tool_auto_approved("read_tool_output",
@@ -3169,8 +3172,8 @@ static int test_tool_auto_approval_tiers(void) {
     ASSERT(test_tool_auto_approved("web_fetch",
                                    "{\"url\":\"https://example.com\"}") == 1);
 
-    ASSERT(test_tool_auto_approved("edit_file",
-        "{\"file_path\":\"sub/x.txt\",\"old_string\":\"a\",\"new_string\":\"b\"}") == 1);
+    ASSERT(test_tool_auto_approved("str_replace_editor",
+        "{\"command\":\"str_replace\",\"file_path\":\"sub/x.txt\",\"old_string\":\"a\",\"new_string\":\"b\"}") == 1);
     ASSERT(test_tool_auto_approved("move_file",
         "{\"source\":\"a.txt\",\"destination\":\"b.txt\"}") == 1);
     ASSERT(test_tool_auto_approved("bash",
@@ -3178,10 +3181,10 @@ static int test_tool_auto_approval_tiers(void) {
     ASSERT(test_tool_auto_approved("bash",
         "{\"command\":\"gcc -o build/out src/main.c\"}") == 1);
 
-    ASSERT(test_tool_auto_approved("edit_file",
-        "{\"file_path\":\"../x.txt\",\"old_string\":\"a\",\"new_string\":\"b\"}") == 0);
-    ASSERT(test_tool_auto_approved("edit_file",
-        "{\"file_path\":\"/etc/x\",\"old_string\":\"a\",\"new_string\":\"b\"}") == 0);
+    ASSERT(test_tool_auto_approved("str_replace_editor",
+        "{\"command\":\"str_replace\",\"file_path\":\"../x.txt\",\"old_string\":\"a\",\"new_string\":\"b\"}") == 0);
+    ASSERT(test_tool_auto_approved("str_replace_editor",
+        "{\"command\":\"str_replace\",\"file_path\":\"/etc/x\",\"old_string\":\"a\",\"new_string\":\"b\"}") == 0);
     ASSERT(test_tool_auto_approved("move_file",
         "{\"source\":\"a.txt\",\"destination\":\"../b.txt\"}") != 1);
     ASSERT(test_tool_auto_approved("bash",
@@ -3474,7 +3477,7 @@ static int test_compact_keeps_tool_call_pairs(void) {
     ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, "sys") == 0);
     /* Head group straddles the keep_first boundary. */
-    ASSERT(ccode_conversation_add_tool_call(&conv, "h1", "read_file", "{}") == 0);
+    ASSERT(ccode_conversation_add_tool_call(&conv, "h1", "str_replace_editor", "{}") == 0);
     ASSERT(ccode_conversation_add_tool_result(&conv, "h1",
         "{\"content\":\"x\"}") == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "u") == 0);
@@ -3485,7 +3488,7 @@ static int test_compact_keeps_tool_call_pairs(void) {
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "a") == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "u") == 0);
     /* Tail group: its tool lands exactly on the keep_last boundary. */
-    ASSERT(ccode_conversation_add_tool_call(&conv, "x1", "read_file", "{}") == 0);
+    ASSERT(ccode_conversation_add_tool_call(&conv, "x1", "str_replace_editor", "{}") == 0);
     ASSERT(ccode_conversation_add_tool_result(&conv, "x1",
         "{\"content\":\"y\"}") == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "u") == 0);
@@ -3516,7 +3519,7 @@ static int test_build_request_skips_orphan_tools(void) {
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, "sys") == 0);
     ASSERT(ccode_conversation_add_tool_result(&conv, "orphan-id",
         "{\"content\":\"ORPHAN_MARKER\"}") == 0);
-    ASSERT(ccode_conversation_add_tool_call(&conv, "good-id", "read_file",
+    ASSERT(ccode_conversation_add_tool_call(&conv, "good-id", "str_replace_editor",
                                             "{}") == 0);
     ASSERT(ccode_conversation_add_tool_result(&conv, "good-id",
         "{\"content\":\"GOOD_MARKER\"}") == 0);
@@ -3782,8 +3785,8 @@ static int test_gitignore_nested_directory_wins(void) {
 static int test_new_tool_arguments_are_strict(void) {
     char *r;
     test_reset_workspace();
-    r = test_exec_tool("fixtures", "edit_file",
-                       "{\"file_path\":\"a\",\"old_string\":\"b\","
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"str_replace\",\"file_path\":\"a\",\"old_string\":\"b\","
                        "\"new_string\":\"c\"}");
     ASSERT(r != NULL && strstr(r, "\"ok\":true") == NULL &&
            strstr(r, "Path outside workspace") != NULL);
@@ -4640,16 +4643,16 @@ static int test_read_file_sanitizes_invalid_utf8(void) {
     }
 
     test_reset_workspace();
-    r = test_exec_tool("fixtures", "read_file",
-                       "{\"file_path\":\"x\"}");
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"view\",\"file_path\":\"x\"}");
     free(r);
     {
         char args[512];
         char *rr;
         snprintf(args, sizeof(args),
-                 "{\"file_path\":\"%s\"}", path + strlen("fixtures/"));
+                 "{\"command\":\"view\",\"file_path\":\"%s\"}", path + strlen("fixtures/"));
         test_reset_workspace();
-        rr = test_exec_tool("fixtures", "read_file", args);
+        rr = test_exec_tool("fixtures", "str_replace_editor", args);
         ASSERT(rr != NULL);
         /* The escaped form of U+FFFD appears where the broken bytes were;
          * the valid multibyte sequence survives intact. */
@@ -5123,6 +5126,77 @@ static int test_coding_agent_prompt_contract(void) {
     return 1;
 }
 
+static int test_str_replace_editor_prepare(void) {
+    char display[2048];
+
+    /* view: read-only shape, same display the former read_file had. */
+    ASSERT(test_prepare_tool_display("str_replace_editor",
+        "{\"command\":\"view\",\"file_path\":\"a.txt\"}",
+        display, sizeof(display)) == 0);
+    ASSERT(strcmp(display, "file_path=a.txt") == 0);
+
+    /* view takes no edit fields. */
+    ASSERT(test_prepare_tool_error("str_replace_editor",
+        "{\"command\":\"view\",\"file_path\":\"a.txt\","
+        "\"old_string\":\"a\",\"new_string\":\"b\"}") != NULL);
+
+    /* str_replace: full edit shape. */
+    ASSERT(test_prepare_tool_display("str_replace_editor",
+        "{\"command\":\"str_replace\",\"file_path\":\"a.txt\","
+        "\"old_string\":\"a\",\"new_string\":\"b\"}",
+        display, sizeof(display)) == 0);
+
+    /* str_replace creation keeps the (create) marker. */
+    ASSERT(test_prepare_tool_display("str_replace_editor",
+        "{\"command\":\"str_replace\",\"file_path\":\"a.txt\","
+        "\"old_string\":\"\",\"new_string\":\"b\"}",
+        display, sizeof(display)) == 0);
+    ASSERT(strstr(display, "(create)") != NULL);
+
+    /* str_replace without old_string/new_string is refused. */
+    ASSERT(test_prepare_tool_error("str_replace_editor",
+        "{\"command\":\"str_replace\",\"file_path\":\"a.txt\"}") != NULL);
+    /* Unknown command values are refused. */
+    ASSERT(test_prepare_tool_error("str_replace_editor",
+        "{\"command\":\"write\",\"file_path\":\"a.txt\"}") != NULL);
+    /* Missing command or path is refused. */
+    ASSERT(test_prepare_tool_error("str_replace_editor",
+        "{\"file_path\":\"a.txt\"}") != NULL);
+    ASSERT(test_prepare_tool_error("str_replace_editor",
+        "{\"command\":\"view\"}") != NULL);
+    return 1;
+}
+
+static int test_minimal_tools_json(void) {
+    char *json = ccode_build_minimal_tools_json();
+    ASSERT(json != NULL);
+    /* Exactly the deepseek-harness minimal pair: editor + shell. */
+    ASSERT(strstr(json, "\"name\":\"str_replace_editor\"") != NULL);
+    ASSERT(strstr(json, "\"name\":\"bash\"") != NULL);
+    ASSERT(strstr(json, "\"glob\"") == NULL);
+    ASSERT(strstr(json, "\"grep\"") == NULL);
+    ASSERT(strstr(json, "\"task\"") == NULL);
+    ASSERT(strstr(json, "\"web_fetch\"") == NULL);
+    ASSERT(strstr(json, "\"web_search\"") == NULL);
+    ASSERT(strstr(json, "\"agent_tool\"") == NULL);
+    ASSERT(strstr(json, "\"delete_file\"") == NULL);
+    ASSERT(strstr(json, "\"move_file\"") == NULL);
+    ASSERT(strstr(json, "\"read_tool_output\"") == NULL);
+    free(json);
+    return 1;
+}
+
+static int test_minimal_prompt_contract(void) {
+    const char *prompt = ccode_minimal_system_prompt();
+    ASSERT(prompt != NULL);
+    /* deepseek-harness minimal persona, verbatim: one sentence, complete. */
+    ASSERT(strcmp(prompt,
+                  "You are a helpful software engineer assistant.") == 0);
+    /* Strictly shorter than the standard prompt: no guidance repeated. */
+    ASSERT(strlen(prompt) < strlen(ccode_coding_agent_system_prompt()));
+    return 1;
+}
+
 static int test_build_request_no_thinking(void) {
     struct ccode_conversation conv;
     char *req;
@@ -5336,7 +5410,7 @@ static int test_streamed_tool_call_arguments_single_escape(void) {
     ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "") == 0);
     ASSERT(test_conversation_add_streamed_tool_call(&conv, "call_1",
-                                                    "read_file",
+                                                    "str_replace_editor",
                                                     raw_args) == 0);
     ASSERT(ccode_conversation_add_tool_result(&conv, "call_1",
                                               "{\"ok\":true}") == 0);
@@ -5767,6 +5841,9 @@ int main(int argc, char **argv) {
     TEST(platform_sandbox_write_confinement);
 #endif
     TEST(coding_agent_prompt_contract);
+    TEST(str_replace_editor_prepare);
+    TEST(minimal_tools_json);
+    TEST(minimal_prompt_contract);
 
     /* Phase 8: Thinking/reasoning request building tests */
     TEST(build_request_no_thinking);

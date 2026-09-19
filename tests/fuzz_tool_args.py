@@ -40,10 +40,10 @@ DEFAULT_CAP = 8
 # safety, not filesystem existence). Paths stay workspace-relative and argv
 # avoids shell-string form so the "valid" tier stays valid.
 BASE = {
-    "read_file":   [{"file_path": "src/main.c"}, {"file_path": "a"}],
-    "edit_file":   [{"file_path": "out.txt", "old_string": "a", "new_string": "b"},
-                    {"file_path": "a", "content": ""}],
-    "edit_file":   [{"file_path": "f.c", "old_string": "a", "new_string": "b"}],
+    "str_replace_editor":   [{"command": "view", "file_path": "src/main.c"},
+                             {"command": "view", "file_path": "a"}],
+    "str_replace_editor":   [{"command": "str_replace", "file_path": "out.txt",
+                              "old_string": "a", "new_string": "b"}],
     "bash":        [{"command": "echo hi"}, {"command": "printf x"}],
     "delete_file": [{"file_path": "obsolete.txt"}],
     "move_file":   [{"source": "a.txt", "destination": "b.txt"}],
@@ -66,8 +66,7 @@ BASE = {
 # Required keys per tool; mutate these for reliably-invalid cases. task_list
 # ignores argument keys entirely, so it is excluded from key mutations.
 REQUIRED = {
-    "read_file": ["file_path"], "edit_file": ["file_path", "old_string", "new_string"],
-    "edit_file": ["file_path", "old_string", "new_string"],
+    "str_replace_editor": ["command", "file_path", "old_string", "new_string"],
     "bash": ["command"], "delete_file": ["file_path"],
     "move_file": ["source", "destination"], "glob": ["pattern"],
     "grep": ["pattern"], "task": ["action"],

@@ -27,6 +27,7 @@ struct backend_options {
     const char *model;
     int read_only_tools;
     int tools_enabled;
+    int minimal_mode;
     int auto_approve;
     int allow_danger;
     int allow_http;
@@ -213,6 +214,7 @@ static int run_agent_prompt(const struct backend_options *options,
     config.prompt = prompt;
     config.tools_enabled = options->tools_enabled || (write_tools && write_tools[0] == '1');
     config.read_only_tools = options->read_only_tools || (read_only && read_only[0] == '1');
+    config.minimal_mode = options->minimal_mode;
     config.auto_approve = options->auto_approve || (auto_approve && auto_approve[0] == '1');
     config.allow_danger = options->allow_danger;
     config.allow_http = options->allow_http;
@@ -659,6 +661,7 @@ static int run_json_mode(const struct ccode_config *config) {
     state.options.model = config->model;
     state.options.read_only_tools = config->read_only_tools;
     state.options.tools_enabled = config->tools_enabled;
+    state.options.minimal_mode = config->minimal_mode;
     state.options.auto_approve = config->auto_approve;
     state.options.allow_danger = config->allow_danger;
     state.options.allow_http = config->allow_http;
@@ -788,6 +791,7 @@ int ccode_cli_main(int argc, char **argv) {
     agent.prompt = config.prompt;
     agent.tools_enabled = config.tools_enabled;
     agent.read_only_tools = config.read_only_tools;
+    agent.minimal_mode = config.minimal_mode;
     agent.interactive = config.interactive;
     agent.auto_approve = config.auto_approve;
     agent.allow_danger = config.allow_danger;

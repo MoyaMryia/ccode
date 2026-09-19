@@ -66,7 +66,8 @@ static const char *subagent_system_prompt(void) {
         "You are a delegate sub-agent of ccode, a helpful software engineer "
         "assistant. You are given a single focused task inside the current "
         "workspace; inspect the relevant files first and stay within that "
-        "task. Prefer read-only tools (read_file, glob, grep) and make no "
+        "task. Prefer read-only tools (the editor's view command, glob, grep) "
+        "and make no "
         "changes unless the task explicitly asks for them. Your final message "
         "is the only thing returned to the calling agent, so make it "
         "self-contained: state findings with file_path:line_number "
@@ -164,6 +165,10 @@ static char *run_subagent(struct agent_context *ctx,
     if (read_only) {
         sub_cfg.read_only_tools = 1;
         sub_cfg.tools_enabled = 0;
+        /* A read-only delegate never runs the minimal composition: its
+         * write-command refusal keys on tools_enabled with no minimal_mode
+         * bypass, and auto-approval below assumes non-mutating tools only. */
+        sub_cfg.minimal_mode = 0;
         /* Read-only delegates are launched as parallel forked processes that
          * share the parent's terminal, and each child runs in its own
          * (non-foreground) process group. If one stopped to ask for
@@ -653,17 +658,19 @@ static char *exec_tool(const char *workspace, const char *name,
 }
 #endif
 static int is_readonly_tool(const char *name) {
-    return name && (strcmp(name, "read_file") == 0 ||
+    return name && (strcmp(name, "str_replace_editor") == 0 ||
                     strcmp(name, "glob") == 0 ||
                     strcmp(name, "grep") == 0 ||
                     strcmp(name, "read_tool_output") == 0);
 }
 
 static int is_enabled_tool(const char *name, int write_enabled) {
+    /* str_replace_editor is whitelisted by name in every tool-enabled
+     * composition; its `str_replace` command is refused after prepare when
+     * write tools are off (see the kind guard in the turn loop). */
     return is_readonly_tool(name) ||
            (write_enabled && name &&
-             (strcmp(name, "edit_file") == 0 ||
-              strcmp(name, "bash") == 0 ||
+             (strcmp(name, "bash") == 0 ||
               strcmp(name, "delete_file") == 0 ||
               strcmp(name, "move_file") == 0 ||
               strcmp(name, "web_fetch") == 0 ||
@@ -673,6 +680,13 @@ static int is_enabled_tool(const char *name, int write_enabled) {
               strcmp(name, "read_tool_output") == 0));
 }
 
+/* deepseek-harness `minimal` composition: exactly the editor and the shell,
+ * matching ccode_build_minimal_tools_json(). */
+static int is_minimal_tool(const char *name) {
+    return name && (strcmp(name, "str_replace_editor") == 0 ||
+                    strcmp(name, "bash") == 0);
+}
+
 /* Decide whether a prepared call can run without an approval prompt.
  *
  * Always safe: workspace-confined reads, network fetches (web_fetch keeps
@@ -680,7 +694,8 @@ static int is_enabled_tool(const char *name, int write_enabled) {
  * delegation -- a read-write delegate's write tools are approved by its
  * own loop, and read-only delegates only ever hold non-mutating tools.
  *
- * Workspace-confined writes: edit_file and move_file auto-approve only
+ * Workspace-confined writes: the editor's str_replace command and move_file
+ * auto-approve only
  * when every path survives is_workspace_relative_path(); bash only when a
  * conservative static scan (ccode_command_stays_in_workspace) finds no
  * path leaving the workspace. delete_file always prompts: unlinking is the
@@ -837,9 +852,16 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
          * code fence from a previous (possibly cancelled) turn does not
          * bleed into the next assistant message. */
         ccode_print_content_reset();
-        if ((cfg->tools_enabled || cfg->read_only_tools) && turn > 0) {
-            const char *ch = (int)ctx->change_log.len > 0 ? change_log_serialize(&agent_ctx) : NULL;
-            const char *tasks = (cfg->tools_enabled && (int)ctx->task_list.len > 0)
+        /* Minimal composition (deepseek-harness style): the system prompt is
+         * complete and runtime context snapshots are suppressed, so the
+         * change-log and task-list summaries stay out of the conversation. */
+        if ((cfg->minimal_mode || cfg->tools_enabled || cfg->read_only_tools) &&
+            turn > 0) {
+            const char *ch = (!cfg->minimal_mode &&
+                              (int)ctx->change_log.len > 0)
+                             ? change_log_serialize(&agent_ctx) : NULL;
+            const char *tasks = (!cfg->minimal_mode && cfg->tools_enabled &&
+                                 (int)ctx->task_list.len > 0)
                                 ? task_list_serialize(ctx) : NULL;
             if (append_summary_if_changed(conv, ch, &ctx->last_change_summary) != 0 ||
                 append_summary_if_changed(conv, tasks, &ctx->last_task_summary) != 0) {
@@ -848,13 +870,15 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
             }
         }
 
-        if (cfg->tools_enabled) {
+        if (cfg->minimal_mode) {
+            tools_json = ccode_build_minimal_tools_json();
+        } else if (cfg->tools_enabled) {
             tools_json = ccode_build_write_tools_json();
         } else if (cfg->read_only_tools) {
             tools_json = ccode_build_readonly_tools_json();
         }
 
-        if (cfg->read_only_tools || cfg->tools_enabled) {
+        if (cfg->minimal_mode || cfg->read_only_tools || cfg->tools_enabled) {
             if (!tools_json) {
                 fprintf(stderr, "Out of memory.\n");
                 return 1;
@@ -863,7 +887,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
 
         if (!cfg->quiet) {
             struct timespec now_ts;
-            const char *mode_label = cfg->tools_enabled    ? "read-write"
+            const char *mode_label = cfg->minimal_mode     ? "minimal"
+                                 : cfg->tools_enabled    ? "read-write"
                                  : cfg->read_only_tools ? "read-only"
                                                         : "none";
             (void)clock_gettime(CLOCK_MONOTONIC, &now_ts);
@@ -1038,7 +1063,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         continue;
                     }
 
-                    if (!cfg->read_only_tools && !cfg->tools_enabled) {
+                    if (!cfg->minimal_mode && !cfg->read_only_tools &&
+                        !cfg->tools_enabled) {
                         change_log_add_denied(ctx, acc.tool_calls[i].name);
                         if (append_tool_error(cfg, conv, acc.tool_calls[i].id,
                                 "{\"error\":\"Tools are not enabled\"}") != 0) {
@@ -1049,8 +1075,10 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         }
                         continue;
                     }
-                    if (!is_enabled_tool(acc.tool_calls[i].name,
-                                         cfg->tools_enabled)) {
+                    if (cfg->minimal_mode
+                            ? !is_minimal_tool(acc.tool_calls[i].name)
+                            : !is_enabled_tool(acc.tool_calls[i].name,
+                                               cfg->tools_enabled)) {
                         change_log_add_denied(ctx, acc.tool_calls[i].name);
                         if (append_tool_error(cfg, conv, acc.tool_calls[i].id,
                                 "{\"error\":\"Tool is unavailable\"}") != 0) {
@@ -1081,6 +1109,22 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                     if (prepare_error) {
                         if (append_tool_error(cfg, conv, acc.tool_calls[i].id,
                                               prepare_error) != 0) {
+                            ccode_sse_accumulator_destroy(&acc);
+                            fprintf(stderr, "Out of memory.\n");
+                            result = -1;
+                            break;
+                        }
+                        continue;
+                    }
+
+                    /* The editor tool is whitelisted by name in read-only
+                     * compositions (request-prefix stability); its mutating
+                     * str_replace command is refused here instead. */
+                    if (!cfg->tools_enabled && !cfg->minimal_mode &&
+                        prepared.kind == PREPARED_EDIT_FILE) {
+                        change_log_add_denied(ctx, acc.tool_calls[i].name);
+                        if (append_tool_error(cfg, conv, acc.tool_calls[i].id,
+                                "{\"error\":\"Tool is unavailable\"}") != 0) {
                             ccode_sse_accumulator_destroy(&acc);
                             fprintf(stderr, "Out of memory.\n");
                             result = -1;
@@ -1354,15 +1398,18 @@ static int conversation_has_system(const struct ccode_conversation *conv) {
 }
 
 /* Install the coding-agent system prompt when tool use is on and none is
- * present yet. Idempotent, so it is the single injection point the REPL's
- * new/clear/resume paths all call. Returns 0 (also when nothing is needed) or
- * -1 on allocation failure. */
+ * present yet. Minimal mode installs its own fixed persona instead. Idempotent,
+ * so it is the single injection point the REPL's new/clear/resume paths all
+ * call. Returns 0 (also when nothing is needed) or -1 on allocation failure. */
 static int ensure_system_prompt(struct ccode_conversation *conv,
                                 const struct ccode_agent_config *cfg) {
-    if (!(cfg->read_only_tools || cfg->tools_enabled)) return 0;
+    if (!(cfg->minimal_mode || cfg->read_only_tools || cfg->tools_enabled))
+        return 0;
     if (conversation_has_system(conv)) return 0;
     return ccode_conversation_add(conv, CCODE_ROLE_SYSTEM,
-                                  ccode_coding_agent_system_prompt());
+                                  cfg->minimal_mode
+                                      ? ccode_minimal_system_prompt()
+                                      : ccode_coding_agent_system_prompt());
 }
 
 /* Keep the oversized-result archive aligned with the active session file.

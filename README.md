@@ -8,7 +8,8 @@ TUI（单体 `ccode` / 分离 `ccode-tui`）与 CLI 共用同一套 agent 核心
 
 - 交互式对话（REPL）或单条提问，二选一
 - 纯 CLI 命令行（`ccode-cli`）；TUI（单体 `ccode` / 分离 `ccode-tui`）默认不构建，手动 `make ccode ccode-tui`
-- 读文件、编辑文件（含创建）、搜代码（glob/grep）、跑命令、抓网页、搜网页，还能派子代理干活
+- 一个 `str_replace_editor` 看文件/改文件（含创建）、搜代码（glob/grep）、跑命令、抓网页、搜网页，还能派子代理干活
+- Minimal 模式（`--minimal`）：学 deepseek-harness 极简精神——固定一句话系统提示 + 只有编辑器和 bash 两个工具，最小化请求前缀
 - Markdown 渲染成带颜色的终端输出
 - 会话保存、列表、恢复
 - 模型列表、搜索、切换
@@ -62,6 +63,7 @@ export CCODE_MODEL="deepseek-v4-flash"
 
 ./ccode-cli --write -p "解释一下这个项目"   # 单条提问（当前用法）
 ./ccode-cli --default           # 交互 + 读写工具 + thinking
+./ccode-cli --minimal --default # 极简模式：一句话提示 + 编辑器/bash 双工具
 ```
 
 其他兼容服务商同理，比如通义千问、智谱 GLM、MiniMax、OpenAI、或者 OpenCode Zen 网关，改一下 `CCODE_API_BASE` 和 `CCODE_MODEL` 就行。

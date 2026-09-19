@@ -195,7 +195,7 @@ static int test_parse_tool_calls(void) {
                     "\"id\":\"call_1\","
                     "\"type\":\"function\","
                     "\"function\":{"
-                        "\"name\":\"read_file\","
+                        "\"name\":\"str_replace_editor\","
                         "\"arguments\":\"{\\\"file_path\\\":\\\"test.txt\\\"}\""
                     "}"
                 "}]"
@@ -210,7 +210,7 @@ static int test_parse_tool_calls(void) {
     ASSERT(delta.tool_calls[0].id != NULL);
     ASSERT(strcmp(delta.tool_calls[0].id, "call_1") == 0);
     ASSERT(delta.tool_calls[0].name != NULL);
-    ASSERT(strcmp(delta.tool_calls[0].name, "read_file") == 0);
+    ASSERT(strcmp(delta.tool_calls[0].name, "str_replace_editor") == 0);
     ASSERT(delta.tool_calls[0].arguments != NULL);
     ASSERT(strstr(delta.tool_calls[0].arguments, "test.txt") != NULL);
     ASSERT(delta.finish_reason != NULL);
@@ -224,7 +224,7 @@ static int test_parse_multiple_tool_calls(void) {
         "\"choices\":[{"
             "\"delta\":{"
                 "\"tool_calls\":[{"
-                    "\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}"
+                    "\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"str_replace_editor\",\"arguments\":\"{}\"}"
                 "},{"
                     "\"index\":1,\"id\":\"c2\",\"function\":{\"name\":\"glob\",\"arguments\":\"{}\"}"
                 "}]"
@@ -236,7 +236,7 @@ static int test_parse_multiple_tool_calls(void) {
     ASSERT(r == 0);
     ASSERT(delta.tool_call_count == 2);
     ASSERT(strcmp(delta.tool_calls[0].id, "c1") == 0);
-    ASSERT(strcmp(delta.tool_calls[0].name, "read_file") == 0);
+    ASSERT(strcmp(delta.tool_calls[0].name, "str_replace_editor") == 0);
     ASSERT(strcmp(delta.tool_calls[1].id, "c2") == 0);
     ASSERT(strcmp(delta.tool_calls[1].name, "glob") == 0);
     ccode_free_sse_delta(&delta);
@@ -261,7 +261,7 @@ static int test_parse_max_tool_calls(void) {
     for (i = 0; i < 64; i++) {
         pos += (size_t)snprintf(json + pos, cap - pos,
             "%s{\"index\":%d,\"id\":\"c%d\",\"type\":\"function\","
-            "\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}",
+            "\"function\":{\"name\":\"str_replace_editor\",\"arguments\":\"{}\"}}",
             i ? "," : "", i, i);
     }
     pos += (size_t)snprintf(json + pos, cap - pos,
@@ -283,7 +283,7 @@ static int test_parse_max_tool_calls(void) {
     for (i = 0; i < 65; i++) {
         pos += (size_t)snprintf(json + pos, cap + 160 - pos,
             "%s{\"index\":%d,\"id\":\"c%d\",\"type\":\"function\","
-            "\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}",
+            "\"function\":{\"name\":\"str_replace_editor\",\"arguments\":\"{}\"}}",
             i ? "," : "", i, i);
     }
     pos += (size_t)snprintf(json + pos, cap + 160 - pos,
@@ -408,7 +408,7 @@ static int test_single_tool_call(void) {
 
     r = TEST_PROCESS(&acc,
         "{\"choices\":[{\"delta\":{"
-        "\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]"
+        "\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"str_replace_editor\",\"arguments\":\"{}\"}}]"
         "}}]}");
     ASSERT(r == 0);
 
@@ -416,7 +416,7 @@ static int test_single_tool_call(void) {
     ASSERT(acc.tool_calls[0].id != NULL);
     ASSERT(strcmp(acc.tool_calls[0].id, "c1") == 0);
     ASSERT(acc.tool_calls[0].name != NULL);
-    ASSERT(strcmp(acc.tool_calls[0].name, "read_file") == 0);
+    ASSERT(strcmp(acc.tool_calls[0].name, "str_replace_editor") == 0);
     ASSERT(acc.tool_calls[0].arguments != NULL);
 
     ccode_sse_accumulator_destroy(&acc);
@@ -431,7 +431,7 @@ static int test_tool_call_accumulation(void) {
 
     r = TEST_PROCESS(&acc,
         "{\"choices\":[{\"delta\":{"
-        "\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{ab\"}}]"
+        "\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"str_replace_editor\",\"arguments\":\"{ab\"}}]"
         "}}]}");
     ASSERT(r == 0);
 
@@ -445,7 +445,7 @@ static int test_tool_call_accumulation(void) {
     ASSERT(acc.tool_calls[0].id != NULL);
     ASSERT(strcmp(acc.tool_calls[0].id, "c1") == 0);
     ASSERT(acc.tool_calls[0].name != NULL);
-    ASSERT(strcmp(acc.tool_calls[0].name, "read_file") == 0);
+    ASSERT(strcmp(acc.tool_calls[0].name, "str_replace_editor") == 0);
     ASSERT(acc.tool_calls[0].arguments != NULL);
     ASSERT(strcmp(acc.tool_calls[0].arguments, "{abcd}") == 0);
 
@@ -562,7 +562,7 @@ static int test_strict_tool_calls_rejects_non_object(void) {
 static int test_strict_tool_calls_rejects_negative_index(void) {
     const char *json =
         "{\"choices\":[{\"delta\":{"
-        "\"tool_calls\":[{\"index\":-1,\"id\":\"x\",\"function\":{\"name\":\"read_file\"}}]"
+        "\"tool_calls\":[{\"index\":-1,\"id\":\"x\",\"function\":{\"name\":\"str_replace_editor\"}}]"
         "}}]}";
     struct ccode_sse_delta delta;
     int r = ccode_parse_sse_delta(json, strlen(json), &delta);
@@ -573,7 +573,7 @@ static int test_strict_tool_calls_rejects_negative_index(void) {
 static int test_strict_tool_calls_rejects_id_not_string(void) {
     const char *json =
         "{\"choices\":[{\"delta\":{"
-        "\"tool_calls\":[{\"index\":0,\"id\":42,\"function\":{\"name\":\"read_file\"}}]"
+        "\"tool_calls\":[{\"index\":0,\"id\":42,\"function\":{\"name\":\"str_replace_editor\"}}]"
         "}}]}";
     struct ccode_sse_delta delta;
     int r = ccode_parse_sse_delta(json, strlen(json), &delta);

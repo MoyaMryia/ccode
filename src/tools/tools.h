@@ -14,5 +14,6 @@ extern const size_t ccode_tool_definitions_count;
 
 char *ccode_build_readonly_tools_json(void);
 char *ccode_build_write_tools_json(void);
+char *ccode_build_minimal_tools_json(void);
 
 #endif

@@ -333,8 +333,8 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                                     "id": "call_abc123",
                                     "type": "function",
                                     "function": {
-                                        "name": "read_file",
-                                        "arguments": '{"file_path":"test.txt"}'
+                                        "name": "str_replace_editor",
+                                        "arguments": '{"command":"view","file_path":"test.txt"}'
                                     }
                                 }]
                             },
@@ -394,8 +394,8 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                         "tool_calls": [{
                             "index": 0, "id": "call_think1",
                             "type": "function",
-                            "function": {"name": "read_file",
-                                         "arguments": '{"file_path":"test.txt"}'}}]},
+                            "function": {"name": "str_replace_editor",
+                                         "arguments": '{"command":"view","file_path":"test.txt"}'}}]},
                         "finish_reason": None}]})},
                     {"data": json.dumps({"choices": [{"index": 0, "delta": {},
                         "finish_reason": "tool_calls"}]})},
@@ -423,8 +423,8 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                             "id": "call_write1",
                             "type": "function",
                             "function": {
-                                "name": "edit_file",
-                                "arguments": '{"file_path":"test.txt","old_string":"","new_string":"x"}'
+                                "name": "str_replace_editor",
+                                "arguments": '{"command":"str_replace","file_path":"test.txt","old_string":"","new_string":"x"}'
                             }
                         }]},
                         "finish_reason": "tool_calls"
@@ -449,8 +449,8 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                             "id": "call_write123",
                             "type": "function",
                             "function": {
-                                "name": "edit_file",
-                                "arguments": '{"file_path":"integration-write.txt","old_string":"","new_string":"written by mock\\n"}'
+                                "name": "str_replace_editor",
+                                "arguments": '{"command":"str_replace","file_path":"integration-write.txt","old_string":"","new_string":"written by mock\\n"}'
                             }
                         }]},
                         "finish_reason": "tool_calls"
@@ -540,7 +540,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                 events = [{"data": json.dumps({
                     "choices": [{"index": 0, "delta": {"content": "Inspecting the code..."}, "finish_reason": None}]
                 })}, {"data": json.dumps({
-                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_inspect1", "type": "function", "function": {"name": "read_file", "arguments": '{"file_path":"src/main.c"}'}}]}, "finish_reason": None}]
+                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_inspect1", "type": "function", "function": {"name": "str_replace_editor", "arguments": '{"command":"view","file_path":"src/main.c"}'}}]}, "finish_reason": None}]
                 })}, {"data": json.dumps({
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
                 })}]
@@ -548,7 +548,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                 events = [{"data": json.dumps({
                     "choices": [{"index": 0, "delta": {"content": "First edit..."}, "finish_reason": None}]
                 })}, {"data": json.dumps({
-                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_edit1", "type": "function", "function": {"name": "edit_file", "arguments": '{"file_path":"src/main.c","old_string":"int add(int a, int b) { return a - b; }","new_string":"int add(int a, int b) { return a + b; }"}'}}]}, "finish_reason": None}]
+                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_edit1", "type": "function", "function": {"name": "str_replace_editor", "arguments": '{"command":"str_replace","file_path":"src/main.c","old_string":"int add(int a, int b) { return a - b; }","new_string":"int add(int a, int b) { return a + b; }"}'}}]}, "finish_reason": None}]
                 })}, {"data": json.dumps({
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
                 })}]
@@ -564,7 +564,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                 events = [{"data": json.dumps({
                     "choices": [{"index": 0, "delta": {"content": "Focused test failed; re-inspecting..."}, "finish_reason": None}]
                 })}, {"data": json.dumps({
-                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_inspect2", "type": "function", "function": {"name": "read_file", "arguments": '{"file_path":"src/main.c"}'}}]}, "finish_reason": None}]
+                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_inspect2", "type": "function", "function": {"name": "str_replace_editor", "arguments": '{"command":"view","file_path":"src/main.c"}'}}]}, "finish_reason": None}]
                 })}, {"data": json.dumps({
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
                 })}]
@@ -572,7 +572,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                 events = [{"data": json.dumps({
                     "choices": [{"index": 0, "delta": {"content": "Second edit..."}, "finish_reason": None}]
                 })}, {"data": json.dumps({
-                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_edit2", "type": "function", "function": {"name": "edit_file", "arguments": '{"file_path":"src/main.c","old_string":"int sub(int a, int b) { return a + b; }","new_string":"int sub(int a, int b) { return a - b; }"}'}}]}, "finish_reason": None}]
+                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_edit2", "type": "function", "function": {"name": "str_replace_editor", "arguments": '{"command":"str_replace","file_path":"src/main.c","old_string":"int sub(int a, int b) { return a + b; }","new_string":"int sub(int a, int b) { return a - b; }"}'}}]}, "finish_reason": None}]
                 })}, {"data": json.dumps({
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
                 })}]
@@ -650,20 +650,20 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
             msgs = req.get("messages", [])
             tool_count = sum(1 for m in msgs if m.get("role") == "tool")
             if tool_count == 0:
-                # Turn 1: emit read_file for src/main.c
+                # Turn 1: emit the editor view for src/main.c
                 events = [{"data": json.dumps({
                     "choices": [{"index": 0, "delta": {"content": "Let me inspect the code..."}, "finish_reason": None}]
                 })}, {"data": json.dumps({
-                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_inspect", "type": "function", "function": {"name": "read_file", "arguments": '{"file_path":"src/main.c"}'}}]}, "finish_reason": None}]
+                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_inspect", "type": "function", "function": {"name": "str_replace_editor", "arguments": '{"command":"view","file_path":"src/main.c"}'}}]}, "finish_reason": None}]
                 })}, {"data": json.dumps({
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
                 })}]
             elif tool_count == 1:
-                # Turn 2: emit edit_file to fix the bug
+                # Turn 2: emit str_replace to fix the bug
                 events = [{"data": json.dumps({
                     "choices": [{"index": 0, "delta": {"content": "I see the bug. Let me fix it..."}, "finish_reason": None}]
                 })}, {"data": json.dumps({
-                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_edit1", "type": "function", "function": {"name": "edit_file", "arguments": '{"file_path":"src/main.c","old_string":"a - b","new_string":"a + b"}'}}]}, "finish_reason": None}]
+                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_edit1", "type": "function", "function": {"name": "str_replace_editor", "arguments": '{"command":"str_replace","file_path":"src/main.c","old_string":"a - b","new_string":"a + b"}'}}]}, "finish_reason": None}]
                 })}, {"data": json.dumps({
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
                 })}]
@@ -770,8 +770,8 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                                      "delta": {"tool_calls": [
                                          {"index": 0, "id": "call_subread",
                                           "type": "function",
-                                          "function": {"name": "read_file",
-                                                       "arguments": '{"file_path":"probe.txt"}'}}]},
+                                          "function": {"name": "str_replace_editor",
+                                                       "arguments": '{"command":"view","file_path":"probe.txt"}'}}]},
                                      "finish_reason": None}]})},
                               {"data": json.dumps({
                                   "choices": [{"index": 0, "delta": {},

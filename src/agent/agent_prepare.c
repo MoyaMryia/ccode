@@ -232,46 +232,80 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         return "{\"error\":\"Could not parse tool arguments\"}";
     }
 
-    if (strcmp(name, "edit_file") == 0) {
-        int have_path = 0, have_old = 0, have_new = 0;
+    /* The merged editor tool (deepseek-harness minimal style): `command`
+     * selects `view` (read) or `str_replace` (edit), mapped onto the same
+     * prepared kinds and executors the former read_file/edit_file used. */
+    if (strcmp(name, "str_replace_editor") == 0) {
+        int have_command = 0, have_path = 0, have_old = 0, have_new = 0;
         int i;
-        if (num_tokens != 7 || tokens[0].size != 6)
-            return "{\"error\":\"Invalid edit_file arguments\"}";
+        if (num_tokens < 5 || num_tokens > 9 || (num_tokens % 2) == 0)
+            return "{\"error\":\"Invalid str_replace_editor arguments\"}";
         for (i = 1; i < num_tokens; i += 2) {
             if (tokens[i].type != CCODE_JSMN_STRING ||
                 tokens[i + 1].type != CCODE_JSMN_STRING)
-                return "{\"error\":\"Invalid edit_file arguments\"}";
-            if (ccode_jsmn_token_streq(arguments, &tokens[i], "file_path")) {
-                if (have_path || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
-                    return "{\"error\":\"Invalid edit_file arguments\"}";
+                return "{\"error\":\"Invalid str_replace_editor arguments\"}";
+            if (ccode_jsmn_token_streq(arguments, &tokens[i], "command")) {
+                if (have_command ||
+                    copy_string_token_dyn(arguments, &tokens[i + 1],
+                                          &prepared->action) != 0)
+                    return "{\"error\":\"Invalid str_replace_editor arguments\"}";
+                have_command = 1;
+            } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
+                                              "file_path")) {
+                if (have_path ||
+                    copy_string_token_dyn(arguments, &tokens[i + 1],
+                                          &prepared->value) != 0)
+                    return "{\"error\":\"Invalid str_replace_editor arguments\"}";
                 have_path = 1;
-            } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "old_string")) {
-                if (have_old || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->old_string) != 0)
-                    return "{\"error\":\"Invalid edit_file arguments\"}";
+            } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
+                                              "old_string")) {
+                if (have_old ||
+                    copy_string_token_dyn(arguments, &tokens[i + 1],
+                                          &prepared->old_string) != 0)
+                    return "{\"error\":\"Invalid str_replace_editor arguments\"}";
                 have_old = 1;
-            } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "new_string")) {
-                if (have_new || copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->new_string) != 0)
-                    return "{\"error\":\"Invalid edit_file arguments\"}";
+            } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
+                                              "new_string")) {
+                if (have_new ||
+                    copy_string_token_dyn(arguments, &tokens[i + 1],
+                                          &prepared->new_string) != 0)
+                    return "{\"error\":\"Invalid str_replace_editor arguments\"}";
                 have_new = 1;
             } else {
-                return "{\"error\":\"Invalid edit_file arguments\"}";
+                return "{\"error\":\"Invalid str_replace_editor arguments\"}";
             }
         }
-        if (!have_path || !have_old || !have_new)
-            return "{\"error\":\"Invalid edit_file arguments\"}";
+        if (!have_command || !have_path)
+            return "{\"error\":\"Invalid str_replace_editor arguments\"}";
         if (is_home_relative_path(prepared->value))
             return refuse_path("Home-relative paths are not allowed",
                                prepared->value, REFUSE_RULE_HOME);
-        prepared->kind = PREPARED_EDIT_FILE;
-        if (prepared->old_string[0] == '\0') {
-            /* Creation: new_string is the full file content. */
+        if (strcmp(prepared->action, "view") == 0) {
+            if (have_old || have_new)
+                return "{\"error\":\"str_replace_editor command=view takes "
+                       "no old_string/new_string\"}";
+            prepared->kind = PREPARED_READ_FILE;
             snprintf(prepared->display, sizeof(prepared->display),
-                     "file_path=%s (create) bytes=%lu", prepared->value,
-                     (unsigned long)strlen(prepared->new_string));
+                     "file_path=%s", prepared->value);
             return NULL;
         }
-        prepared->display[0] = '\0';
-        return NULL;
+        if (strcmp(prepared->action, "str_replace") == 0) {
+            if (!have_old || !have_new)
+                return "{\"error\":\"str_replace_editor command=str_replace "
+                       "requires old_string and new_string\"}";
+            prepared->kind = PREPARED_EDIT_FILE;
+            if (prepared->old_string[0] == '\0') {
+                /* Creation: new_string is the full file content. */
+                snprintf(prepared->display, sizeof(prepared->display),
+                         "file_path=%s (create) bytes=%lu", prepared->value,
+                         (unsigned long)strlen(prepared->new_string));
+                return NULL;
+            }
+            prepared->display[0] = '\0';
+            return NULL;
+        }
+        return "{\"error\":\"Invalid str_replace_editor command (view or "
+               "str_replace)\"}";
     }
 
     if (strcmp(name, "read_tool_output") == 0) {
@@ -338,22 +372,6 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                  (unsigned long)prepared->result_limit,
                  have_stream ? " stream=" : "",
                  have_stream ? prepared->content : "");
-        return NULL;
-    }
-
-    if (strcmp(name, "read_file") == 0) {
-        if (num_tokens != 3 || tokens[0].size != 2 ||
-            tokens[1].type != CCODE_JSMN_STRING ||
-            !ccode_jsmn_token_streq(arguments, &tokens[1], "file_path") ||
-            copy_string_token_dyn(arguments, &tokens[2], &prepared->value) != 0)
-            return "{\"error\":\"Invalid read_file arguments: expected "
-                   "{\\\"file_path\\\": \\\"<path>\\\"}\"}";
-        if (is_home_relative_path(prepared->value))
-            return refuse_path("Home-relative paths are not allowed",
-                               prepared->value, REFUSE_RULE_HOME);
-        prepared->kind = PREPARED_READ_FILE;
-        snprintf(prepared->display, sizeof(prepared->display),
-                 "file_path=%s", prepared->value);
         return NULL;
     }
 

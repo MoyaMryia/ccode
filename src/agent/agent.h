@@ -26,6 +26,11 @@ struct ccode_agent_config {
     const char *prompt;
     int tools_enabled;
     int read_only_tools;
+    /* deepseek-harness `minimal` preset style: a fixed one-sentence system
+     * prompt, exactly the str_replace_editor + bash tool pair, and no
+     * per-turn change-log/task summaries injected into the conversation.
+     * Implies write tools at the config layer. */
+    int minimal_mode;
     int interactive;
     int auto_approve;
     /* DANGER: disable all tool-call policy checks + imply approval. */
@@ -80,6 +85,10 @@ void ccode_render_message(FILE *out, const struct ccode_message *msg);
 
 /* Default behavior contract injected when local tools are enabled. */
 const char *ccode_coding_agent_system_prompt(void);
+
+/* Fixed one-sentence persona for minimal mode (deepseek-harness `minimal`
+ * preset style): the complete prompt, with no runtime context added. */
+const char *ccode_minimal_system_prompt(void);
 
 /* Cancellation: installed by agent_run via sigaction. SIGINT sets an atomic
  * cancel flag and terminates any active child process group. The next loop

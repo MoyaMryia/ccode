@@ -214,7 +214,7 @@ def main():
             print("  FAIL: bug was not fixed (file unchanged)")
             tests_failed += 1
         elif "return a + b" in content:
-            print("  PASS: bug was fixed via edit_file")
+            print("  PASS: bug was fixed via str_replace_editor")
         else:
             print("  FAIL: unexpected file content after workflow")
             print("    content: %s" % content[:100])

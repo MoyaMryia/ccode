@@ -14,30 +14,24 @@
  * `param_schema` must stay valid JSON: agent_prepare.c echoes it back to the
  * model as the expected argument shape after an argument error. */
 const struct ccode_tool_def ccode_tool_definitions[] = {
-    {"read_file",
-     "Read a UTF-8 text file from the workspace and return its contents. Use "
-     "this tool instead of `cat` or other shell commands to inspect files. "
-     "Binary files are rejected. A read is capped at 50 KiB; a longer file is "
-     "truncated and the result carries `truncated: true`, with the full "
-     "contents archived for `read_tool_output`.",
+    {"str_replace_editor",
+     "View or edit a UTF-8 text file in the workspace. With `command` set to "
+     "`view`, returns the file contents: binary files are rejected, a read is "
+     "capped at 50 KiB, a longer file is truncated and the result carries "
+     "`truncated: true` with the full contents archived for "
+     "`read_tool_output`. With `command` set to `str_replace`, replaces the "
+     "literal `old_string` with `new_string`: `old_string` must occur exactly "
+     "once, so include more surrounding context when it is not unique; an "
+     "empty `old_string` creates a new file whose content is `new_string` and "
+     "refuses to overwrite an existing path. View the file before replacing "
+     "text in it. Edits are limited to files up to 50 KiB and are refused for "
+     "binary or hard-linked files.",
      "{\"type\":\"object\",\"properties\":{"
-     "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file to read, relative to the workspace root.\"}"
-     "},\"required\":[\"file_path\"]}"},
-
-    {"edit_file",
-     "Edit an existing UTF-8 text file by replacing literal text. Finds "
-     "`old_string` and replaces it with `new_string`. `old_string` must occur "
-     "exactly once; if it appears more than once, include more surrounding "
-     "context to make it unique. An empty `old_string` creates a new file whose "
-     "content is `new_string` and refuses to overwrite an existing path. Read "
-     "the file before editing it. Edits are limited to files up to 50 KiB and "
-     "are refused for binary or hard-linked files.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file to edit, relative to the workspace root.\"},"
-     "\"old_string\":{\"type\":\"string\",\"description\":\"Literal text to replace. Must match exactly and occur exactly once; an empty string creates a new file.\"},"
-     "\"new_string\":{\"type\":\"string\",\"description\":\"Replacement text. With an empty `old_string`, this is the complete content of the new file.\"}"
-     "},\"required\":[\"file_path\",\"old_string\",\"new_string\"]}"},
-
+     "\"command\":{\"type\":\"string\",\"enum\":[\"view\",\"str_replace\"],\"description\":\"`view` reads the file; `str_replace` edits it.\"},"
+     "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file, relative to the workspace root.\"},"
+     "\"old_string\":{\"type\":\"string\",\"description\":\"str_replace only: literal text to replace. Must match exactly and occur exactly once; an empty string creates a new file.\"},"
+     "\"new_string\":{\"type\":\"string\",\"description\":\"str_replace only: replacement text. With an empty `old_string`, this is the complete content of the new file.\"}"
+     "},\"required\":[\"command\",\"file_path\"]}"},
     {"glob",
      "Find files whose paths match a pattern. Returns matching file paths - "
      "never directories - and does not read file contents. A pattern containing "
@@ -91,8 +85,8 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "`exit_code`; a signal-killed command reports `signal` and a null "
      "`exit_code`; a timeout sets `timed_out`. Long output is truncated (flagged "
      "by `stdout_truncated`/`stderr_truncated`) and the full stream is archived "
-     "for `read_tool_output`. Prefer `read_file`, `glob`, and `grep` for file "
-     "inspection.",
+     "for `read_tool_output`. Prefer the editor's `view` command, `glob`, and "
+     "`grep` for file inspection.",
      "{\"type\":\"object\",\"properties\":{"
      "\"command\":{\"type\":\"string\",\"description\":\"The shell command to execute.\"},"
      "\"timeout_ms\":{\"type\":\"number\",\"description\":\"Timeout in milliseconds (default 120000, max 300000). On expiry the command is killed and `timed_out` is true.\"}"
@@ -209,16 +203,25 @@ fail:
 }
 
 char *ccode_build_readonly_tools_json(void) {
-    static const char *const names[] = {"read_file", "glob", "grep",
+    static const char *const names[] = {"str_replace_editor", "glob", "grep",
                                         "read_tool_output"};
     return build_tools_json_named(names, sizeof(names) / sizeof(names[0]));
 }
 
 char *ccode_build_write_tools_json(void) {
-    static const char *const names[] = {"read_file", "edit_file", "bash",
+    static const char *const names[] = {"str_replace_editor", "bash",
                                         "delete_file", "move_file", "glob",
                                         "grep", "task", "web_fetch",
                                         "web_search", "agent_tool",
                                         "read_tool_output"};
+    return build_tools_json_named(names, sizeof(names) / sizeof(names[0]));
+}
+
+/* deepseek-harness `minimal` preset style: exactly two tools, the editor and
+ * the shell. The model reads through the editor's `view` command instead of a
+ * separate read tool, mirroring dsh-tool-str-replace-editor +
+ * dsh-tool-bash-persistent. */
+char *ccode_build_minimal_tools_json(void) {
+    static const char *const names[] = {"str_replace_editor", "bash"};
     return build_tools_json_named(names, sizeof(names) / sizeof(names[0]));
 }

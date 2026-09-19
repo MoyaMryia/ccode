@@ -13,9 +13,9 @@ keyed by tool_call_id):
 - oversized read (biggest source file > 64 KiB) must truncate and page
   back through read_tool_output with byte-accurate windows
 - bash pipelines (find/wc/md5sum/grep) must match Python-computed values
-- edit_file must create a file, refuse a second create, replace a unique
+- str_replace must create a file, refuse a second create, replace a unique
   real anchor, and refuse an ambiguous multi-match edit
-- the Chinese AGENTS.md must round-trip through read_file (UTF-8)
+- the Chinese AGENTS.md must round-trip through the editor view (UTF-8)
 - an agent_tool delegate must answer
 
 Usage: python3 tests/stress_real_project.py
@@ -66,7 +66,7 @@ def build_plan(ws):
             if name.endswith(".c"):
                 if biggest_pre is None or os.path.getsize(p) > os.path.getsize(biggest_pre):
                     biggest_pre = p
-                # edit_file refuses files over 50 KiB; probe with the
+                # str_replace refuses files over 50 KiB; probe with the
                 # biggest source file that stays under that ceiling AND
                 # carries the grep symbol (so a real unique edit anchor
                 # exists), keeping the probe independent of file-size drift.
@@ -126,9 +126,10 @@ def build_plan(ws):
                      {"pattern": "int ccode_", "regex": True,
                       "include": "*.h", "context": 1}))
 
-    # 7-9: oversized read + two byte-accurate pagination windows
+    # 7-9: oversized editor view + two byte-accurate pagination windows
     big_read_id = cid()
-    plan.append(step(big_read_id, "read_file", {"file_path": rel(biggest)}))
+    plan.append(step(big_read_id, "str_replace_editor",
+                     {"command": "view", "file_path": rel(biggest)}))
     plan.append(step(cid(), "read_tool_output",
                      {"tool_call_id": big_read_id,
                       "offset": 0, "limit": 65536}))
@@ -149,7 +150,7 @@ def build_plan(ws):
 
     # 15-19: edits on a real copy (probe file already created above)
     # Pick the first occurrence whose surrounding window is unique in the
-    # file (edit_file refuses ambiguous anchors).
+    # file (str_replace refuses ambiguous anchors).
     anchor_old = None
     pos = probe_src.find(SYMBOL)
     while pos >= 0:
@@ -160,18 +161,19 @@ def build_plan(ws):
         pos = probe_src.find(SYMBOL, pos + 1)
     assert anchor_old is not None
     anchor_new = anchor_old.replace(SYMBOL, SYMBOL + "_RENAMED", 1)
-    plan.append(step(cid(), "edit_file",
-                     {"file_path": "created_probe.txt", "old_string": "",
+    plan.append(step(cid(), "str_replace_editor",
+                     {"command": "str_replace", "file_path": "created_probe.txt",
+                      "old_string": "",
                       "new_string": "created from real-data stress\n"}))
-    plan.append(step(cid(), "edit_file",
-                     {"file_path": "created_probe.txt", "old_string": "",
-                      "new_string": "must be refused\n"}))
-    plan.append(step(cid(), "edit_file",
-                     {"file_path": "edit_probe.c",
+    plan.append(step(cid(), "str_replace_editor",
+                     {"command": "str_replace", "file_path": "created_probe.txt",
+                      "old_string": "", "new_string": "must be refused\n"}))
+    plan.append(step(cid(), "str_replace_editor",
+                     {"command": "str_replace", "file_path": "edit_probe.c",
                       "old_string": anchor_old, "new_string": anchor_new}))
     ambiguous = SYMBOL if probe_src.count(SYMBOL) >= 2 else "\n"
-    plan.append(step(cid(), "edit_file",
-                     {"file_path": "edit_probe.c",
+    plan.append(step(cid(), "str_replace_editor",
+                     {"command": "str_replace", "file_path": "edit_probe.c",
                       "old_string": ambiguous, "new_string": "x"}))
     plan.append(step(cid(), "bash",
                      {"command":
@@ -179,7 +181,8 @@ def build_plan(ws):
                       % (SYMBOL + "_RENAMED", SYMBOL)}))
 
     # 20: UTF-8 Chinese doc round-trip
-    plan.append(step(cid(), "read_file", {"file_path": "docs/AGENTS.md"}))
+    plan.append(step(cid(), "str_replace_editor",
+                     {"command": "view", "file_path": "docs/AGENTS.md"}))
 
     # 21: delegate to a read-only sub-agent
     plan.append(step(cid(), "agent_tool",

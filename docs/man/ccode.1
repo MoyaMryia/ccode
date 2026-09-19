@@ -87,13 +87,18 @@ Alias for
 .BR \-\-reasoning-effort .
 .TP
 .B \-\-write
-Enable read and write tools (edit_file, bash,
+Enable write-capable tools (str_replace_editor, bash,
 web_fetch, ...). Workspace-confined calls run without confirmation;
 anything that may leave the workspace prompts interactively, and
 dangerous commands require a typed confirmation.
 .TP
 .B \-\-read-only
-Read-only tools (read_file, glob, grep, read_tool_output). This is the default mode.
+Read-only tools (editor view, glob, grep, read_tool_output). This is the default mode.
+.TP
+.B \-\-minimal
+Minimal mode (deepseek-harness style): fixed one-sentence system prompt
+with exactly the str_replace_editor and bash tools. Implies
+.BR \-\-write .
 .TP
 .B \-\-default
 Fast start preset: interactive UI plus read/write tools plus thinking

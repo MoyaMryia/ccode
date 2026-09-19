@@ -162,7 +162,7 @@ def test_approve_via_tty():
         enable_tools=True,
         approve=True)
     output = stdout.decode() + stderr.decode()
-    if "[run]" in output and "read_file" in output:
+    if "[run]" in output and "str_replace_editor" in output:
         print("  PASS: read-only tool executed (auto-approved)")
         return True
     else:
@@ -179,7 +179,7 @@ def test_deny_via_tty():
         enable_tools=True,
         approve=False)
     output = stdout.decode() + stderr.decode()
-    if ("[run]" in output and "read_file" in output and
+    if ("[run]" in output and "str_replace_editor" in output and
             "Tool request" not in output):
         print("  PASS: read-only tool ran without a prompt (n ignored)")
         return True
