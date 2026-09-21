@@ -158,6 +158,22 @@ MUTANTS = [
          new="        while (0 && loc[0] == '.' &&\n"
              "               (loc[1] == '/' ||\n"
              "                (loc[1] == '.' && (loc[2] == '/' || loc[2] == '\\0')))) {\n"),
+
+    # ── request-serialization cache (src/agent/message.c) ───────────────────
+    dict(label="reasoning does not drop the request cache", area="message",
+         file="src/agent/message.c", gates=["agent"],
+         old="    free(msg->reasoning_content);\n"
+             "    msg->reasoning_content = copy;\n"
+             "    message_cache_drop(msg);\n",
+         new="    free(msg->reasoning_content);\n"
+             "    msg->reasoning_content = copy;\n"),
+    dict(label="new tool_call does not drop the request cache", area="message",
+         file="src/agent/message.c", gates=["agent"],
+         old="        msg->tool_call_count++;\n"
+             "    }\n"
+             "    message_cache_drop(msg);\n",
+         new="        msg->tool_call_count++;\n"
+             "    }\n"),
 ]
 
 

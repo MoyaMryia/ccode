@@ -5486,6 +5486,175 @@ static int test_streamed_tool_call_arguments_single_escape(void) {
     return 1;
 }
 
+/* The serializer caches each message's JSON object and token share. Reuse is
+ * invisible in the bytes, but a mutator that forgot to invalidate would emit a
+ * stale object -- so build a request first, mutate afterwards, and compare
+ * against a conversation that was never serialized before the mutation. */
+static int test_request_cache_invalidated_by_mutators(void) {
+    struct ccode_conversation conv, ref;
+    char *req, *expected;
+    const char *fragment_before;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, "sys") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "go") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "answer") == 0);
+
+    /* The first build fills the cache; a second build reuses it verbatim. */
+    req = ccode_conversation_build_request(&conv, "m", NULL, 0, NULL);
+    ASSERT(req != NULL);
+    fragment_before = conv.messages[2].request_json;
+    ASSERT(fragment_before != NULL);
+    {
+        char *again = ccode_conversation_build_request(&conv, "m", NULL, 0,
+                                                       NULL);
+        ASSERT(again != NULL);
+        ASSERT(strcmp(again, req) == 0);
+        ASSERT(conv.messages[2].request_json == fragment_before);
+        free(again);
+    }
+    free(req);
+
+    /* reasoning_content arrives after the turn was already serialized. */
+    ASSERT(ccode_conversation_set_reasoning(&conv, "step \"one\"") == 0);
+    ASSERT(conv.messages[2].request_json == NULL); /* dropped, not stale */
+    req = ccode_conversation_build_request(&conv, "m", NULL, 0, NULL);
+    ASSERT(req != NULL);
+    ASSERT(strstr(req, "\"reasoning_content\":\"step \\\"one\\\"\"") != NULL);
+    free(req);
+
+    /* tool_calls likewise. */
+    ASSERT(ccode_conversation_add_tool_call(&conv, "call_1", "bash",
+                                            "{\"command\":\"ls\"}") == 0);
+    ASSERT(conv.messages[2].request_json == NULL);
+    req = ccode_conversation_build_request(&conv, "m", NULL, 0, NULL);
+    ASSERT(req != NULL);
+    ASSERT(strstr(req, "\"tool_calls\":[") != NULL);
+
+    /* The same conversation built in a single pass, with no cache in play,
+     * must produce the byte-identical body. */
+    ASSERT(ccode_conversation_init(&ref, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&ref, CCODE_ROLE_SYSTEM, "sys") == 0);
+    ASSERT(ccode_conversation_add(&ref, CCODE_ROLE_USER, "go") == 0);
+    ASSERT(ccode_conversation_add(&ref, CCODE_ROLE_ASSISTANT, "answer") == 0);
+    ASSERT(ccode_conversation_set_reasoning(&ref, "step \"one\"") == 0);
+    ASSERT(ccode_conversation_add_tool_call(&ref, "call_1", "bash",
+                                            "{\"command\":\"ls\"}") == 0);
+    expected = ccode_conversation_build_request(&ref, "m", NULL, 0, NULL);
+    ASSERT(expected != NULL);
+    ASSERT(strcmp(req, expected) == 0);
+    free(expected);
+    free(req);
+
+    ccode_conversation_destroy(&ref);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
+/* The per-message token share is cached too, so it must track every mutation
+ * and stay equal to what the uncached estimator used to sum. */
+static int test_estimate_tokens_tracks_mutations(void) {
+    struct ccode_conversation conv;
+    size_t before, after;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT, "answer") == 0);
+    before = ccode_conversation_estimate_tokens(&conv, NULL);
+    ASSERT(before == 4 + ccode_estimate_text_tokens("answer"));
+
+    ASSERT(ccode_conversation_set_reasoning(&conv, "thought") == 0);
+    after = ccode_conversation_estimate_tokens(&conv, NULL);
+    ASSERT(after == before + ccode_estimate_text_tokens("thought"));
+
+    ASSERT(ccode_conversation_add_tool_call(&conv, "call_1", "bash", "{}") == 0);
+    after = ccode_conversation_estimate_tokens(&conv, NULL);
+    ASSERT(after == before + ccode_estimate_text_tokens("thought") + 4 +
+                     ccode_estimate_text_tokens("bash") +
+                     ccode_estimate_text_tokens("{}"));
+
+    ASSERT(ccode_conversation_add_tool_result(&conv, "call_1", "ok") == 0);
+    after = ccode_conversation_estimate_tokens(&conv, NULL);
+    ASSERT(after == before + ccode_estimate_text_tokens("thought") + 4 +
+                     ccode_estimate_text_tokens("bash") +
+                     ccode_estimate_text_tokens("{}") + 4 +
+                     ccode_estimate_text_tokens("ok") +
+                     ccode_estimate_text_tokens("call_1"));
+
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
+/* Archived-result metadata is local bookkeeping: setting it must neither
+ * change the serialized bytes nor drop the cache. */
+static int test_result_blob_keeps_request_cache(void) {
+    struct ccode_conversation conv;
+    char *req1, *req2;
+    const char *fragment;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add_tool_result(&conv, "call_1",
+                                              "{\"ok\":true}") == 0);
+    req1 = ccode_conversation_build_request(&conv, "m", NULL, 0, NULL);
+    ASSERT(req1 != NULL);
+    fragment = conv.messages[0].request_json;
+    ASSERT(fragment != NULL);
+
+    ASSERT(ccode_conversation_set_result_blob(&conv, "blob-aaa", 12345) == 0);
+    ASSERT(ccode_conversation_set_result_blob_err(&conv, "blob-bbb", 67) == 0);
+    ASSERT(conv.messages[0].request_json == fragment);
+
+    req2 = ccode_conversation_build_request(&conv, "m", NULL, 0, NULL);
+    ASSERT(req2 != NULL);
+    ASSERT(strcmp(req1, req2) == 0);
+    ASSERT(strstr(req2, "blob-aaa") == NULL);
+    ASSERT(strstr(req2, "blob-bbb") == NULL);
+
+    free(req2);
+    free(req1);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
+/* Compaction drops some cached fragments and memmoves the rest, so a warm
+ * cache must survive it without emitting a dropped message or a stale one. */
+static int test_compaction_after_request_build(void) {
+    struct ccode_conversation conv;
+    char *req;
+    int i;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_SYSTEM, "sys") == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "go") == 0);
+    for (i = 0; i < 6; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "call_%d", i);
+        ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_ASSISTANT,
+                                      "thinking") == 0);
+        ASSERT(ccode_conversation_add_tool_call(&conv, name, "bash",
+                                                "{\"command\":\"true\"}") == 0);
+        ASSERT(ccode_conversation_add_tool_result(&conv, name,
+                                                  "{\"ok\":true}") == 0);
+    }
+    ASSERT(conv.count == 14);
+
+    req = ccode_conversation_build_request(&conv, "m", NULL, 0, NULL);
+    ASSERT(req != NULL);
+    free(req);
+
+    ccode_conversation_compact(&conv, NULL, NULL);
+    ASSERT(conv.count == 11);
+
+    req = ccode_conversation_build_request(&conv, "m", NULL, 0, NULL);
+    ASSERT(req != NULL);
+    ASSERT(strstr(req, "[compacted") != NULL);
+    ASSERT(strstr(req, "call_5") != NULL);  /* the kept tail is intact */
+    ASSERT(strstr(req, "call_0") == NULL);  /* the dropped middle is gone */
+    free(req);
+
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
 /* CCODE_SESSION_KEEP_COUNT: only the N most recent sessions survive a save. */
 static int test_session_prune_keep_count(void) {
     char dir[512];
@@ -5914,6 +6083,10 @@ int main(int argc, char **argv) {
     TEST(build_request_thinking_switch);
     TEST(request_prefix_stable_across_turns);
     TEST(streamed_tool_call_arguments_single_escape);
+    TEST(request_cache_invalidated_by_mutators);
+    TEST(estimate_tokens_tracks_mutations);
+    TEST(result_blob_keeps_request_cache);
+    TEST(compaction_after_request_build);
     TEST(session_prune_keep_count);
 
     fprintf(stderr, "\n=== Results: %d tests, %d failed ===\n",

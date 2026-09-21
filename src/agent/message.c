@@ -21,6 +21,19 @@
  * session directory on first write. */
 int mkdir_p(const char *path);
 static void remove_results_dir(const char *dir, const char *name);
+/* Releases every owned field of one message, including the derived request
+ * cache. Defined after the request serializer; used here so destroy() and
+ * compaction() cannot drift apart. */
+static void ccode_message_cleanup(struct ccode_message *msg);
+
+/* Invalidate the derived request artifacts of one message. Called by every
+ * mutator; the next request build (or token estimate) refills them. */
+static void message_cache_drop(struct ccode_message *msg) {
+    free(msg->request_json);
+    msg->request_json = NULL;
+    msg->request_json_len = 0;
+    msg->request_tokens = 0;
+}
 
 int ccode_conversation_init(struct ccode_conversation *conv, size_t capacity) {
     size_t initial;
@@ -36,20 +49,9 @@ int ccode_conversation_init(struct ccode_conversation *conv, size_t capacity) {
 }
 
 void ccode_conversation_destroy(struct ccode_conversation *conv) {
-    size_t i, j;
-    for (i = 0; i < conv->count; i++) {
-        free(conv->messages[i].content);
-        free(conv->messages[i].reasoning_content);
-        free(conv->messages[i].result_blob);
-        free(conv->messages[i].result_blob_err);
-        for (j = 0; j < conv->messages[i].tool_call_count; j++) {
-            free(conv->messages[i].tool_calls[j].id);
-            free(conv->messages[i].tool_calls[j].name);
-            free(conv->messages[i].tool_calls[j].arguments);
-        }
-        free(conv->messages[i].tool_calls);
-        free(conv->messages[i].tool_call_id);
-    }
+    size_t i;
+    for (i = 0; i < conv->count; i++)
+        ccode_message_cleanup(&conv->messages[i]);
     free(conv->messages);
     conv->messages = NULL;
     conv->count = 0;
@@ -119,6 +121,7 @@ int ccode_conversation_set_reasoning(struct ccode_conversation *conv,
     }
     free(msg->reasoning_content);
     msg->reasoning_content = copy;
+    message_cache_drop(msg);
     return 0;
 }
 
@@ -138,6 +141,8 @@ int ccode_conversation_set_result_blob(struct ccode_conversation *conv,
     free(msg->result_blob);
     msg->result_blob = copy;
     msg->result_total_bytes = total_bytes;
+    /* No request-cache invalidation: the archive reference and byte counts are
+     * local metadata and are never serialized into a request. */
     return 0;
 }
 
@@ -158,6 +163,7 @@ int ccode_conversation_set_result_blob_err(struct ccode_conversation *conv,
     free(msg->result_blob_err);
     msg->result_blob_err = copy;
     msg->result_err_total_bytes = total_bytes;
+    /* Local metadata only; see set_result_blob. */
     return 0;
 }
 
@@ -199,6 +205,7 @@ int ccode_conversation_add_tool_call(struct ccode_conversation *conv,
         tc->arguments = args_copy;
         msg->tool_call_count++;
     }
+    message_cache_drop(msg);
     return 0;
 
 fail:
@@ -299,57 +306,159 @@ size_t ccode_estimate_text_tokens(const char *text) {
     return (x10 + 9) / 10;
 }
 
+/* This message's share of the request token estimate: framing overhead plus
+ * every text body the serializer emits. Pure, so the cached value in
+ * request_tokens is just this function's result for an unchanged message. */
+static size_t message_token_estimate(const struct ccode_message *msg) {
+    size_t tokens = 4; /* role + JSON framing */
+    size_t j;
+
+    if (msg->content)
+        tokens += ccode_estimate_text_tokens(msg->content);
+    if (msg->reasoning_content)
+        tokens += ccode_estimate_text_tokens(msg->reasoning_content);
+    if (msg->tool_call_id)
+        tokens += ccode_estimate_text_tokens(msg->tool_call_id);
+    for (j = 0; j < msg->tool_call_count; j++) {
+        tokens += 4;
+        if (msg->tool_calls[j].name)
+            tokens += ccode_estimate_text_tokens(msg->tool_calls[j].name);
+        if (msg->tool_calls[j].arguments)
+            tokens += ccode_estimate_text_tokens(msg->tool_calls[j].arguments);
+    }
+    return tokens;
+}
+
+/* Build one message's request object and token share if they are not cached
+ * yet. The emitted bytes are exactly what the old inline serializer produced:
+ * the object is complete from '{' to '}', without the separating comma (the
+ * builder adds that). Returns 0 on success, -1 on allocation failure -- in
+ * which case the cache stays empty and the next call retries. */
+static int message_cache_fill(struct ccode_message *msg) {
+    struct ccode_buf b;
+    char *escaped = NULL;
+    size_t j;
+
+    if (msg->request_json) return 0;
+
+    ccode_buf_init(&b);
+    if (ccode_buf_append(&b, "{\"role\":\"") != 0) goto fail;
+    if (ccode_buf_append(&b, role_str(msg->role)) != 0) goto fail;
+
+    {
+        /* OpenAI/DeepSeek require the content field to be present on
+         * user/tool messages (even when null). An assistant message with
+         * no text is sent as content:null - both when the model produced
+         * no content (NULL) and after a session round-trip normalized it
+         * to "" - so live and resumed requests stay byte-identical and
+         * upstream prefix caching is not broken. */
+        const char *content_value = msg->content;
+        int content_is_null = content_value == NULL ||
+            (msg->role == CCODE_ROLE_ASSISTANT && content_value[0] == '\0');
+        if (!content_is_null) {
+            if (ccode_buf_append(&b, "\",\"content\":\"") != 0) goto fail;
+            escaped = ccode_json_escape(content_value);
+            if (!escaped) goto fail;
+            if (ccode_buf_append(&b, escaped) != 0) goto fail;
+            free(escaped);
+            escaped = NULL;
+            if (ccode_buf_append(&b, "\"") != 0) goto fail;
+        } else {
+            if (ccode_buf_append(&b, "\",\"content\":null") != 0) goto fail;
+        }
+    }
+
+    if (msg->role == CCODE_ROLE_ASSISTANT && msg->reasoning_content) {
+        /* Echo the chain-of-thought exactly as received: DeepSeek thinking
+         * mode requires it on every historical assistant turn when the
+         * request carries tools, and upstream context caching keys on the
+         * same bytes. */
+        if (ccode_buf_append(&b, ",\"reasoning_content\":\"") != 0) goto fail;
+        escaped = ccode_json_escape(msg->reasoning_content);
+        if (!escaped) goto fail;
+        if (ccode_buf_append(&b, escaped) != 0) goto fail;
+        free(escaped);
+        escaped = NULL;
+        if (ccode_buf_append(&b, "\"") != 0) goto fail;
+    }
+
+    if (msg->tool_call_count > 0) {
+        if (ccode_buf_append(&b, ",\"tool_calls\":[") != 0) goto fail;
+        for (j = 0; j < msg->tool_call_count; j++) {
+            struct ccode_tool_call *tc = &msg->tool_calls[j];
+            const char *args;
+            if (j > 0 && ccode_buf_append(&b, ",") != 0) goto fail;
+            if (ccode_buf_append(&b, "{\"id\":\"") != 0) goto fail;
+            /* A NULL sub-field serializes as empty, matching the historical
+             * `if (escaped) append` shape. */
+            escaped = ccode_json_escape(tc->id);
+            if (escaped) {
+                if (ccode_buf_append(&b, escaped) != 0) goto fail;
+                free(escaped);
+                escaped = NULL;
+            }
+            if (ccode_buf_append(&b,
+                    "\",\"type\":\"function\",\"function\":{\"name\":\"") != 0)
+                goto fail;
+            escaped = ccode_json_escape(tc->name);
+            if (escaped) {
+                if (ccode_buf_append(&b, escaped) != 0) goto fail;
+                free(escaped);
+                escaped = NULL;
+            }
+            if (ccode_buf_append(&b, "\",\"arguments\":\"") != 0) goto fail;
+            args = tc->arguments ? tc->arguments : "{}";
+            escaped = ccode_json_escape(args);
+            if (escaped) {
+                if (ccode_buf_append(&b, escaped) != 0) goto fail;
+                free(escaped);
+                escaped = NULL;
+            }
+            if (ccode_buf_append(&b, "\"}}") != 0) goto fail;
+        }
+        if (ccode_buf_append(&b, "]") != 0) goto fail;
+    }
+
+    if (msg->tool_call_id) {
+        if (ccode_buf_append(&b, ",\"tool_call_id\":\"") != 0) goto fail;
+        escaped = ccode_json_escape(msg->tool_call_id);
+        if (escaped) {
+            if (ccode_buf_append(&b, escaped) != 0) goto fail;
+            free(escaped);
+            escaped = NULL;
+        }
+        if (ccode_buf_append(&b, "\"") != 0) goto fail;
+    }
+
+    if (ccode_buf_append(&b, "}") != 0) goto fail;
+
+    msg->request_json_len = b.len;
+    msg->request_json = ccode_buf_detach(&b);
+    msg->request_tokens = message_token_estimate(msg);
+    return 0;
+
+fail:
+    free(escaped);
+    ccode_buf_free(&b);
+    return -1;
+}
+
 /* Rough token estimate for the whole request: message/tool-call framing
  * overhead plus the text and tool-schema bodies. Used to decide when to
- * compact (ccode has no tokenizer; this is an estimate only). */
-size_t ccode_conversation_estimate_tokens(const struct ccode_conversation *conv,
+ * compact (ccode has no tokenizer; this is an estimate only). Per-message
+ * text is cached, so a turn costs one integer add per message plus the tool
+ * schema scan. */
+size_t ccode_conversation_estimate_tokens(struct ccode_conversation *conv,
                                           const char *tools_json) {
     size_t total = 0;
-    size_t i, j;
+    size_t i;
     if (!conv) return 0;
     if (tools_json) total += ccode_estimate_text_tokens(tools_json);
     for (i = 0; i < conv->count; i++) {
-        total += 4; /* role + JSON framing */
-        if (conv->messages[i].content)
-            total += ccode_estimate_text_tokens(conv->messages[i].content);
-        if (conv->messages[i].reasoning_content)
-            total += ccode_estimate_text_tokens(
-                conv->messages[i].reasoning_content);
-        if (conv->messages[i].tool_call_id)
-            total += ccode_estimate_text_tokens(conv->messages[i].tool_call_id);
-        for (j = 0; j < conv->messages[i].tool_call_count; j++) {
-            total += 4;
-            if (conv->messages[i].tool_calls[j].name)
-                total += ccode_estimate_text_tokens(
-                    conv->messages[i].tool_calls[j].name);
-            if (conv->messages[i].tool_calls[j].arguments)
-                total += ccode_estimate_text_tokens(
-                    conv->messages[i].tool_calls[j].arguments);
-        }
-    }
-    return total;
-}
-
-static size_t estimate_request_size(struct ccode_conversation *conv,
-                                    const char *model) {    size_t total = strlen(model) + 100;
-    size_t i, j;
-    for (i = 0; i < conv->count; i++) {
-        total += 100;
-        if (conv->messages[i].content)
-            total += strlen(conv->messages[i].content) * 2 + 10;
-        if (conv->messages[i].reasoning_content)
-            total += strlen(conv->messages[i].reasoning_content) * 2 + 30;
-        for (j = 0; j < conv->messages[i].tool_call_count; j++) {
-            total += 200;
-            if (conv->messages[i].tool_calls[j].id)
-                total += strlen(conv->messages[i].tool_calls[j].id);
-            if (conv->messages[i].tool_calls[j].name)
-                total += strlen(conv->messages[i].tool_calls[j].name);
-            if (conv->messages[i].tool_calls[j].arguments)
-                total += strlen(conv->messages[i].tool_calls[j].arguments);
-        }
-        if (conv->messages[i].tool_call_id)
-            total += strlen(conv->messages[i].tool_call_id) * 2 + 50;
+        if (message_cache_fill(&conv->messages[i]) == 0)
+            total += conv->messages[i].request_tokens;
+        else /* Out of memory: fall back to the uncached computation. */
+            total += message_token_estimate(&conv->messages[i]);
     }
     return total;
 }
@@ -359,32 +468,51 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
                                        const char *tools_json,
                                        int thinking_enabled,
                                        const char *thinking_effort) {
-    char *escaped;
-    size_t cap = estimate_request_size(conv, model);
-    size_t pos = 0;
-    char *buf = malloc(cap);
+    struct ccode_buf out;
+    const char *model_text = model ? model : "";
+    const char *tools_text = tools_json ? tools_json : "";
+    const char *effort_text = thinking_effort ? thinking_effort : "";
+    char *escaped = NULL;
+    size_t reserve;
     size_t i, j;
     const struct ccode_message *open_assistant = NULL;
     int first_emitted = 1;
 
-    if (!buf) return NULL;
-    buf[0] = '\0';
+    /* Fill whatever is stale, then size the output from the cached fragment
+     * lengths: one integer add per message, and no text is re-scanned. The
+     * reserve is an upper bound rather than a guess, but ccode_buf still grows
+     * if it ever falls short, so a bad bound cannot corrupt the body. */
+    reserve = strlen(model_text) * 6 + strlen(tools_text) + strlen(effort_text)
+              + 128;
+    for (i = 0; i < conv->count; i++) {
+        if (message_cache_fill(&conv->messages[i]) != 0) return NULL;
+        reserve += conv->messages[i].request_json_len + 1; /* fragment + ',' */
+    }
 
-    if (ccode_append_cstr(&buf, &pos, &cap, "{\"model\":\"") != 0) goto fail;
+    ccode_buf_init(&out);
+    if (ccode_buf_reserve(&out, reserve) != 0) return NULL;
+
+    if (ccode_buf_append(&out, "{\"model\":\"") != 0) goto fail;
     escaped = ccode_json_escape(model);
-    if (escaped) { ccode_append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
-    if (ccode_append_cstr(&buf, &pos, &cap, "\",\"messages\":[") != 0) goto fail;
+    if (escaped) {
+        if (ccode_buf_append(&out, escaped) != 0) goto fail;
+        free(escaped);
+        escaped = NULL;
+    }
+    if (ccode_buf_append(&out, "\",\"messages\":[") != 0) goto fail;
 
     for (i = 0; i < conv->count; i++) {
-        /* Skip an orphan tool message: its tool_call_id must answer the last         * emitted assistant tool_calls. Providers reject orphans with HTTP
+        const struct ccode_message *m = &conv->messages[i];
+        /* Skip an orphan tool message: its tool_call_id must answer the last
+         * emitted assistant tool_calls. Providers reject orphans with HTTP
          * 400, and an older compaction bug could leave them in a session. */
-        if (conv->messages[i].role == CCODE_ROLE_TOOL) {
+        if (m->role == CCODE_ROLE_TOOL) {
             int answered = 0;
             if (open_assistant) {
                 for (j = 0; j < open_assistant->tool_call_count; j++) {
-                    if (conv->messages[i].tool_call_id &&
+                    if (m->tool_call_id &&
                         open_assistant->tool_calls[j].id &&
-                        strcmp(conv->messages[i].tool_call_id,
+                        strcmp(m->tool_call_id,
                                open_assistant->tool_calls[j].id) == 0) {
                         answered = 1;
                         break;
@@ -392,107 +520,23 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
                 }
             }
             if (!answered) continue;
-        } else if (conv->messages[i].role == CCODE_ROLE_ASSISTANT) {
-            open_assistant = conv->messages[i].tool_call_count > 0
-                             ? &conv->messages[i] : NULL;
+        } else if (m->role == CCODE_ROLE_ASSISTANT) {
+            open_assistant = m->tool_call_count > 0 ? m : NULL;
         } else {
             open_assistant = NULL;
         }
-        if (!first_emitted && ccode_append_cstr(&buf, &pos, &cap, ",") != 0)
-            goto fail;
+        if (!first_emitted && ccode_buf_append(&out, ",") != 0) goto fail;
         first_emitted = 0;
-        if (ccode_append_cstr(&buf, &pos, &cap, "{\"role\":\"") != 0) goto fail;
-        if (ccode_append_cstr(&buf, &pos, &cap, role_str(conv->messages[i].role)) != 0)
+        if (ccode_buf_append_n(&out, m->request_json,
+                               m->request_json_len) != 0)
             goto fail;
-
-        {
-            /* OpenAI/DeepSeek require the content field to be present on
-             * user/tool messages (even when null). An assistant message with
-             * no text is sent as content:null - both when the model produced
-             * no content (NULL) and after a session round-trip normalized it
-             * to "" - so live and resumed requests stay byte-identical and
-             * upstream prefix caching is not broken. */
-            const char *content_value = conv->messages[i].content;
-            int content_is_null = content_value == NULL ||
-                (conv->messages[i].role == CCODE_ROLE_ASSISTANT &&
-                 content_value[0] == '\0');
-            if (!content_is_null) {
-                if (ccode_append_cstr(&buf, &pos, &cap, "\",\"content\":\"") != 0)
-                    goto fail;
-                escaped = ccode_json_escape(content_value);
-                if (!escaped) goto fail;
-                if (ccode_append_cstr(&buf, &pos, &cap, escaped) != 0) {
-                    free(escaped);
-                    goto fail;
-                }
-                free(escaped);
-                if (ccode_append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
-            } else {
-                if (ccode_append_cstr(&buf, &pos, &cap, "\",\"content\":null") != 0)
-                    goto fail;
-            }
-        }
-
-        if (conv->messages[i].role == CCODE_ROLE_ASSISTANT &&
-            conv->messages[i].reasoning_content) {
-            /* Echo the chain-of-thought exactly as received: DeepSeek thinking
-             * mode requires it on every historical assistant turn when the
-             * request carries tools, and upstream context caching keys on the
-             * same bytes. */
-            if (ccode_append_cstr(&buf, &pos, &cap,
-                                  ",\"reasoning_content\":\"") != 0)
-                goto fail;
-            escaped = ccode_json_escape(conv->messages[i].reasoning_content);
-            if (!escaped) goto fail;
-            if (ccode_append_cstr(&buf, &pos, &cap, escaped) != 0) {
-                free(escaped);
-                goto fail;
-            }
-            free(escaped);
-            if (ccode_append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
-        }
-
-        if (conv->messages[i].tool_call_count > 0) {
-            if (ccode_append_cstr(&buf, &pos, &cap, ",\"tool_calls\":[") != 0) goto fail;
-            for (j = 0; j < conv->messages[i].tool_call_count; j++) {
-                struct ccode_tool_call *tc = &conv->messages[i].tool_calls[j];
-                if (j > 0 && ccode_append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
-                if (ccode_append_cstr(&buf, &pos, &cap,
-                        "{\"id\":\"") != 0) goto fail;
-                escaped = ccode_json_escape(tc->id);
-                if (escaped) { ccode_append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
-                if (ccode_append_cstr(&buf, &pos, &cap,
-                        "\",\"type\":\"function\",\"function\":{\"name\":\"") != 0)
-                    goto fail;
-                escaped = ccode_json_escape(tc->name);
-                if (escaped) { ccode_append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
-                if (ccode_append_cstr(&buf, &pos, &cap,
-                        "\",\"arguments\":\"") != 0) goto fail;
-                {
-                    const char *                    args = tc->arguments ? tc->arguments : "{}";
-                    escaped = ccode_json_escape(args);
-                    if (escaped) { ccode_append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
-                }
-                if (ccode_append_cstr(&buf, &pos, &cap, "\"}}") != 0) goto fail;
-            }
-            if (ccode_append_cstr(&buf, &pos, &cap, "]") != 0) goto fail;
-        }
-
-        if (conv->messages[i].tool_call_id) {
-            if (ccode_append_cstr(&buf, &pos, &cap, ",\"tool_call_id\":\"") != 0) goto fail;
-            escaped = ccode_json_escape(conv->messages[i].tool_call_id);
-            if (escaped) { ccode_append_cstr(&buf, &pos, &cap, escaped); free(escaped); }
-            if (ccode_append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
-        }
-
-        if (ccode_append_cstr(&buf, &pos, &cap, "}") != 0) goto fail;
     }
 
-    if (ccode_append_cstr(&buf, &pos, &cap, "]") != 0) goto fail;
+    if (ccode_buf_append(&out, "]") != 0) goto fail;
 
     if (tools_json && tools_json[0] != '\0') {
-        if (ccode_append_cstr(&buf, &pos, &cap, ",") != 0) goto fail;
-        if (ccode_append_cstr(&buf, &pos, &cap, tools_json) != 0) goto fail;
+        if (ccode_buf_append(&out, ",") != 0) goto fail;
+        if (ccode_buf_append(&out, tools_json) != 0) goto fail;
     }
 
     /* The thinking switch and the effort knob are independent fields:
@@ -501,22 +545,22 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
      * that always reason (e.g. Kimi K3) can be driven by effort alone,
      * and nothing is sent when both are off. */
     if (thinking_enabled) {
-        if (ccode_append_cstr(&buf, &pos, &cap,
+        if (ccode_buf_append(&out,
                         ",\"thinking\":{\"type\":\"enabled\"}") != 0)
             goto fail;
     }
     if (thinking_effort) {
-        if (ccode_append_cstr(&buf, &pos, &cap, ",\"reasoning_effort\":\"") != 0)
-            goto fail;
-        if (ccode_append_cstr(&buf, &pos, &cap, thinking_effort) != 0) goto fail;
-        if (ccode_append_cstr(&buf, &pos, &cap, "\"") != 0) goto fail;
+        if (ccode_buf_append(&out, ",\"reasoning_effort\":\"") != 0) goto fail;
+        if (ccode_buf_append(&out, thinking_effort) != 0) goto fail;
+        if (ccode_buf_append(&out, "\"") != 0) goto fail;
     }
 
-    if (ccode_append_cstr(&buf, &pos, &cap, ",\"stream\":true}") != 0) goto fail;
-    return buf;
+    if (ccode_buf_append(&out, ",\"stream\":true}") != 0) goto fail;
+    return ccode_buf_detach(&out);
 
 fail:
-    free(buf);
+    free(escaped);
+    ccode_buf_free(&out);
     return NULL;
 }
 
@@ -533,6 +577,7 @@ static void ccode_message_cleanup(struct ccode_message *msg) {
     }
     free(msg->tool_calls);
     free(msg->tool_call_id);
+    message_cache_drop(msg);
 }
 
 /* Scan a JSON tool result body for denial/truncation/error markers.

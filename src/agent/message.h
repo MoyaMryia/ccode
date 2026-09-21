@@ -50,6 +50,16 @@ struct ccode_message {
      * stderr preview was complete. */
     char *result_blob_err;
     size_t result_err_total_bytes;
+    /* Derived request artifacts: the exact `{"role":...,...}` JSON object this
+     * message contributes to a request body, and this message's share of the
+     * request token estimate. Both are pure functions of the fields above, so
+     * they are computed once and reused. A NULL request_json means "stale";
+     * every function that can change the fields above drops the cache. Keeping
+     * them here is what stops a long run from re-escaping the whole history
+     * into every request (quadratic in the turn count). */
+    char *request_json;
+    size_t request_json_len;
+    size_t request_tokens;
 };
 
 struct ccode_conversation {
@@ -115,9 +125,12 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
 
 /* Rough token estimate (no tokenizer): DeepSeek's published ratio of
  * ~0.3 token per English char and ~0.6 per non-ASCII char, plus per-message
- * framing overhead. Used to decide when to compact. */
+ * framing overhead. Used to decide when to compact.
+ *
+ * The conversation variant may populate the per-message estimate cache, so it
+ * takes a non-const conversation; the result is unaffected. */
 size_t ccode_estimate_text_tokens(const char *text);
-size_t ccode_conversation_estimate_tokens(const struct ccode_conversation *conv,
+size_t ccode_conversation_estimate_tokens(struct ccode_conversation *conv,
                                           const char *tools_json);
 
 void ccode_conversation_compact(struct ccode_conversation *conv,
