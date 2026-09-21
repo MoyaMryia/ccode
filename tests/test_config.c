@@ -41,6 +41,9 @@ static void base_env(void) {
     set_env("CCODE_MODEL", "test-model");
     set_env("CCODE_MAX_TURNS", NULL);
     set_env("CCODE_CONTEXT_TOKENS", NULL);
+    set_env("CCODE_MINIMAL", NULL);
+    set_env("CCODE_READ_ONLY_TOOLS", NULL);
+    set_env("CCODE_WRITE_TOOLS", NULL);
 }
 
 static int test_default_is_50(void) {
@@ -130,6 +133,55 @@ static int test_missing_value_rejected(void) {
     return 1;
 }
 
+/* --minimal enables the write tools (it is a composition, not a permission
+ * level), so an explicit read-only request must be rejected instead of silently
+ * handing back a writable agent. The read-only *default* must not trip it. */
+static int test_minimal_read_only_conflict(void) {
+    struct ccode_config config;
+    char *no_flags[] = {(char *)"ccode-cli", NULL};
+    char *flag_minimal[] = {(char *)"ccode-cli", (char *)"--minimal", NULL};
+    char *minimal_ro[] = {(char *)"ccode-cli", (char *)"--minimal",
+                          (char *)"--read-only", NULL};
+    char *ro_minimal[] = {(char *)"ccode-cli", (char *)"--read-only",
+                          (char *)"--minimal", NULL};
+    char *minimal_write[] = {(char *)"ccode-cli", (char *)"--minimal",
+                             (char *)"--write", NULL};
+    char *ro_only[] = {(char *)"ccode-cli", (char *)"--read-only", NULL};
+
+    /* Both flag orders are rejected. */
+    base_env();
+    ASSERT(ccode_parse_args(3, minimal_ro, &config) == -1);
+    ASSERT(ccode_parse_args(3, ro_minimal, &config) == -1);
+
+    /* An explicit env read-only request conflicts with --minimal too. */
+    base_env();
+    set_env("CCODE_READ_ONLY_TOOLS", "1");
+    ASSERT(ccode_parse_args(2, flag_minimal, &config) == -1);
+
+    /* CCODE_MINIMAL=1 plus --read-only is the same conflict. */
+    base_env();
+    set_env("CCODE_MINIMAL", "1");
+    ASSERT(ccode_parse_args(2, ro_only, &config) == -1);
+
+    /* The safe default (read_only_tools is 1 unless disabled) must not trip
+     * it: bare --minimal still parses and is write-enabled. */
+    base_env();
+    ASSERT(ccode_parse_args(1, no_flags, &config) == 0);
+    ASSERT(config.minimal_mode == 0);
+    ASSERT(config.read_only_tools == 1);
+    ASSERT(ccode_parse_args(2, flag_minimal, &config) == 0);
+    ASSERT(config.minimal_mode == 1);
+    ASSERT(config.tools_enabled == 1);
+
+    /* --write alongside --minimal and --read-only alone stay legal. */
+    base_env();
+    ASSERT(ccode_parse_args(3, minimal_write, &config) == 0);
+    base_env();
+    ASSERT(ccode_parse_args(2, ro_only, &config) == 0);
+    ASSERT(config.read_only_tools == 1);
+    return 1;
+}
+
 int main(void) {
     fprintf(stderr, "config tests:\n");
     TEST(default_is_50);
@@ -140,6 +192,7 @@ int main(void) {
     TEST(bad_env_keeps_default);
     TEST(bad_flag_rejected);
     TEST(missing_value_rejected);
+    TEST(minimal_read_only_conflict);
     fprintf(stderr, "%d tests, %d failures\n", tests_run, tests_failed);
     return tests_failed ? 1 : 0;
 }

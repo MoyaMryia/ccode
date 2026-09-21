@@ -117,7 +117,12 @@ Minimal mode in the spirit of deepseek-harness's \fBminimal\fR agent
 preset: a fixed one-sentence system prompt and exactly two tools,
 str_replace_editor and bash. Per-turn change-log/task summaries are not
 injected into the conversation. Implies
-.BR \-\-write .
+.BR \-\-write ;
+combining it with
+.B \-\-read-only
+(or
+.BR CCODE_READ_ONLY_TOOLS=1 )
+is rejected, because minimal is a write-enabled composition.
 .TP
 .B \-\-default
 Fast start: interactive REPL plus read/write tools plus thinking

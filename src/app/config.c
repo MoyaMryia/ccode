@@ -219,6 +219,11 @@ static const struct ccode_option ccode_options[] = {
 
 int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
     int i;
+    /* Set only when read-only was asked for explicitly (--read-only or a
+     * non-"0" CCODE_READ_ONLY_TOOLS). The field itself defaults to 1, so it
+     * cannot tell "safe default" from "user asked", and --minimal must only
+     * reject the latter. */
+    int explicit_read_only = 0;
 
     memset(config, 0, sizeof(*config));
     /* Thinking and reasoning are on by default: send
@@ -283,7 +288,10 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
         const char *ro = getenv("CCODE_READ_ONLY_TOOLS");
         const char *wo = getenv("CCODE_WRITE_TOOLS");
         config->read_only_tools = 1;
-        if (ro && ro[0] == '0') config->read_only_tools = 0;
+        if (ro) {
+            if (ro[0] == '0') config->read_only_tools = 0;
+            else explicit_read_only = 1;
+        }
         config->tools_enabled = (wo && wo[0] == '1') ? 1 : 0;
     }
     {
@@ -376,6 +384,7 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
             ccode_print_usage(argv[0]);
             return -1;
         }
+        if (strcmp(argv[i], "--read-only") == 0) explicit_read_only = 1;
         if (opt->takes_value) value = argv[++i];
 
         rc = opt->apply(config, value);
@@ -384,6 +393,16 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
             return 1;
         }
         if (rc != 0) return -1;
+    }
+
+    /* --minimal enables the write tools (it is a composition, not a permission
+     * level), so combining it with an explicit read-only request would hand a
+     * writable agent to someone asking for the safe mode. Fail loudly. */
+    if (config->minimal_mode && explicit_read_only) {
+        fprintf(stderr,
+                "--minimal enables write tools; it cannot be combined with "
+                "--read-only / CCODE_READ_ONLY_TOOLS=1\n");
+        return -1;
     }
 
     if (!config->api_base || !config->api_key || !config->model) {
