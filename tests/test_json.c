@@ -41,6 +41,31 @@ static int test_json_escape(void) {
     e = ccode_json_escape("");
     ASSERT(e != NULL && e[0] == '\0');
     free(e);
+    /* Multibyte input: valid sequences pass through unchanged, and advancing
+     * by the sequence length must not disturb the remaining-length bound
+     * (escaping used to recompute strlen(input + i) per character). */
+    e = ccode_json_escape("\xe4\xb8\xad\xe6\x96\x87");   /* 中文 */
+    ASSERT(e != NULL && strcmp(e, "\xe4\xb8\xad\xe6\x96\x87") == 0);
+    free(e);
+    e = ccode_json_escape("\xe4\xb8\xad\"x");
+    ASSERT(e != NULL && strcmp(e, "\xe4\xb8\xad\\\"x") == 0);
+    free(e);
+    /* A sequence cut off by the end of the string is not emit-able as-is: each
+     * stray byte becomes U+FFFD, so no partial sequence reaches the wire. */
+    e = ccode_json_escape("\xe4\xb8");
+    ASSERT(e != NULL && strcmp(e, "\xef\xbf\xbd\xef\xbf\xbd") == 0);
+    free(e);
+    {
+        char *out = NULL;
+        size_t used = 0;
+        /* The budget stops before the second character; the output that was
+         * emitted stays valid UTF-8 and `used` counts whole characters. */
+        ASSERT(ccode_json_escape_bounded("\xe4\xb8\xad\xe6\x96\x87", 3,
+                                         &out, &used) == 1);
+        ASSERT(out != NULL && used == 3 &&
+               memcmp(out, "\xe4\xb8\xad", 3) == 0);
+        free(out);
+    }
     return 1;
 }
 

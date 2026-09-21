@@ -265,15 +265,21 @@ int ccode_utf8_seq_len(const unsigned char *s, size_t n) {
 char *ccode_json_escape(const char *input) {
     size_t i;
     size_t length = 0;
+    size_t input_len;
     char *output;
     char *cursor;
 
     if (!input) return NULL;
+    /* Measure once: ccode_utf8_seq_len only needs an upper bound on the bytes
+     * left, and recomputing it with strlen(input + i) inside the loop made
+     * escaping O(n^2) for any string with non-ASCII bytes (every CJK message
+     * in a request body). */
+    input_len = strlen(input);
     for (i = 0; input[i] != '\0'; ) {
         unsigned char c = (unsigned char)input[i];
         if (c >= 0x80) {
             int seq = ccode_utf8_seq_len(
-                (const unsigned char *)input + i, strlen(input + i));
+                (const unsigned char *)input + i, input_len - i);
             if (seq > 0) { length += (size_t)seq; i += (size_t)seq; }
             else { length += 3; i++; }
             continue;
@@ -289,7 +295,7 @@ char *ccode_json_escape(const char *input) {
         unsigned char c = (unsigned char)input[i];
         if (c >= 0x80) {
             int seq = ccode_utf8_seq_len(
-                (const unsigned char *)input + i, strlen(input + i));
+                (const unsigned char *)input + i, input_len - i);
             if (seq > 0) {
                 memcpy(cursor, input + i, (size_t)seq);
                 cursor += seq;
@@ -378,6 +384,7 @@ int ccode_json_escape_bounded(const char *input, size_t budget,
     size_t used = 0;
     size_t cap = 0;
     size_t pos = 0;
+    size_t input_len;
     char *output = NULL;
     int stopped = 0;
 
@@ -385,6 +392,9 @@ int ccode_json_escape_bounded(const char *input, size_t budget,
     if (used_out) *used_out = 0;
     if (!input || !output_out) return -1;
 
+    /* Same as ccode_json_escape: measure once, don't strlen the remainder per
+     * multibyte character. `budget` bounds the *output*, not the input. */
+    input_len = strlen(input);
     while (input[i] != '\0') {
         unsigned char c = (unsigned char)input[i];
         char one[2];
@@ -395,7 +405,7 @@ int ccode_json_escape_bounded(const char *input, size_t budget,
 
         if (c >= 0x80) {
             int seqlen = ccode_utf8_seq_len(
-                (const unsigned char *)input + i, strlen(input + i));
+                (const unsigned char *)input + i, input_len - i);
             if (seqlen > 0) {
                 need = (size_t)seqlen;
                 if (used + need > budget) { stopped = 1; break; }
