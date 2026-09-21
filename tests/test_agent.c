@@ -3545,6 +3545,37 @@ static int test_estimate_text_tokens(void) {
     return 1;
 }
 
+/* A multibyte sequence cut off by the end of the string must not walk past
+ * the terminator. The advance used to trust the lead byte's length, so a
+ * truncated sequence read (and counted) bytes past the string: undefined
+ * behaviour on an exact-sized heap copy, and a token estimate that changed
+ * with whatever happened to sit after it. */
+static int test_estimate_tokens_truncated_sequence_stays_in_bounds(void) {
+    struct ccode_conversation conv;
+    size_t one, two, three;
+
+    /* Heap copies of exactly the right size, so an over-read leaves the
+     * allocation instead of landing in a neighbouring literal. */
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "\xe4") == 0);
+    one = ccode_conversation_estimate_tokens(&conv, NULL);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "\xe4\xb8") == 0);
+    two = ccode_conversation_estimate_tokens(&conv, NULL);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER,
+                                  "\xf0\x9f\x98") == 0);
+    three = ccode_conversation_estimate_tokens(&conv, NULL);
+
+    /* 4 framing per message plus one non-ASCII character each: only the bytes
+     * that are really there are counted, and the walk always stops at the
+     * terminator. */
+    ASSERT(one == 4 + 1);
+    ASSERT(two == one + 4 + 1);
+    ASSERT(three == two + 4 + 1);
+
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
 static int test_estimate_conversation_tokens(void) {
     struct ccode_conversation conv;
     size_t a, b;
@@ -5798,6 +5829,7 @@ int main(int argc, char **argv) {
     TEST(compact_keeps_tool_call_pairs);
     TEST(build_request_skips_orphan_tools);
     TEST(estimate_text_tokens);
+    TEST(estimate_tokens_truncated_sequence_stays_in_bounds);
     TEST(estimate_conversation_tokens);
     TEST(conversation_grows_dynamically);
     TEST(conversation_hard_cap);

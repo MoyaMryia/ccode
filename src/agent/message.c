@@ -280,12 +280,20 @@ size_t ccode_estimate_text_tokens(const char *text) {
             p++;
         } else {
             size_t len;
+            size_t have = 1;
             if ((*p & 0xE0) == 0xC0) len = 2;
             else if ((*p & 0xF0) == 0xE0) len = 3;
             else if ((*p & 0xF8) == 0xF0) len = 4;
             else len = 1;
+            /* Never advance past the terminator. A multi-byte sequence cut off
+             * by the end of the string (a bounded tool result, a byte-budget
+             * cut) used to be trusted at its lead byte's length, which walked
+             * out of the buffer and counted whatever happened to follow it.
+             * Count the character once and consume only the bytes that are
+             * really there. */
+            while (have < len && p[have] != '\0') have++;
             x10 += 6;
-            p += len;
+            p += have;
         }
     }
     return (x10 + 9) / 10;
