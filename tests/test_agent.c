@@ -5182,7 +5182,35 @@ static int test_minimal_tools_json(void) {
     ASSERT(strstr(json, "\"delete_file\"") == NULL);
     ASSERT(strstr(json, "\"move_file\"") == NULL);
     ASSERT(strstr(json, "\"read_tool_output\"") == NULL);
+    /* The descriptions must not name it either: the model is told to narrow
+     * with bash instead of chasing an archive it cannot retrieve. */
+    ASSERT(strstr(json, "read_tool_output") == NULL);
+    ASSERT(strstr(json, "not retrievable") != NULL);
+    ASSERT(strstr(json, "sed -n") != NULL);
     free(json);
+    return 1;
+}
+
+/* Oversized reads/outputs must steer the model toward narrowing, and the
+ * archive/retrieval promise may only appear where read_tool_output is in the
+ * tool set (minimal drops it - see test_minimal_tools_json). */
+static int test_tool_descriptions_discourage_whole_reads(void) {
+    char *write = ccode_build_write_tools_json();
+    char *readonly = ccode_build_readonly_tools_json();
+    ASSERT(write != NULL);
+    ASSERT(readonly != NULL);
+    /* write / read-only keep the promise: read_tool_output is present there. */
+    ASSERT(strstr(write, "read_tool_output") != NULL);
+    ASSERT(strstr(readonly, "read_tool_output") != NULL);
+    /* Both steer away from whole-file views and whole-output dumps. */
+    ASSERT(strstr(write, "Do not read a large file whole") != NULL);
+    ASSERT(strstr(write, "Keep output bounded") != NULL);
+    ASSERT(strstr(readonly, "Do not read a large file whole") != NULL);
+    /* read-only ships no shell, so the shell tip has to be qualified. */
+    ASSERT(strstr(readonly, "when the bash tool is available") != NULL);
+    ASSERT(strstr(readonly, "\"name\":\"bash\"") == NULL);
+    free(write);
+    free(readonly);
     return 1;
 }
 
@@ -5843,6 +5871,7 @@ int main(int argc, char **argv) {
     TEST(coding_agent_prompt_contract);
     TEST(str_replace_editor_prepare);
     TEST(minimal_tools_json);
+    TEST(tool_descriptions_discourage_whole_reads);
     TEST(minimal_prompt_contract);
 
     /* Phase 8: Thinking/reasoning request building tests */

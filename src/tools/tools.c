@@ -17,15 +17,18 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
     {"str_replace_editor",
      "View or edit a UTF-8 text file in the workspace. With `command` set to "
      "`view`, returns the file contents: binary files are rejected, a read is "
-     "capped at 50 KiB, a longer file is truncated and the result carries "
+     "capped at 50 KiB, and a longer file is truncated and the result carries "
      "`truncated: true` with the full contents archived for "
-     "`read_tool_output`. With `command` set to `str_replace`, replaces the "
-     "literal `old_string` with `new_string`: `old_string` must occur exactly "
-     "once, so include more surrounding context when it is not unique; an "
-     "empty `old_string` creates a new file whose content is `new_string` and "
-     "refuses to overwrite an existing path. View the file before replacing "
-     "text in it. Edits are limited to files up to 50 KiB and are refused for "
-     "binary or hard-linked files.",
+     "`read_tool_output`. Do not read a large file whole: locate the region "
+     "with `grep` first and read only what you need, or - when the bash tool "
+     "is available - read a line range (for example `sed -n '10,25p' FILE`). "
+     "With `command` set to `str_replace`, replaces the literal `old_string` "
+     "with `new_string`: `old_string` must occur exactly once, so include more "
+     "surrounding context when it is not unique; an empty `old_string` creates "
+     "a new file whose content is `new_string` and refuses to overwrite an "
+     "existing path. View the file before replacing text in it. Edits are "
+     "limited to files up to 50 KiB and are refused for binary or hard-linked "
+     "files.",
      "{\"type\":\"object\",\"properties\":{"
      "\"command\":{\"type\":\"string\",\"enum\":[\"view\",\"str_replace\"],\"description\":\"`view` reads the file; `str_replace` edits it.\"},"
      "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file, relative to the workspace root.\"},"
@@ -83,9 +86,11 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "variables, or functions persist between calls, so pass full paths or "
      "chain commands with `&&` instead of relying on `cd`. A non-zero exit sets "
      "`exit_code`; a signal-killed command reports `signal` and a null "
-     "`exit_code`; a timeout sets `timed_out`. Long output is truncated (flagged "
-     "by `stdout_truncated`/`stderr_truncated`) and the full stream is archived "
-     "for `read_tool_output`. Prefer the editor's `view` command, `glob`, and "
+     "`exit_code`; a timeout sets `timed_out`. Keep output bounded - filter "
+     "with `head`/`tail`/`sed`/`grep` instead of dumping whole files or logs. "
+     "Long output is truncated (flagged by `stdout_truncated`/"
+     "`stderr_truncated`) and the full stream is archived for "
+     "`read_tool_output`. Prefer the editor's `view` command, `glob`, and "
      "`grep` for file inspection.",
      "{\"type\":\"object\",\"properties\":{"
      "\"command\":{\"type\":\"string\",\"description\":\"The shell command to execute.\"},"
@@ -162,14 +167,60 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
 const size_t ccode_tool_definitions_count =
     sizeof(ccode_tool_definitions) / sizeof(ccode_tool_definitions[0]);
 
+/* Minimal runs without read_tool_output, so the two tools it ships must not
+ * promise archive retrieval - that would point the model at a tool the
+ * composition refuses ("Tool is unavailable") and waste a turn. These variants
+ * drop the promise and tell the model to narrow at the source instead. bash is
+ * always present in this composition, so naming shell grep/sed is safe (there
+ * is no separate grep tool here). */
+static const char ccode_editor_minimal_description[] =
+    "View or edit a UTF-8 text file in the workspace. With `command` set to "
+    "`view`, returns the file contents: binary files are rejected, a read is "
+    "capped at 50 KiB, and a longer file is truncated (`truncated: true`); the "
+    "rest is not retrievable, so do not read a large file whole - use bash to "
+    "locate the region (`grep -n`) and read a line range (for example "
+    "`sed -n '10,25p' FILE`). With `command` set to `str_replace`, replaces the "
+    "literal `old_string` with `new_string`: `old_string` must occur exactly "
+    "once, so include more surrounding context when it is not unique; an empty "
+    "`old_string` creates a new file whose content is `new_string` and refuses "
+    "to overwrite an existing path. View the file before replacing text in it. "
+    "Edits are limited to files up to 50 KiB and are refused for binary or "
+    "hard-linked files.";
+
+static const char ccode_bash_minimal_description[] =
+    "Execute a shell command with `bash -c` and return its stdout, stderr, and "
+    "exit status. Each call runs in a fresh shell: no working directory, "
+    "variables, or functions persist between calls, so pass full paths or "
+    "chain commands with `&&` instead of relying on `cd`. A non-zero exit sets "
+    "`exit_code`; a signal-killed command reports `signal` and a null "
+    "`exit_code`; a timeout sets `timed_out`. Keep output bounded - filter with "
+    "`head`/`tail`/`sed`/`grep` instead of dumping whole files or logs. Long "
+    "output is truncated (flagged by `stdout_truncated`/`stderr_truncated`) and "
+    "the rest is not retrievable, so narrow the command and rerun. Use the "
+    "editor's `view` for small files and `sed -n`/`grep` for large ones.";
+
+/* Description to emit for `def`; `minimal` selects the no-retrieval variants
+ * above so the emitted tool list never names a tool the composition lacks. */
+static const char *description_for(const struct ccode_tool_def *def,
+                                   int minimal) {
+    if (!minimal) return def->description;
+    if (strcmp(def->name, "str_replace_editor") == 0)
+        return ccode_editor_minimal_description;
+    if (strcmp(def->name, "bash") == 0)
+        return ccode_bash_minimal_description;
+    return def->description;
+}
+
 static int append_tool_def(struct ccode_buf *b,
-                           const struct ccode_tool_def *def) {
+                           const struct ccode_tool_def *def,
+                           int minimal) {
     if (ccode_buf_append(b,
             "{\"type\":\"function\",\"function\":{\"name\":") != 0)
         return -1;
     if (ccode_json_append_quoted(b, def->name) != 0) return -1;
     if (ccode_buf_append(b, ",\"description\":") != 0) return -1;
-    if (ccode_json_append_quoted(b, def->description) != 0) return -1;
+    if (ccode_json_append_quoted(b, description_for(def, minimal)) != 0)
+        return -1;
     if (ccode_buf_append(b, ",\"parameters\":") != 0) return -1;
     if (ccode_buf_append(b, def->param_schema) != 0) return -1;
     return ccode_buf_append(b, "}}");
@@ -177,7 +228,8 @@ static int append_tool_def(struct ccode_buf *b,
 
 /* Emit {"tools":[...]} for the named definitions, preserving `names` order
  * (the tool list is a request-prefix cache key, so order is stable). */
-static char *build_tools_json_named(const char *const *names, size_t count) {
+static char *build_tools_json_named(const char *const *names, size_t count,
+                                    int minimal) {
     struct ccode_buf b;
     size_t i;
     int first = 1;
@@ -189,7 +241,8 @@ static char *build_tools_json_named(const char *const *names, size_t count) {
             if (strcmp(ccode_tool_definitions[j].name, names[i]) == 0) {
                 if (!first && ccode_buf_append_c(&b, ',') != 0) goto fail;
                 first = 0;
-                if (append_tool_def(&b, &ccode_tool_definitions[j]) != 0)
+                if (append_tool_def(&b, &ccode_tool_definitions[j],
+                                    minimal) != 0)
                     goto fail;
                 break;
             }
@@ -205,7 +258,7 @@ fail:
 char *ccode_build_readonly_tools_json(void) {
     static const char *const names[] = {"str_replace_editor", "glob", "grep",
                                         "read_tool_output"};
-    return build_tools_json_named(names, sizeof(names) / sizeof(names[0]));
+    return build_tools_json_named(names, sizeof(names) / sizeof(names[0]), 0);
 }
 
 char *ccode_build_write_tools_json(void) {
@@ -214,14 +267,15 @@ char *ccode_build_write_tools_json(void) {
                                         "grep", "task", "web_fetch",
                                         "web_search", "agent_tool",
                                         "read_tool_output"};
-    return build_tools_json_named(names, sizeof(names) / sizeof(names[0]));
+    return build_tools_json_named(names, sizeof(names) / sizeof(names[0]), 0);
 }
 
 /* deepseek-harness `minimal` preset style: exactly two tools, the editor and
  * the shell. The model reads through the editor's `view` command instead of a
  * separate read tool, mirroring dsh-tool-str-replace-editor +
- * dsh-tool-bash-persistent. */
+ * dsh-tool-bash-persistent. No read_tool_output here, so the two descriptions
+ * are the narrowing-only variants (see description_for). */
 char *ccode_build_minimal_tools_json(void) {
     static const char *const names[] = {"str_replace_editor", "bash"};
-    return build_tools_json_named(names, sizeof(names) / sizeof(names[0]));
+    return build_tools_json_named(names, sizeof(names) / sizeof(names[0]), 1);
 }

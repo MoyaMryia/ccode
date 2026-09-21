@@ -47,7 +47,15 @@
   `includeRuntimeContext: false`），工具面只有 `str_replace_editor` + `bash`
   两件，每轮的变更日志/任务清单摘要不再注入对话；含 compaction 的安全网保留
   （只在逼近上下文窗口时触发，不污染前缀）。隐含写工具；与 `--read-only`/
-  `--write` 同给时 minimal 优先
+  `--write` 同给时 minimal 优先。**minimal 的两条工具描述不带归档/取回承诺**
+  （该组合没有 `read_tool_output`，承诺会让模型去调一个必然被拒的工具）：截断说成
+  "the rest is not retrievable"，并明确让人用 bash 的 `grep -n` / `sed -n 'A,Bp'`
+  缩范围重跑
+- 工具描述统一不鼓励整读：`str_replace_editor` 的 `view` 明说别整文件读大文件
+  （先用 `grep` 定位，bash 可用时用 `sed -n` 读行区间——read-only 组合没有 bash，
+  这句带"when the bash tool is available"限定）；`bash` 的说明要求用
+  `head`/`tail`/`sed`/`grep` 约束输出、别整文件/整日志 dump；`read_tool_output`
+  的取回承诺只出现在实际带该工具的组合里
 - 工具调用参数解析：容忍模型把参数包进一层或多层 `{"arguments": ...}`（对象与 JSON 字符串形式混合），最多 8 层；超限报 `nested too deep`，信封值非对象/字符串、或信封带尾随数据时明确拒绝；多键信封不再被误判。校验失败时错误附带该工具的参数 schema（`expected parameters: ...`），让模型知道该传什么，而不是只回一句 `Invalid ... arguments`
 - 工具字符串参数堆分配（`prepared_tool` 的 value/content/path/old/new/argv 等），不再受旧 4095 字节上限，只受整包 `MAX_TOOL_OUTPUT`（50KB）约束；`web_search` 结果会话重载的 100KB 栈缓冲也改堆分配。valgrind（单测 + 800 例 fuzz-tool-args）0 error / 0 leak
 - 工具调用参数转义：流式收到的原始转义参数在存入对话前只解码一次，回灌请求时只转义一次，历史里的 assistant tool_call 不再双重转义（旧行为会把 `{"command":"ls"}` 回灌成 `{\"command\":\"ls\"}`，把模型带偏、越纠越乱）
