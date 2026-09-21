@@ -131,6 +131,7 @@ TEST_AGENT_SRC = tests/test_agent.c $(AGENT_SRC) vendor/json/json.c src/net/http
 TEST_PERMISSIONS_SRC = $(wildcard tests/test_permissions.c)
 TEST_TUI_SRC = tests/test_tui.c vendor/fdio/fdio.c
 TEST_MD_SRC = tests/test_markdown.c vendor/markdown/markdown.c vendor/json/json.c $(RETRO_SRC)
+TEST_CONFIG_SRC = tests/test_config.c src/app/config.c $(RETRO_SRC)
 TTY_TEST := $(shell python3 -c "import pty" 2>/dev/null && echo 1)
 TEST_TARGETS = test-json test-agent test-http
 TEST_TARGETS += test-dead-code
@@ -142,6 +143,13 @@ endif
 # `test` target: the default build does not produce ccode/ccode-tui.
 # TEST_TARGETS += test-tui-commands
 TEST_TARGETS += test-markdown
+ifneq ($(RETRO),1)
+# test_config.c calls setenv/unsetenv; libc5 (the retro shim) does not provide
+# them, and option parsing is platform-independent, so this one is skipped
+# there. The documented retro host smoke (test-json/test-agent/
+# test-permissions/test-markdown) does not list it either.
+TEST_TARGETS += test-config
+endif
 ifneq ($(TTY_TEST),)
 TEST_TARGETS += test-tty
 TEST_TARGETS += test-e2e
@@ -471,12 +479,18 @@ test-tui-real: ccode ccode-tui ccode-cli
 test-markdown: tests/test_markdown
 	./tests/test_markdown
 
+test-config: tests/test_config
+	./tests/test_config
+
 # External-linkage functions that are defined but never referenced anywhere.
 # `static` unused definitions already fail the build via -Wunused-function.
 test-dead-code:
 	python3 ./scripts/check_dead_functions.py
 
 tests/test_markdown: $(TEST_MD_SRC)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
+
+tests/test_config: $(TEST_CONFIG_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 
 test-tty: ccode-cli
@@ -546,7 +560,7 @@ uninstall:
 
 clean:
 	rm -rf .build
-	rm -f ccode ccode-tui ccode-cli tests/test_json tests/test_agent tests/test_agent_asan tests/test_permissions tests/test_tui tests/test_markdown
+	rm -f ccode ccode-tui ccode-cli tests/test_json tests/test_agent tests/test_agent_asan tests/test_permissions tests/test_tui tests/test_markdown tests/test_config
 	rm -rf test-sandbox
 
 # ASan + UBSan build (for debugging/fuzzing). Override CFLAGS to remove

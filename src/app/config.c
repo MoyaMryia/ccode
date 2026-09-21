@@ -52,6 +52,7 @@ void ccode_print_usage(const char *program) {
         "                         (plaintext, known risk; loopback http always allowed)\n"
         "      --no-markdown      Disable markdown rendering (raw output)\n"
         "      --context-tokens N Approximate context window; auto-compact near it (default 1000000, 0=off)\n"
+        "      --max-turns N      Max assistant turns for one prompt (default 50, 0=no limit)\n"
         "      --session-dir DIR  Session storage directory\n"
         "  -h, --help             Show this help\n"
         "\n"
@@ -69,6 +70,7 @@ void ccode_print_usage(const char *program) {
         "  CCODE_THINKING_EFFORT      Reasoning effort: low, medium, high, xhigh, or max (default: high);\n"
         "                             off/none/empty disables the reasoning_effort field\n"
         "  CCODE_CONTEXT_TOKENS       Approximate context window in tokens (default: 1000000)\n"
+        "  CCODE_MAX_TURNS            Max assistant turns for one prompt (default: 50; 0 = no limit)\n"
         "\n"
         "REPL slash commands (interactive mode):\n"
         "  /help        Show available slash commands\n"
@@ -167,6 +169,18 @@ static int opt_context_tokens(struct ccode_config *c, const char *v) {
     c->context_tokens = (size_t)n;
     return 0;
 }
+static int opt_max_turns(struct ccode_config *c, const char *v) {
+    char *end = NULL;
+    long n = v ? strtol(v, &end, 10) : 0;
+    if (!v || !v[0] || !end || *end != '\0' || n < 0) {
+        fprintf(stderr,
+                "Invalid --max-turns value: %s (expected a non-negative integer; 0 = no limit)\n",
+                v ? v : "");
+        return -1;
+    }
+    c->max_turns = n;
+    return 0;
+}
 static int opt_save_session(struct ccode_config *c, const char *v) { c->save_session = v; return 0; }
 static int opt_resume(struct ccode_config *c, const char *v) { c->resume_session = v; return 0; }
 static int opt_session_dir(struct ccode_config *c, const char *v) { c->session_dir = v; return 0; }
@@ -197,6 +211,7 @@ static const struct ccode_option ccode_options[] = {
     {"--allow-http", NULL, 0, opt_allow_http},
     {"--no-markdown", NULL, 0, opt_no_markdown},
     {"--context-tokens", NULL, 1, opt_context_tokens},
+    {"--max-turns", NULL, 1, opt_max_turns},
     {"--save-session", NULL, 1, opt_save_session},
     {"--resume", NULL, 1, opt_resume},
     {"--session-dir", NULL, 1, opt_session_dir},
@@ -311,6 +326,19 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
         const char *ct = getenv("CCODE_CONTEXT_TOKENS");
         config->context_tokens = ct ? atol(ct) : 1000000;
         if (config->context_tokens < 0) config->context_tokens = 1000000;
+    }
+    {
+        /* Assistant-turn cap for one prompt. 50 is the historical built-in
+         * bound; 0 removes it. An unparsable or negative env value keeps the
+         * default instead of silently disabling the cap. */
+        const char *mt = getenv("CCODE_MAX_TURNS");
+        long n = 50;
+        if (mt && mt[0]) {
+            char *end = NULL;
+            long parsed = strtol(mt, &end, 10);
+            if (end && *end == '\0' && parsed >= 0) n = parsed;
+        }
+        config->max_turns = n;
     }
     {
         const char *tk = getenv("CCODE_THINKING");

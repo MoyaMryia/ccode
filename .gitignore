@@ -15,6 +15,7 @@ tests/test_permissions
 tests/test_tui
 tests/test_lineedit
 tests/test_markdown
+tests/test_config
 test-sandbox/
 tests/fixtures/
 

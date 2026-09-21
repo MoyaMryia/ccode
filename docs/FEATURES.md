@@ -61,6 +61,7 @@
 - 上下文压缩（`/compact`，以及估算请求接近上下文窗口 90% 时自动）不切断 assistant(tool_calls) 与 tool 结果的配对；构造请求时再兜底丢弃孤儿 `tool` 消息，旧压缩 bug 留下的会话也能继续，不再触发上游 `Messages with role 'tool' must be a response to a preceding message with 'tool_calls'` 400
 - 超长工具结果外置：命令 stdout/stderr（预览上限各 64 KiB）或 `read_file` 输出（预览上限 50 KiB）超过上限时，完整输出（每流最多 4 MiB）存进 `<session>.results/<内容哈希>`（0600、O_NOFOLLOW、内容寻址去重），消息里只留预览；stdout 与 stderr 各存一个 blob，`read_tool_output` 按 tool_call_id（+ 可选 stream）解析，blob 引用永不发给上游。结果目录首次使用自动 `mkdir -p`，删除/重命名/剪枝会话时同步清理。会话格式 v5（assistant 空正文保持 `content:null`、`reasoning_content` 与 `result_ref` 一并持久化）。超大结果的内联 JSON 受 96 KiB 转义长度预算约束（bash 双流共享），预算触停即置截断标志并归档原始字节，任何结果（含 `read_file` 的 `truncated` 键——修复了旧版把标记写进 content 字符串导致整个结果 JSON 非法的 bug）在对话、会话文件与 resume 重放中都是完整合法的 JSON；万一仍有结果超 100 KiB 消息上限，会话层存合法的 `error`+`original_bytes` 信封而不是裸切，`read_tool_output` 取回路径不受影响
 - token 用量为估算（无 tokenizer）：按 DeepSeek 公布的「英文字符 ≈0.3、中文字符 ≈0.6 token」折算，加每消息框架开销；上下文窗口 `CCODE_CONTEXT_TOKENS` / `--context-tokens N`（默认 1000000，0 关闭 token 触发）。消息数组改为按需增长（8→…，硬上限 4096，仅作内存兜底），不再是压缩触发条件
+- 单次 prompt 的 agent 轮数上限 `--max-turns N` / `CCODE_MAX_TURNS`（默认 50，`0` = 不限制；flag 覆盖环境变量，非法值打回默认值而不是静默放开）。子代理沿用父代理的上限；撞到上限时往 stderr 打一行 `[turn limit]`，不再静默停住（原先硬编码 `MAX_TURN_LIMIT 50`）
 - 会话元数据持久化，自动清理旧会话
 - 会话目录首次使用自动 `mkdir -p`（默认 `~/.ccode/sessions`）；`--session-dir DIR` / `CCODE_SESSION_DIR` 可覆盖，支持 `~/` 展开
 - 模型列表 / 搜索 / 详情 / 切换 / 默认模型
@@ -117,6 +118,6 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（165 agent + 45 json + 32 http + 19 tui + 16 lineedit + 21 markdown + 5 tty + 8 e2e + 4 streaming；集成 37；实战 e2e `test-e2e-real` 35 项检查（mock provider 脚本化驱动真实 ccode-cli 在本仓库副本上全 12 工具完成 修复→重建→运行验证 闭环，含超大结果双流截断/归档/取回回归）；`make mutate` 含 result/reasoning/webfetch 新 mutant 全 KILLED；test-tui-commands 与 test-tui-real 手动运行（`make ccode ccode-tui ccode-cli` 后 `make test-tui-real`），全绿）。行为收敛项(2026-09-12):`/models` 三前端同文本、`/reasoning effort` 三前端同校验、JSON Lines 事件单一构造器——见 `docs/AUDIT.md`
+3. 现有测试套件全过（176 agent + 45 json + 32 http + 19 tui + 16 lineedit + 21 markdown + 8 config + 5 tty + 8 e2e + 5 streaming；集成 37；实战 e2e `test-e2e-real` 35 项检查（mock provider 脚本化驱动真实 ccode-cli 在本仓库副本上全 12 工具完成 修复→重建→运行验证 闭环，含超大结果双流截断/归档/取回回归）；`make mutate` 含 result/reasoning/webfetch 新 mutant 全 KILLED；test-tui-commands 与 test-tui-real 手动运行（`make ccode ccode-tui ccode-cli` 后 `make test-tui-real`），全绿）。行为收敛项(2026-09-12):`/models` 三前端同文本、`/reasoning effort` 三前端同校验、JSON Lines 事件单一构造器——见 `docs/AUDIT.md`
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟
 5. 工具调用/指令安全改动要过 `make fuzz-tool-args fuzz-command-paths fuzz-paths`，且 `make mutate`（故意注入错误看测试是否抓住）保持全部 KILLED

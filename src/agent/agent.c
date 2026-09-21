@@ -40,9 +40,6 @@
 #include "agent_internal.h"
 
 
-#define MAX_TURN_LIMIT 50
-
-
 #define MAX_SUBAGENT_DEPTH 3
 #define SUBAGENT_RESULT_MAX (1024 * 100)
 
@@ -834,10 +831,14 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
     int turn = 0;
     int result = 0;
     struct timespec turn0_ts;
+    /* --max-turns / CCODE_MAX_TURNS: <= 0 means no limit. The config layer
+     * always supplies a value (default 50), so unlimited only happens when a
+     * caller asks for it (or hand-builds a zeroed config). */
+    long turn_limit = cfg->max_turns;
 
     (void)clock_gettime(CLOCK_MONOTONIC, &turn0_ts);
 
-    while (turn < MAX_TURN_LIMIT) {
+    while (turn_limit <= 0 || turn < turn_limit) {
         struct ccode_sse_accumulator acc;
         char *tools_json = NULL;
         char *body;
@@ -1382,6 +1383,13 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
 
         ccode_sse_accumulator_destroy(&acc);
         turn++;
+    }
+    if (result >= 0 && turn_limit > 0 && turn >= turn_limit) {
+        /* Make the cap discoverable instead of ending the run silently. */
+        fprintf(stderr,
+                "\n  " CCODE_ANSI("33") "[turn limit]" CCODE_ANSI("0")
+                "  stopped after %d turns (--max-turns / CCODE_MAX_TURNS; 0 = no limit)\n",
+                turn);
     }
     return result < 0 ? 1 : 0;
 }

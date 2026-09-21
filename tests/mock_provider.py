@@ -302,6 +302,30 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                     }]
                 })}]
 
+        elif test_mode == "turnlimit-fixture":
+            # Always answers with another bash tool call, so the agent loop
+            # never converges on its own: the only thing that can stop it is
+            # --max-turns / CCODE_MAX_TURNS. Each command carries its turn
+            # number so the caller can count how many actually ran.
+            prior = sum(1 for msg in req.get("messages", [])
+                        if msg.get("role") == "tool")
+            events = [{"data": json.dumps({
+                "choices": [{
+                    "index": 0,
+                    "delta": {"tool_calls": [{
+                        "index": 0,
+                        "id": "call_turnlimit_{}".format(prior + 1),
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": json.dumps(
+                                {"command": "echo turnlimit-{}".format(prior + 1)})
+                        }
+                    }]},
+                    "finish_reason": "tool_calls"
+                }]
+            })}]
+
         elif test_mode == "tool-calls":
             has_tool_result = any(msg.get("role") == "tool"
                                   for msg in req.get("messages", []))

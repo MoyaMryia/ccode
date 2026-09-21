@@ -122,6 +122,21 @@ def test_json_session_list_is_human_readable():
             proc.returncode == 0), out + err
 
 
+def test_max_turns_stops_loop():
+    """--max-turns N caps the tool loop against a provider that never stops on
+    its own: exactly N commands run, then a [turn limit] notice on stderr."""
+    proc = subprocess.Popen(
+        [CCODE, "--write", "--auto-approve", "--max-turns", "2",
+         "--prompt", "__ccode_test_turnlimit-fixture"],
+        env=environment(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = proc.communicate(timeout=TIMEOUT)
+    combined = out + err
+    return (proc.returncode == 0 and
+            b"turnlimit-1" in combined and b"turnlimit-2" in combined and
+            b"turnlimit-3" not in combined and
+            b"[turn limit]" in combined), combined
+
+
 def main():
     mock = subprocess.Popen([sys.executable, MOCK_PROVIDER, str(PORT)],
                             stdout=subprocess.DEVNULL,
@@ -134,7 +149,8 @@ def main():
                            ("reasoning newlines",
                             test_reasoning_keeps_real_newlines),
                            ("JSON session list",
-                            test_json_session_list_is_human_readable)):
+                            test_json_session_list_is_human_readable),
+                           ("max-turns cap", test_max_turns_stops_loop)):
             ok, output = test()
             if ok:
                 print("  PASS: %s" % name)

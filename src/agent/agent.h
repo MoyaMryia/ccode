@@ -54,6 +54,10 @@ struct ccode_agent_config {
     /* Approximate context window in tokens; auto-compaction triggers near
      * this. 0 disables the token trigger. */
     size_t context_tokens;
+    /* Maximum assistant turns the loop may run for one prompt
+     * (--max-turns / CCODE_MAX_TURNS). 0 = no limit. The config layer always
+     * sets it (default 50); sub-agents inherit the parent's value. */
+    long max_turns;
     ccode_content_callback on_content;
     void *on_content_context;
     ccode_content_callback on_reasoning;

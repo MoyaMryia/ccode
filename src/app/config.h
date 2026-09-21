@@ -38,6 +38,9 @@ struct ccode_config {
     /* Approximate context window in tokens; auto-compaction triggers near
      * this. 0 disables the token trigger. */
     long context_tokens;
+    /* Maximum assistant turns for one prompt (--max-turns / CCODE_MAX_TURNS).
+     * Default 50 (the historical built-in bound); 0 means no limit. */
+    long max_turns;
 };
 
 int ccode_parse_args(int argc, char **argv, struct ccode_config *config);

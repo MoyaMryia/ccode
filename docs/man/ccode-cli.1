@@ -191,6 +191,13 @@ Approximate context window in tokens; the conversation is compacted when the
 estimated request reaches 90% of it. Default 1000000 (DeepSeek family);
 0 disables the token trigger. The estimate is char-based (no tokenizer).
 .TP
+.BI \-\-max-turns " N"
+Maximum assistant turns the agent loop may run for one prompt. Default 50;
+0 means no limit. Sub-agents inherit the parent's value. When the cap is
+reached the loop stops and prints a
+.B [turn limit]
+notice to stderr.
+.TP
 .BI \-\-save-session " PATH"
 Save the conversation to
 .I PATH
@@ -400,6 +407,11 @@ Set to off, none or empty to omit the reasoning_effort field.
 .B CCODE_CONTEXT_TOKENS
 Approximate context window in tokens (default 1000000). Auto-compaction
 triggers near 90% of it; 0 disables the token trigger.
+.TP
+.B CCODE_MAX_TURNS
+Maximum assistant turns for one prompt (default 50; 0 means no limit).
+Overridden by
+.BR \-\-max-turns .
 .SH LIMITS
 Built-in (not configurable) resource bounds:
 .TP

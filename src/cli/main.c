@@ -33,6 +33,7 @@ struct backend_options {
     int allow_http;
     int thinking_enabled;
     const char *thinking_effort;
+    long max_turns;
     char model_name[256];
     char thinking_effort_buf[16];
     const char *save_session;
@@ -220,6 +221,7 @@ static int run_agent_prompt(const struct backend_options *options,
     config.allow_http = options->allow_http;
     config.thinking_enabled = options->thinking_enabled;
     config.thinking_effort = options->thinking_effort;
+    config.max_turns = options->max_turns;
     config.workspace = workspace && workspace[0] ? workspace : ".";
     config.save_session = options->save_session;
     config.resume_session = options->resume_session;
@@ -666,6 +668,7 @@ static int run_json_mode(const struct ccode_config *config) {
     state.options.allow_danger = config->allow_danger;
     state.options.allow_http = config->allow_http;
     state.options.thinking_enabled = config->thinking_enabled;
+    state.options.max_turns = config->max_turns;
     if (config->thinking_effort) {
         snprintf(state.options.thinking_effort_buf,
                  sizeof(state.options.thinking_effort_buf), "%s",
@@ -804,6 +807,7 @@ int ccode_cli_main(int argc, char **argv) {
     agent.print_raw_json = config.print_raw_json;
     agent.context_tokens = config.context_tokens > 0
                            ? (size_t)config.context_tokens : 0;
+    agent.max_turns = config.max_turns;
     agent.workspace = getenv("CCODE_WORKSPACE");
     if (!agent.workspace) agent.workspace = ".";
     agent.on_content = plain_stream_content;
