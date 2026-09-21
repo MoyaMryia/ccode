@@ -306,6 +306,7 @@ fail:
 
 void change_log_reset(struct agent_context *ctx) {
     ccode_vec_clear(&ctx->change_log);
+    ctx->change_log_dirty = 1;
 }
 
 void change_log_add_ex(struct agent_context *ctx, const char *type,
@@ -323,6 +324,7 @@ void change_log_add_ex(struct agent_context *ctx, const char *type,
     ch->denied = denied;
     ch->stdout_truncated = stdout_truncated;
     ch->stderr_truncated = stderr_truncated;
+    ctx->change_log_dirty = 1;
 }
 
 void change_log_add(struct agent_context *ctx, const char *type,
@@ -384,6 +386,7 @@ const char *change_log_serialize(struct agent_context *ctx) {
 void task_list_reset(struct agent_context *ctx) {
     ccode_vec_clear(&ctx->task_list);
     ctx->task_next_id = 1;
+    ctx->task_list_dirty = 1;
 }
 
 const char *task_list_serialize(struct agent_context *ctx) {
@@ -419,6 +422,7 @@ char *exec_task_create(struct agent_context *ctx, const char *content) {
     snprintf(t->content, sizeof(t->content), "%.*s",
              (int)sizeof(t->content) - 1, content);
     snprintf(t->status, sizeof(t->status), "%s", "pending");
+    ctx->task_list_dirty = 1;
     {
         struct ccode_buf result;
         ccode_buf_init(&result);
@@ -445,6 +449,7 @@ char *exec_task_update(struct agent_context *ctx, const char *id,
                 return ccode_strdup("{\"error\":\"Invalid status\"}");
             snprintf(t->status, sizeof(t->status),
                      "%.*s", (int)sizeof(t->status) - 1, status);
+            ctx->task_list_dirty = 1;
             return ccode_strdup("{\"ok\":true}");
         }
     }

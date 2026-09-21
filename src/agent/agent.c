@@ -135,6 +135,11 @@ static char *run_subagent(struct agent_context *ctx,
     sub_ctx.subagent_depth = ctx->subagent_depth + 1;
     sub_ctx.last_change_summary = NULL;
     sub_ctx.last_task_summary = NULL;
+    /* The delegate inherits a copy of the lists, so announce them once in its
+     * own conversation (the string caches above are empty, and the dirty flags
+     * were just copied from the parent in whatever state they were in). */
+    sub_ctx.change_log_dirty = 1;
+    sub_ctx.task_list_dirty = 1;
     if (agent_context_copy_lists(&sub_ctx, ctx) != 0)
         return ccode_strdup("{\"error\":\"Out of memory\"}");
 
@@ -761,6 +766,47 @@ void ccode_agent_summary_cache_reset(void) {
     agent_ctx.last_change_summary = NULL;
     free(agent_ctx.last_task_summary);
     agent_ctx.last_task_summary = NULL;
+    /* The lists are cleared separately (reset_workspace_state), which marks
+     * them dirty; force it here too so a caller that resets only the string
+     * caches still re-announces the (now empty) snapshot instead of keeping a
+     * stale one in the conversation. */
+    agent_ctx.change_log_dirty = 1;
+    agent_ctx.task_list_dirty = 1;
+}
+
+/* Append the runtime-context snapshots the read-write compositions show the
+ * model: the change log, and (with write tools) the task list. Serializing is
+ * gated on the dirty flag a mutator set, not on every turn: both serializers
+ * rebuild their whole document, and the dedup below compares the result
+ * against the previous copy, so an unchanged list would be rebuilt every turn
+ * only to be discarded. ctx -- the context of *this* run, never a global -- is
+ * what gets serialized, so a sub-agent announces its own log, not its
+ * parent's. Returns 0 on success, -1 on allocation failure. */
+static int sync_runtime_context(struct ccode_conversation *conv,
+                                struct agent_context *ctx,
+                                const struct ccode_agent_config *cfg) {
+    if (cfg->minimal_mode) return 0;
+
+    if (ctx->change_log_dirty) {
+        /* An empty log is passed as NULL so a snapshot that was already
+         * injected is forgotten rather than duplicated as "no changes". */
+        const char *ch = ctx->change_log.len > 0
+                         ? change_log_serialize(ctx) : NULL;
+        if (append_summary_if_changed(conv, ch,
+                                      &ctx->last_change_summary) != 0)
+            return -1;
+        ctx->change_log_dirty = 0;
+    }
+
+    if (cfg->tools_enabled && ctx->task_list_dirty) {
+        const char *tasks = ctx->task_list.len > 0
+                            ? task_list_serialize(ctx) : NULL;
+        if (append_summary_if_changed(conv, tasks,
+                                      &ctx->last_task_summary) != 0)
+            return -1;
+        ctx->task_list_dirty = 0;
+    }
+    return 0;
 }
 
 /* Guard against a model re-using a tool_call_id that already produced a tool
@@ -830,7 +876,16 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                                           struct ccode_conversation *conv) {
     int turn = 0;
     int result = 0;
+    int rc = 0;
     struct timespec turn0_ts;
+    /* The tool catalog is a pure function of the composition, so build it once
+     * per run and reuse the bytes: rebuilding it every turn re-escaped every
+     * tool name and description and re-scanned it for the token estimate, for
+     * a document that cannot change mid-run. Owned here (not in ctx) so a
+     * derived sub-agent context can never alias or double-free it. */
+    char *tools_json = NULL;
+    size_t tools_tokens = 0;
+    int tools_built = 0;
     /* --max-turns / CCODE_MAX_TURNS: <= 0 means no limit. The config layer
      * always supplies a value (default 50), so unlimited only happens when a
      * caller asks for it (or hand-builds a zeroed config). */
@@ -840,14 +895,14 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
 
     while (turn_limit <= 0 || turn < turn_limit) {
         struct ccode_sse_accumulator acc;
-        char *tools_json = NULL;
         char *body;
         size_t i;
 
         if (ccode_cancel_pending()) {
             fprintf(stderr, "\n  " CCODE_ANSI("33") "[cancelled]" CCODE_ANSI("0") "  agent loop aborted "
                     "by user interrupt\n");
-            return 130;
+            rc = 130;
+            goto done;
         }
         /* Start each turn with clean markdown block state so an unclosed
          * code fence from a previous (possibly cancelled) turn does not
@@ -858,32 +913,29 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
          * change-log and task-list summaries stay out of the conversation. */
         if ((cfg->minimal_mode || cfg->tools_enabled || cfg->read_only_tools) &&
             turn > 0) {
-            const char *ch = (!cfg->minimal_mode &&
-                              (int)ctx->change_log.len > 0)
-                             ? change_log_serialize(&agent_ctx) : NULL;
-            const char *tasks = (!cfg->minimal_mode && cfg->tools_enabled &&
-                                 (int)ctx->task_list.len > 0)
-                                ? task_list_serialize(ctx) : NULL;
-            if (append_summary_if_changed(conv, ch, &ctx->last_change_summary) != 0 ||
-                append_summary_if_changed(conv, tasks, &ctx->last_task_summary) != 0) {
+            if (sync_runtime_context(conv, ctx, cfg) != 0) {
                 fprintf(stderr, "Out of memory.\n");
-                return 1;
+                rc = 1;
+                goto done;
             }
         }
 
-        if (cfg->minimal_mode) {
-            tools_json = ccode_build_minimal_tools_json();
-        } else if (cfg->tools_enabled) {
-            tools_json = ccode_build_write_tools_json();
-        } else if (cfg->read_only_tools) {
-            tools_json = ccode_build_readonly_tools_json();
-        }
-
-        if (cfg->minimal_mode || cfg->read_only_tools || cfg->tools_enabled) {
-            if (!tools_json) {
-                fprintf(stderr, "Out of memory.\n");
-                return 1;
+        if (!tools_built) {
+            if (cfg->minimal_mode) {
+                tools_json = ccode_build_minimal_tools_json();
+            } else if (cfg->tools_enabled) {
+                tools_json = ccode_build_write_tools_json();
+            } else if (cfg->read_only_tools) {
+                tools_json = ccode_build_readonly_tools_json();
             }
+            if ((cfg->minimal_mode || cfg->read_only_tools || cfg->tools_enabled) &&
+                !tools_json) {
+                fprintf(stderr, "Out of memory.\n");
+                rc = 1;
+                goto done;
+            }
+            tools_tokens = tools_json ? ccode_estimate_text_tokens(tools_json) : 0;
+            tools_built = 1;
         }
 
         if (!cfg->quiet) {
@@ -914,7 +966,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
          * message-count guard is only a last resort so the growable array
          * stays under its hard cap (add_message would otherwise fail). */
         {
-            size_t est = ccode_conversation_estimate_tokens(conv, tools_json);
+            size_t est = ccode_conversation_estimate_tokens_with_tool_tokens(
+                conv, tools_tokens);
             size_t limit = cfg->context_tokens;
             int over_tokens = limit > 0 && est > limit - limit / 10;
             int over_capacity = conv->max_capacity > 16 &&
@@ -922,7 +975,7 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
             if (over_tokens || over_capacity) {
                 const char *ch = NULL;
                 const char *tk = NULL;
-                if ((int)ctx->change_log.len > 0) ch = change_log_serialize(&agent_ctx);
+                if ((int)ctx->change_log.len > 0) ch = change_log_serialize(ctx);
                 if ((int)ctx->task_list.len > 0) tk = task_list_serialize(ctx);
                 ccode_conversation_compact(conv, ch, tk);
             }
@@ -931,10 +984,10 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
         body = ccode_conversation_build_request(conv, cfg->model, tools_json,
                                                 cfg->thinking_enabled,
                                                 cfg->thinking_effort);
-        free(tools_json);
         if (!body) {
             fprintf(stderr, "Out of memory while building request.\n");
-            return 1;
+            rc = 1;
+            goto done;
         }
 
         ccode_sse_accumulator_init(&acc);
@@ -1391,7 +1444,11 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                 "  stopped after %d turns (--max-turns / CCODE_MAX_TURNS; 0 = no limit)\n",
                 turn);
     }
-    return result < 0 ? 1 : 0;
+    rc = result < 0 ? 1 : 0;
+
+done:
+    free(tools_json);
+    return rc;
 }
 
 /* A resumed session already carries its own system prompt (persisted as the
@@ -2422,6 +2479,18 @@ void test_change_log_add_command_full(const char *cmd, int exit_code,
 }
 void test_change_log_add_denied_entry(const char *tool_name) {
     change_log_add_denied(&agent_ctx, tool_name);
+}
+/* Drive the runtime-context snapshot step the turn loop runs, against a
+ * caller-supplied context: pins the dirty gating and that the context being
+ * serialized is the one passed in, never a global. */
+int test_sync_runtime_context(struct ccode_conversation *conv,
+                              struct agent_context *ctx, int tools_enabled,
+                              int minimal_mode) {
+    struct ccode_agent_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.tools_enabled = tools_enabled;
+    cfg.minimal_mode = minimal_mode;
+    return sync_runtime_context(conv, ctx, &cfg);
 }
 void test_set_respect_gitignore(int v) {
     agent_ctx.respect_gitignore = v;

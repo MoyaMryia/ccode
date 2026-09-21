@@ -17,6 +17,7 @@
 - Markdown → ANSI 渲染（标题、加粗、斜体、代码块、列表、引用、链接），带控制字符消毒
 - 上下文缓存友好：请求前缀对 live 与 resume 字节一致（不重复 system 提示）；assistant 空正文与 `content:null` 严格区分、`reasoning_content` 原样回放，`result_ref` 等本地元数据不回传上游，前缀不因存档而变
 - 请求序列化按消息缓存（2026-09-21）：每条消息的 `{"role":...}` JSON 对象与它那份 token 估算随消息一起缓存（`message.h` 的 `request_json` / `request_tokens`），`set_reasoning`、追加 tool_call 这些会改消息的入口把它置脏，构建请求退化成整数求和 + 一次 `memcpy` 拼装。此前每轮都把整段历史重新转义、重新逐字符估算，随轮数是 O(N²)：100 轮 callgrind 指令数 18.86 亿 → **2.85 亿**（6.6×），50→100 轮的指令倍率 3.49× → **2.03×**（线性）。同一会话里两个 release 二进制交替各跑 3 次的 A/B：100 轮 CU 0.2429 → **0.1364**（1.70×），其中 harness 自身 CPU 0.172s → **0.075s**（2.61×），剩下 ~0.06s 是 100 个 `sh -c` 子进程的固定开销，与序列化无关。内存代价很小：峰值 RSS 3.6 → 4.1 MB、均值 3.08 → 3.40 MB（缓存的转义副本替代了旧实现每轮临时分配又释放的那份）。`result_blob` 这类归档引用是本地元数据，既不参与序列化也不触失效
+- 运行期不变量的每轮重算也去掉了（2026-09-21）：工具目录 JSON 与它的 token 估算在一次运行里只算一次（同一模式内目录是静态的，构建是纯函数，回归钉住），变更日志/任务清单只在被改动过（脏标记，每个改动入口负责置位）之后才重新序列化 + 去重比对。此前 100 轮里这三项白烧约 **11%** 指令。同时修正了运行时快照取错上下文：子代理的运行循环此前把**全局（父）**变更日志序列化进子代理的对话，现在用的是它自己的 `ctx`
 
 ### 工具
 
@@ -119,7 +120,6 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 |------|--------|------|------|
 | 平台真机验证 | P1 | 代码已就位 | Linux 之外各平台的代码写好了，但还没在真机上跑构建/测试矩阵 |
 | 子代理并行化 | P2 | 已实现 | 同一轮的只读子代理并行启动（fork+管道），读写子代理保持串行（写目标未知，避免文件冲突）；每轮最多 8 个并行 |
-| 每轮重算的稳定输入 | P3 | 已知 | 工具目录 JSON（`build_tools_json_named`）每轮从零重新序列化一遍，紧接着又对它做一次 token 估算；变更日志即便早已封顶（`CCODE_MAX_CHANGES 32`）也每轮重新序列化 + `strcmp` 一次再丢弃。三者合计约 **11%** 指令（100 轮），且都是每轮常量、不随轮数增长。目录在同一模式内完全静态、日志封顶后不会再变，都可以缓存；留着纯粹是每轮白烧 |
 | MCP 集成 | P2 | 未开始 | 扩展工具 |
 | 技能系统 | P2 | 未开始 | 最佳实践封装 |
 | 命令级安全收紧 | — | 部分完成 | 当前策略是"先能用，再安全"，命令过滤已落地，后续再补更严的隔离 |
@@ -130,6 +130,6 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 
 1. CLI 模式下能实际用
 2. 有自动化测试
-3. 现有测试套件全过（181 agent + 45 json + 32 http + 19 tui + 16 lineedit + 21 markdown + 9 config + 5 tty + 8 e2e + 5 streaming；集成 37；实战 e2e `test-e2e-real` 35 项检查（mock provider 脚本化驱动真实 ccode-cli 在本仓库副本上全 12 工具完成 修复→重建→运行验证 闭环，含超大结果双流截断/归档/取回回归）；`make mutate` 含 request-cache 失效/result/reasoning/webfetch 新 mutant 全 KILLED；test-tui-commands 与 test-tui-real 手动运行（`make ccode ccode-tui ccode-cli` 后 `make test-tui-real`），全绿）。行为收敛项(2026-09-12):`/models` 三前端同文本、`/reasoning effort` 三前端同校验、JSON Lines 事件单一构造器——见 `docs/AUDIT.md`
+3. 现有测试套件全过（183 agent + 45 json + 32 http + 19 tui + 16 lineedit + 21 markdown + 9 config + 5 tty + 8 e2e + 5 streaming；集成 37；实战 e2e `test-e2e-real` 35 项检查（mock provider 脚本化驱动真实 ccode-cli 在本仓库副本上全 12 工具完成 修复→重建→运行验证 闭环，含超大结果双流截断/归档/取回回归）；`make mutate` 含 request-cache 失效、快照脏标记/上下文、result/reasoning/webfetch 新 mutant 全 KILLED；test-tui-commands 与 test-tui-real 手动运行（`make ccode ccode-tui ccode-cli` 后 `make test-tui-real`），全绿）。行为收敛项(2026-09-12):`/models` 三前端同文本、`/reasoning effort` 三前端同校验、JSON Lines 事件单一构造器——见 `docs/AUDIT.md`
 4. 涉及 libc5 的改动要过 `make RETRO=1 test-json test-agent test-permissions test-markdown` 宿主冒烟
 5. 工具调用/指令安全改动要过 `make fuzz-tool-args fuzz-command-paths fuzz-paths`，且 `make mutate`（故意注入错误看测试是否抓住）保持全部 KILLED

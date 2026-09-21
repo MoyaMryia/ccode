@@ -447,13 +447,12 @@ fail:
  * overhead plus the text and tool-schema bodies. Used to decide when to
  * compact (ccode has no tokenizer; this is an estimate only). Per-message
  * text is cached, so a turn costs one integer add per message plus the tool
- * schema scan. */
-size_t ccode_conversation_estimate_tokens(struct ccode_conversation *conv,
-                                          const char *tools_json) {
-    size_t total = 0;
+ * schema scan -- which callers that hold a stable catalog supply up front. */
+size_t ccode_conversation_estimate_tokens_with_tool_tokens(
+    struct ccode_conversation *conv, size_t tool_tokens) {
+    size_t total = tool_tokens;
     size_t i;
     if (!conv) return 0;
-    if (tools_json) total += ccode_estimate_text_tokens(tools_json);
     for (i = 0; i < conv->count; i++) {
         if (message_cache_fill(&conv->messages[i]) == 0)
             total += conv->messages[i].request_tokens;
@@ -461,6 +460,12 @@ size_t ccode_conversation_estimate_tokens(struct ccode_conversation *conv,
             total += message_token_estimate(&conv->messages[i]);
     }
     return total;
+}
+
+size_t ccode_conversation_estimate_tokens(struct ccode_conversation *conv,
+                                          const char *tools_json) {
+    return ccode_conversation_estimate_tokens_with_tool_tokens(
+        conv, tools_json ? ccode_estimate_text_tokens(tools_json) : 0);
 }
 
 char *ccode_conversation_build_request(struct ccode_conversation *conv,

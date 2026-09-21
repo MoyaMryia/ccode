@@ -127,11 +127,15 @@ char *ccode_conversation_build_request(struct ccode_conversation *conv,
  * ~0.3 token per English char and ~0.6 per non-ASCII char, plus per-message
  * framing overhead. Used to decide when to compact.
  *
- * The conversation variant may populate the per-message estimate cache, so it
- * takes a non-const conversation; the result is unaffected. */
+ * The conversation variants may populate the per-message estimate cache, so
+ * they take a non-const conversation; the result is unaffected. The
+ * _with_tool_tokens variant takes the tool schema's count from the caller, so
+ * a run that builds its catalog once stops re-scanning it every turn. */
 size_t ccode_estimate_text_tokens(const char *text);
 size_t ccode_conversation_estimate_tokens(struct ccode_conversation *conv,
                                           const char *tools_json);
+size_t ccode_conversation_estimate_tokens_with_tool_tokens(
+    struct ccode_conversation *conv, size_t tool_tokens);
 
 void ccode_conversation_compact(struct ccode_conversation *conv,
                                  const char *change_log_json,

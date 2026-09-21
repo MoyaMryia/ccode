@@ -89,6 +89,12 @@ struct agent_context {
     int respect_gitignore_loaded;
     int respect_gitignore;
     int subagent_depth;
+    /* Set by every mutator of the two lists above, cleared by the turn loop
+     * once it has serialized the snapshot. change_log_serialize() rebuilds the
+     * whole (capped) log, so without this the loop would rebuild it every turn
+     * only to strcmp it against the previous copy and throw it away. */
+    int change_log_dirty;
+    int task_list_dirty;
     char *last_change_summary;
     char *last_task_summary;
     /* Per-session archive for oversized tool results (<session>.results).

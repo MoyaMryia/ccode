@@ -174,6 +174,29 @@ MUTANTS = [
              "    message_cache_drop(msg);\n",
          new="        msg->tool_call_count++;\n"
              "    }\n"),
+
+    # ── runtime-context snapshot cache (agent_fs.c / agent.c) ──────────────
+    dict(label="change_log_add_ex forgets to mark dirty", area="snapshot",
+         file="src/agent/agent_fs.c", gates=["agent"],
+         old="    ch->stderr_truncated = stderr_truncated;\n"
+             "    ctx->change_log_dirty = 1;\n",
+         new="    ch->stderr_truncated = stderr_truncated;\n"),
+    dict(label="change_log_reset forgets to mark dirty", area="snapshot",
+         file="src/agent/agent_fs.c", gates=["agent"],
+         old="    ccode_vec_clear(&ctx->change_log);\n"
+             "    ctx->change_log_dirty = 1;\n",
+         new="    ccode_vec_clear(&ctx->change_log);\n"),
+    dict(label="task create forgets to mark dirty", area="snapshot",
+         file="src/agent/agent_fs.c", gates=["agent"],
+         old="    snprintf(t->status, sizeof(t->status), \"%s\", \"pending\");\n"
+             "    ctx->task_list_dirty = 1;\n",
+         new="    snprintf(t->status, sizeof(t->status), \"%s\", \"pending\");\n"),
+    dict(label="snapshot serializes the global, not the run context",
+         area="snapshot", file="src/agent/agent.c", gates=["agent"],
+         old="        const char *ch = ctx->change_log.len > 0\n"
+             "                         ? change_log_serialize(ctx) : NULL;\n",
+         new="        const char *ch = ctx->change_log.len > 0\n"
+             "                         ? change_log_serialize(&agent_ctx) : NULL;\n"),
 ]
 
 

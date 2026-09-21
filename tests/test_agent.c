@@ -91,6 +91,9 @@ void test_change_log_add_command_full(const char *cmd, int exit_code,
                                        int stdout_truncated,
                                        int stderr_truncated);
 void test_change_log_add_denied_entry(const char *tool_name);
+int test_sync_runtime_context(struct ccode_conversation *conv,
+                              struct agent_context *ctx, int tools_enabled,
+                              int minimal_mode);
 void test_set_respect_gitignore(int v);
 int test_run_pending_subagents(struct ccode_agent_config *cfg,
                                struct ccode_conversation *conv,
@@ -5655,6 +5658,150 @@ static int test_compaction_after_request_build(void) {
     return 1;
 }
 
+/* The turn loop builds the tool catalog once per run and reuses the bytes, so
+ * building it must be a pure function of the composition (otherwise a cached
+ * catalog would change what the model is offered), and the token count cached
+ * alongside it must equal the one derived from the string. */
+static int test_tool_catalog_is_pure(void) {
+    char *w1 = ccode_build_write_tools_json();
+    char *w2 = ccode_build_write_tools_json();
+    char *m = ccode_build_minimal_tools_json();
+    char *r = ccode_build_readonly_tools_json();
+    struct ccode_conversation conv;
+
+    ASSERT(w1 != NULL && w2 != NULL && m != NULL && r != NULL);
+    ASSERT(strcmp(w1, w2) == 0);          /* safe to cache for the whole run */
+    ASSERT(strstr(w1, "str_replace_editor") != NULL);
+    ASSERT(strstr(m, "read_tool_output") == NULL);
+    ASSERT(strstr(r, "read_tool_output") != NULL);
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hi") == 0);
+    /* The precomputed-count form must agree with the string form, including
+     * the NULL/empty catalog cases. */
+    ASSERT(ccode_conversation_estimate_tokens_with_tool_tokens(
+               &conv, ccode_estimate_text_tokens(w1)) ==
+           ccode_conversation_estimate_tokens(&conv, w1));
+    ASSERT(ccode_conversation_estimate_tokens_with_tool_tokens(&conv, 0) ==
+           ccode_conversation_estimate_tokens(&conv, NULL));
+    ASSERT(ccode_conversation_estimate_tokens_with_tool_tokens(&conv, 0) ==
+           ccode_conversation_estimate_tokens(&conv, ""));
+    ccode_conversation_destroy(&conv);
+
+    free(w1); free(w2); free(m); free(r);
+    return 1;
+}
+
+/* The runtime-context snapshots (change log, task list) are serialized only
+ * when a mutator marked them dirty, appended once per change, and taken from
+ * the context the loop was handed -- never from the global context. */
+static int test_runtime_snapshot_dirty_gating(void) {
+    struct agent_context ctx;
+    struct ccode_conversation conv;
+    char *r;
+    size_t n;
+    int i;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ccode_agent_context_init(&ctx);
+    /* As run setup does: this is what assigns the first task id ("1"). */
+    task_list_reset(&ctx);
+
+    /* Poison the global log: if the sync serialized the wrong context, its
+     * marker would show up in the conversation below. */
+    test_change_log_reset();
+    test_change_log_add_command_full("GLOBAL_MARKER", 0, 0, 0, 0);
+
+    /* Nothing changed yet: the conversation must not be touched. */
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(conv.count == 0);
+
+    change_log_add_ex(&ctx, "command", "SCRATCH_MARKER", 0, 0, 0, 0, 0);
+    ASSERT(ctx.change_log_dirty == 1);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(conv.count == 1);
+    ASSERT(ctx.change_log_dirty == 0);
+    ASSERT(conv.messages[0].role == CCODE_ROLE_SYSTEM);
+    ASSERT(strstr(conv.messages[0].content, "SCRATCH_MARKER") != NULL);
+    ASSERT(strstr(conv.messages[0].content, "GLOBAL_MARKER") == NULL);
+
+    /* Unchanged: rebuilding and re-appending an identical snapshot would just
+     * duplicate it in the conversation. */
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(conv.count == 1);
+
+    /* A further change appends exactly one more copy of the whole log. */
+    change_log_add_ex(&ctx, "command", "SECOND_MARKER", 0, 0, 0, 0, 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(conv.count == 2);
+    ASSERT(strstr(conv.messages[1].content, "SECOND_MARKER") != NULL);
+    ASSERT(strstr(conv.messages[1].content, "SCRATCH_MARKER") != NULL);
+
+    /* Minimal mode injects nothing, and must leave the change pending. */
+    change_log_add_ex(&ctx, "command", "AFTER_MINIMAL", 0, 0, 0, 0, 0);
+    ASSERT(ctx.change_log_dirty == 1);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 1) == 0);
+    ASSERT(conv.count == 2);
+    ASSERT(ctx.change_log_dirty == 1);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(conv.count == 3);
+    ASSERT(ctx.change_log_dirty == 0);
+    ASSERT(strstr(conv.messages[2].content, "AFTER_MINIMAL") != NULL);
+
+    /* Entries that still fit are recorded and announced once... */
+    for (i = 0; i < CCODE_MAX_CHANGES + 5; i++)
+        change_log_add_ex(&ctx, "command", "FILLER", 0, 0, 0, 0, 0);
+    ASSERT(ctx.change_log_dirty == 1);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(conv.count == 4);
+    ASSERT(ctx.change_log_dirty == 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(conv.count == 4);
+    /* ...and an entry dropped by CCODE_MAX_CHANGES is not a change at all. */
+    change_log_add_ex(&ctx, "command", "OVER_CAP", 0, 0, 0, 0, 0);
+    ASSERT(ctx.change_log_dirty == 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(conv.count == 4);
+
+    /* Task list: gated the same way, and only carried by write tools. */
+    r = exec_task_create(&ctx, "task one");
+    ASSERT(r != NULL);
+    free(r);
+    ASSERT(ctx.task_list_dirty == 1);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(conv.count == 5);
+    ASSERT(ctx.task_list_dirty == 0);
+    ASSERT(strstr(conv.messages[4].content, "task one") != NULL);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(conv.count == 5);
+
+    r = exec_task_update(&ctx, "1", "completed");
+    ASSERT(r != NULL);
+    free(r);
+    ASSERT(ctx.task_list_dirty == 1);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 0, 0) == 0); /* no write tools */
+    ASSERT(conv.count == 5);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(conv.count == 6);
+    ASSERT(strstr(conv.messages[5].content, "completed") != NULL);
+
+    /* A reset marks the log dirty and drops the cached snapshot rather than
+     * re-appending it; an empty log adds no message. */
+    change_log_reset(&ctx);
+    ASSERT(ctx.change_log_dirty == 1);
+    n = conv.count;
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(ctx.change_log_dirty == 0);
+    ASSERT(conv.count == n);
+
+    free(ctx.last_change_summary);
+    free(ctx.last_task_summary);
+    agent_context_free_lists(&ctx);
+    ccode_conversation_destroy(&conv);
+    test_change_log_reset();
+    return 1;
+}
+
 /* CCODE_SESSION_KEEP_COUNT: only the N most recent sessions survive a save. */
 static int test_session_prune_keep_count(void) {
     char dir[512];
@@ -6087,6 +6234,8 @@ int main(int argc, char **argv) {
     TEST(estimate_tokens_tracks_mutations);
     TEST(result_blob_keeps_request_cache);
     TEST(compaction_after_request_build);
+    TEST(tool_catalog_is_pure);
+    TEST(runtime_snapshot_dirty_gating);
     TEST(session_prune_keep_count);
 
     fprintf(stderr, "\n=== Results: %d tests, %d failed ===\n",
