@@ -42,7 +42,6 @@
 #define IO_BUF_SIZE                 (32 * 1024)
 #define HEADER_BUF_SIZE             8192
 #define MAX_CHUNK_SIZE              (4 * 1024 * 1024)
-#define DEFAULT_TOTAL_TIMEOUT_SEC   300
 #define CONNECT_TIMEOUT_MS          30000
 #define IO_TIMEOUT_MS               60000
 #define ERROR_BODY_MAX              4096
@@ -931,12 +930,12 @@ static int stream_chat_plain(const struct parsed_url *url, const char *api_key,
 #if CCODE_TLS_BACKEND == CCODE_TLS_NONE
 int ccode_stream_chat(const char *api_base, const char *api_key,
                       const char *body, int allow_remote_http,
+                      long request_timeout_sec,
                       struct ccode_sse_accumulator *acc) {
     struct parsed_url url;
-    int total_timeout = DEFAULT_TOTAL_TIMEOUT_SEC;
+    long total_timeout = request_timeout_sec > 0 ? request_timeout_sec
+                                                 : CCODE_DEFAULT_REQUEST_TIMEOUT_SEC;
     long long total_deadline;
-    const char *env = getenv("CCODE_REQUEST_TIMEOUT");
-    if (env) { int value = atoi(env); if (value > 0) total_timeout = value; }
     total_deadline = now_ms() + (long long)total_timeout * 1000;
     if (has_crlf(api_key) || parse_url(api_base, &url) != 0 || url.secure) {
         fprintf(stderr, "HTTP_ONLY builds require a valid local http:// URL and key.\n");
@@ -1011,6 +1010,7 @@ static ssize_t mbedtls_reader(void *vctx, char *buf, size_t n,
 
 int ccode_stream_chat(const char *api_base, const char *api_key,
                       const char *body, int allow_remote_http,
+                      long request_timeout_sec,
                       struct ccode_sse_accumulator *acc) {
     struct parsed_url url;
     mbedtls_net_context server;
@@ -1022,13 +1022,12 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     const char *ca_file = getenv("CCODE_CA_FILE");
     const char *personalization = "ccode";
     char header[HEADER_BUF_SIZE];
-    int total_timeout = DEFAULT_TOTAL_TIMEOUT_SEC;
+    long total_timeout = request_timeout_sec > 0 ? request_timeout_sec
+                                                 : CCODE_DEFAULT_REQUEST_TIMEOUT_SEC;
     int result = -1;
     int tls_result;
     long long total_deadline;
 
-    const char *env = getenv("CCODE_REQUEST_TIMEOUT");
-    if (env) { int value = atoi(env); if (value > 0) total_timeout = value; }
     total_deadline = now_ms() + (long long)total_timeout * 1000;
     if (has_crlf(api_key) || parse_url(api_base, &url) != 0) {
         fprintf(stderr, "Invalid CCODE_API_BASE URL or API key.\n");
@@ -1222,6 +1221,7 @@ static ssize_t polarssl_reader(void *vctx, char *buf, size_t n,
 
 int ccode_stream_chat(const char *api_base, const char *api_key,
                       const char *body, int allow_remote_http,
+                      long request_timeout_sec,
                       struct ccode_sse_accumulator *acc) {
     struct parsed_url url;
     ssl_context ssl;
@@ -1231,14 +1231,13 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     const char *ca_file = getenv("CCODE_CA_FILE");
     const char *personalization = "ccode";
     char header[HEADER_BUF_SIZE];
-    int total_timeout = DEFAULT_TOTAL_TIMEOUT_SEC;
+    long total_timeout = request_timeout_sec > 0 ? request_timeout_sec
+                                                 : CCODE_DEFAULT_REQUEST_TIMEOUT_SEC;
     int result = -1;
     int tls_result;
     int fd = -1;
     long long total_deadline;
 
-    const char *env = getenv("CCODE_REQUEST_TIMEOUT");
-    if (env) { int value = atoi(env); if (value > 0) total_timeout = value; }
     total_deadline = now_ms() + (long long)total_timeout * 1000;
     if (has_crlf(api_key) || parse_url(api_base, &url) != 0) {
         fprintf(stderr, "Invalid CCODE_API_BASE URL or API key.\n");

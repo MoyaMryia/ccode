@@ -997,7 +997,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                                              : default_stream_reasoning;
         acc.on_reasoning_context = cfg->on_reasoning_context;
         result = ccode_stream_chat(cfg->api_base, cfg->api_key, body,
-                                   cfg->allow_http, &acc);
+                                   cfg->allow_http, cfg->request_timeout_sec,
+                                   &acc);
         free(body);
 
         if (result < 0) {

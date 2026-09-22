@@ -41,6 +41,10 @@ struct ccode_config {
     /* Maximum assistant turns for one prompt (--max-turns / CCODE_MAX_TURNS).
      * Default 50 (the historical built-in bound); 0 means no limit. */
     long max_turns;
+    /* Overall per-request HTTP deadline in seconds (--request-timeout /
+     * CCODE_REQUEST_TIMEOUT). A total deadline, not an idle one; see
+     * CCODE_DEFAULT_REQUEST_TIMEOUT_SEC in net/http.h for why 900. */
+    long request_timeout_sec;
 };
 
 int ccode_parse_args(int argc, char **argv, struct ccode_config *config);

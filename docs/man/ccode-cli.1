@@ -203,6 +203,12 @@ reached the loop stops and prints a
 .B [turn limit]
 notice to stderr.
 .TP
+.BI \-\-request-timeout " N"
+Per-request HTTP deadline in seconds. Default 900. This is a total deadline,
+not an idle one, so a response that keeps streaming counts as progress but is
+still cut off at N seconds; raise it for models that think for a long time on
+a single turn. Sub-agents inherit the parent's value.
+.TP
 .BI \-\-save-session " PATH"
 Save the conversation to
 .I PATH
@@ -360,7 +366,11 @@ Set 1 to have glob/grep honor .gitignore.
 .SS Networking and TLS
 .TP
 .B CCODE_REQUEST_TIMEOUT
-Overall request timeout in seconds (default 300).
+Overall request timeout in seconds (default 900). This is a total deadline, not
+an idle one, so it must not undershoot the budget a caller was given: a
+reasoning model streaming a long turn is making progress the whole time.
+Overridable with
+.BR --request-timeout .
 .TP
 .B CCODE_CA_FILE
 Custom CA bundle for TLS certificate verification.

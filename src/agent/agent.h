@@ -58,6 +58,11 @@ struct ccode_agent_config {
      * (--max-turns / CCODE_MAX_TURNS). 0 = no limit. The config layer always
      * sets it (default 50); sub-agents inherit the parent's value. */
     long max_turns;
+    /* Overall per-request HTTP deadline in seconds (--request-timeout /
+     * CCODE_REQUEST_TIMEOUT). The config layer always sets it (default 900);
+     * sub-agents inherit the parent's value. A total deadline, not an idle one:
+     * see CCODE_DEFAULT_REQUEST_TIMEOUT_SEC in net/http.h. */
+    long request_timeout_sec;
     ccode_content_callback on_content;
     void *on_content_context;
     ccode_content_callback on_reasoning;

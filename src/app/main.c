@@ -28,6 +28,7 @@ static void tui_fill_agent(struct ccode_agent_config *agent_cfg,
     agent_cfg->context_tokens = config->context_tokens > 0
                                 ? (size_t)config->context_tokens : 0;
     agent_cfg->max_turns = config->max_turns;
+    agent_cfg->request_timeout_sec = config->request_timeout_sec;
     agent_cfg->workspace = getenv("CCODE_WORKSPACE");
     if (!agent_cfg->workspace) agent_cfg->workspace = ".";
 }

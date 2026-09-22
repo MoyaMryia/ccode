@@ -40,6 +40,7 @@ static void base_env(void) {
     set_env("CCODE_API_KEY", "test-key");
     set_env("CCODE_MODEL", "test-model");
     set_env("CCODE_MAX_TURNS", NULL);
+    set_env("CCODE_REQUEST_TIMEOUT", NULL);
     set_env("CCODE_CONTEXT_TOKENS", NULL);
     set_env("CCODE_MINIMAL", NULL);
     set_env("CCODE_READ_ONLY_TOOLS", NULL);
@@ -182,6 +183,92 @@ static int test_minimal_read_only_conflict(void) {
     return 1;
 }
 
+/* The per-request HTTP deadline is a *total* deadline, not an idle one, so its
+ * default must clear the budget a task-level agent timeout typically grants:
+ * a reasoning model streaming a long turn is making progress the whole time.
+ * At the previous hard-coded 300s a healthy MiMo-V2.6 turn at
+ * thinking_effort=high was cut off mid-stream (first byte at 1.1s, still
+ * streaming at 300.0s) while the surrounding task budget was 900s. */
+static int test_request_timeout_default_is_900(void) {
+    struct ccode_config config;
+    char *argv[] = {(char *)"ccode-cli", NULL};
+    base_env();
+    ASSERT(ccode_parse_args(1, argv, &config) == 0);
+    ASSERT(config.request_timeout_sec == 900);
+    return 1;
+}
+
+static int test_request_timeout_flag_sets_value(void) {
+    struct ccode_config config;
+    char *argv[] = {(char *)"ccode-cli", (char *)"--request-timeout", (char *)"42", NULL};
+    base_env();
+    ASSERT(ccode_parse_args(3, argv, &config) == 0);
+    ASSERT(config.request_timeout_sec == 42);
+    return 1;
+}
+
+static int test_request_timeout_env_sets_value(void) {
+    struct ccode_config config;
+    char *argv[] = {(char *)"ccode-cli", NULL};
+    base_env();
+    set_env("CCODE_REQUEST_TIMEOUT", "45");
+    ASSERT(ccode_parse_args(1, argv, &config) == 0);
+    ASSERT(config.request_timeout_sec == 45);
+    return 1;
+}
+
+static int test_request_timeout_flag_overrides_env(void) {
+    struct ccode_config config;
+    char *argv[] = {(char *)"ccode-cli", (char *)"--request-timeout", (char *)"42", NULL};
+    base_env();
+    set_env("CCODE_REQUEST_TIMEOUT", "45");
+    ASSERT(ccode_parse_args(3, argv, &config) == 0);
+    ASSERT(config.request_timeout_sec == 42);
+    return 1;
+}
+
+/* A non-positive or unparsable env value keeps the default rather than
+ * disarming the deadline: 0 or a negative number would fail every request
+ * immediately, which is a much worse failure than a long wait. */
+static int test_request_timeout_bad_env_keeps_default(void) {
+    struct ccode_config config;
+    char *argv[] = {(char *)"ccode-cli", NULL};
+    base_env();
+    set_env("CCODE_REQUEST_TIMEOUT", "0");
+    ASSERT(ccode_parse_args(1, argv, &config) == 0);
+    ASSERT(config.request_timeout_sec == 900);
+    base_env();
+    set_env("CCODE_REQUEST_TIMEOUT", "-5");
+    ASSERT(ccode_parse_args(1, argv, &config) == 0);
+    ASSERT(config.request_timeout_sec == 900);
+    base_env();
+    set_env("CCODE_REQUEST_TIMEOUT", "abc");
+    ASSERT(ccode_parse_args(1, argv, &config) == 0);
+    ASSERT(config.request_timeout_sec == 900);
+    base_env();
+    set_env("CCODE_REQUEST_TIMEOUT", "");
+    ASSERT(ccode_parse_args(1, argv, &config) == 0);
+    ASSERT(config.request_timeout_sec == 900);
+    return 1;
+}
+
+static int test_request_timeout_bad_flag_rejected(void) {
+    struct ccode_config config;
+    char *zero[] = {(char *)"ccode-cli", (char *)"--request-timeout", (char *)"0", NULL};
+    char *neg[] = {(char *)"ccode-cli", (char *)"--request-timeout", (char *)"-1", NULL};
+    char *junk[] = {(char *)"ccode-cli", (char *)"--request-timeout", (char *)"abc", NULL};
+    char *missing[] = {(char *)"ccode-cli", (char *)"--request-timeout", NULL};
+    base_env();
+    ASSERT(ccode_parse_args(3, zero, &config) == -1);
+    base_env();
+    ASSERT(ccode_parse_args(3, neg, &config) == -1);
+    base_env();
+    ASSERT(ccode_parse_args(3, junk, &config) == -1);
+    base_env();
+    ASSERT(ccode_parse_args(2, missing, &config) == -1);
+    return 1;
+}
+
 int main(void) {
     fprintf(stderr, "config tests:\n");
     TEST(default_is_50);
@@ -193,6 +280,12 @@ int main(void) {
     TEST(bad_flag_rejected);
     TEST(missing_value_rejected);
     TEST(minimal_read_only_conflict);
+    TEST(request_timeout_default_is_900);
+    TEST(request_timeout_flag_sets_value);
+    TEST(request_timeout_env_sets_value);
+    TEST(request_timeout_flag_overrides_env);
+    TEST(request_timeout_bad_env_keeps_default);
+    TEST(request_timeout_bad_flag_rejected);
     fprintf(stderr, "%d tests, %d failures\n", tests_run, tests_failed);
     return tests_failed ? 1 : 0;
 }

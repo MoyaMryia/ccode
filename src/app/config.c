@@ -3,6 +3,7 @@
 #endif
 
 #include "config.h"
+#include "../net/http.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,6 +54,7 @@ void ccode_print_usage(const char *program) {
         "      --no-markdown      Disable markdown rendering (raw output)\n"
         "      --context-tokens N Approximate context window; auto-compact near it (default 1000000, 0=off)\n"
         "      --max-turns N      Max assistant turns for one prompt (default 50, 0=no limit)\n"
+        "      --request-timeout N  Per-request HTTP deadline in seconds (default 900)\n"
         "      --session-dir DIR  Session storage directory\n"
         "  -h, --help             Show this help\n"
         "\n"
@@ -71,6 +73,7 @@ void ccode_print_usage(const char *program) {
         "                             off/none/empty disables the reasoning_effort field\n"
         "  CCODE_CONTEXT_TOKENS       Approximate context window in tokens (default: 1000000)\n"
         "  CCODE_MAX_TURNS            Max assistant turns for one prompt (default: 50; 0 = no limit)\n"
+        "  CCODE_REQUEST_TIMEOUT      Per-request HTTP deadline in seconds (default: 900)\n"
         "\n"
         "REPL slash commands (interactive mode):\n"
         "  /help        Show available slash commands\n"
@@ -181,6 +184,18 @@ static int opt_max_turns(struct ccode_config *c, const char *v) {
     c->max_turns = n;
     return 0;
 }
+static int opt_request_timeout(struct ccode_config *c, const char *v) {
+    char *end = NULL;
+    long n = v ? strtol(v, &end, 10) : 0;
+    if (!v || !v[0] || !end || *end != '\0' || n <= 0) {
+        fprintf(stderr,
+                "Invalid --request-timeout value: %s (expected a positive integer, in seconds)\n",
+                v ? v : "");
+        return -1;
+    }
+    c->request_timeout_sec = n;
+    return 0;
+}
 static int opt_save_session(struct ccode_config *c, const char *v) { c->save_session = v; return 0; }
 static int opt_resume(struct ccode_config *c, const char *v) { c->resume_session = v; return 0; }
 static int opt_session_dir(struct ccode_config *c, const char *v) { c->session_dir = v; return 0; }
@@ -212,6 +227,7 @@ static const struct ccode_option ccode_options[] = {
     {"--no-markdown", NULL, 0, opt_no_markdown},
     {"--context-tokens", NULL, 1, opt_context_tokens},
     {"--max-turns", NULL, 1, opt_max_turns},
+    {"--request-timeout", NULL, 1, opt_request_timeout},
     {"--save-session", NULL, 1, opt_save_session},
     {"--resume", NULL, 1, opt_resume},
     {"--session-dir", NULL, 1, opt_session_dir},
@@ -347,6 +363,21 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
             if (end && *end == '\0' && parsed >= 0) n = parsed;
         }
         config->max_turns = n;
+    }
+    {
+        /* Overall per-request HTTP deadline. 900s is the value a task-level
+         * agent budget typically grants; the previously hard-coded 300s cut off
+         * healthy streaming turns from reasoning models (measured: first byte
+         * at 1.1s, still streaming at 300.0s). A non-positive or unparsable env
+         * value keeps the default instead of disarming the deadline. */
+        const char *rt = getenv("CCODE_REQUEST_TIMEOUT");
+        long n = CCODE_DEFAULT_REQUEST_TIMEOUT_SEC;
+        if (rt && rt[0]) {
+            char *end = NULL;
+            long parsed = strtol(rt, &end, 10);
+            if (end && *end == '\0' && parsed > 0) n = parsed;
+        }
+        config->request_timeout_sec = n;
     }
     {
         const char *tk = getenv("CCODE_THINKING");
