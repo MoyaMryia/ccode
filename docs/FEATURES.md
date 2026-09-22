@@ -111,6 +111,7 @@ Linux、macOS、FreeBSD / NetBSD / OpenBSD / DragonFlyBSD、Haiku、GNU Hurd、i
 - `ccode-tui`（手动构建）只链 JSON Lines 前端；进程内 TUI/agent 集成仅在 `CCODE_COMBINED` 单体构建中编译，避免前端二进制引用 agent/permission 符号
 - `make install` 只装 `ccode-cli` 及其 man 页；`make uninstall` 仍清理 `ccode` / `ccode-cli` / `ccode-tui` 三项，用于清掉老版本残留
 - retro 构建同样做体积优化（宿主冒烟全开，guest 原生只裁符号）
+- 省下来的运行时最后变成整段开销：harness-perf-benchmark 同一份脚本化 mock、同样 100 个工具轮下 `CU` 0.114（核·秒 + GB·秒，进程树口径），是那批 14 家里最低的（第二名 peri 0.606）；读数、口径与边界见 README 的「性能」一节
 
 ## 路线图
 
