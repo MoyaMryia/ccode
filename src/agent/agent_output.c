@@ -128,17 +128,23 @@ const char *ccode_coding_agent_system_prompt(void) {
  * guidance, no runtime context. Tool usage is carried entirely by the tool
  * descriptions.
  *
- * The second sentence is the reasoning-preface rule from the long
- * coding-agent prompt. It is kept on purpose: it is the only part of that
- * prompt that constrains *shape* rather than *process* -- it forces each
- * thinking block to open with a one-line goal statement, which measurably
- * keeps a turn's reasoning from wandering. Everything else in the long prompt
- * (inspect first / smallest change / verify / report) is process guidance that
- * the narrow tool set already implies. Costs ~0.5% of a request (155 B). */
+ * The rest is the process discipline from the long coding-agent prompt
+ * (inspect first / smallest change / verify / report accurately) plus the
+ * reasoning-preface rule. **This is not decoration.** Measured 2026-09-23 on
+ * terminal-bench/regex-log, 3 trials x 5 runs: with a persona-only prompt the
+ * default composition ran past the task's 900s agent budget in **3 of 5**
+ * runs (reward 1 at the timeout, i.e. it had solved the task and kept going),
+ * while the same model under pi -- whose system prompt carries the same
+ * "be concise / report" discipline -- never did (0 of 3). Dropping "report
+ * accurately what changed and what you checked" removed the model's stopping
+ * cue. Keeping it costs ~200 B of a request. */
 static const char ccode_minimal_prompt[] =
-    "You are a helpful software engineer assistant. Begin every reasoning "
-    "block with \"We need\" followed by a one-line statement of your immediate "
-    "goal, keeping the reasoning focused on the next concrete step.";
+    "You are a helpful software engineer assistant. Inspect the relevant code "
+    "before changing it, prefer the smallest change that satisfies the "
+    "request, verify your work, and report accurately what changed and what "
+    "you checked. Never invent test results. Begin every reasoning block with "
+    "\"We need\" followed by a one-line statement of your immediate goal, "
+    "keeping the reasoning focused on the next concrete step.";
 
 const char *ccode_minimal_system_prompt(void) {
     return ccode_minimal_prompt;

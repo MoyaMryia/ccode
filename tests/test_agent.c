@@ -5283,6 +5283,11 @@ static int test_minimal_prompt_contract(void) {
     ASSERT(strncmp(prompt, "You are a helpful software engineer assistant.",
                    45) == 0);
     ASSERT(strstr(prompt, "Begin every reasoning block with \"We need\"") != NULL);
+    /* The process/stopping discipline is not decoration: without it the
+     * default composition ran past the 900s agent budget in 3 of 5 measured
+     * runs (having already solved the task). */
+    ASSERT(strstr(prompt, "report accurately what changed") != NULL);
+    ASSERT(strstr(prompt, "Never invent test results") != NULL);
     /* Strictly shorter than the standard prompt: process guidance lives in the
      * tool descriptions instead. */
     ASSERT(strlen(prompt) < strlen(ccode_coding_agent_system_prompt()));
