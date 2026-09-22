@@ -121,12 +121,24 @@ const char *ccode_coding_agent_system_prompt(void) {
     return ccode_system_prompt;
 }
 
-/* The deepseek-harness `minimal` persona, transplanted verbatim: one sentence
- * is the complete prompt (its `complete: true`), with no workspace text, no
- * guidance and no runtime context. Tool usage is carried entirely by the two
- * tool descriptions of the minimal composition. */
+/* The deepseek-harness `minimal` persona, plus one discipline sentence.
+ *
+ * The persona itself is transplanted verbatim from deepseek-harness's
+ * `minimal` preset: one sentence, `complete: true`, no workspace text, no
+ * guidance, no runtime context. Tool usage is carried entirely by the tool
+ * descriptions.
+ *
+ * The second sentence is the reasoning-preface rule from the long
+ * coding-agent prompt. It is kept on purpose: it is the only part of that
+ * prompt that constrains *shape* rather than *process* -- it forces each
+ * thinking block to open with a one-line goal statement, which measurably
+ * keeps a turn's reasoning from wandering. Everything else in the long prompt
+ * (inspect first / smallest change / verify / report) is process guidance that
+ * the narrow tool set already implies. Costs ~0.5% of a request (155 B). */
 static const char ccode_minimal_prompt[] =
-    "You are a helpful software engineer assistant.";
+    "You are a helpful software engineer assistant. Begin every reasoning "
+    "block with \"We need\" followed by a one-line statement of your immediate "
+    "goal, keeping the reasoning focused on the next concrete step.";
 
 const char *ccode_minimal_system_prompt(void) {
     return ccode_minimal_prompt;

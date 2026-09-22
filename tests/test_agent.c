@@ -5278,10 +5278,13 @@ static int test_tool_descriptions_discourage_whole_reads(void) {
 static int test_minimal_prompt_contract(void) {
     const char *prompt = ccode_minimal_system_prompt();
     ASSERT(prompt != NULL);
-    /* deepseek-harness minimal persona, verbatim: one sentence, complete. */
-    ASSERT(strcmp(prompt,
-                  "You are a helpful software engineer assistant.") == 0);
-    /* Strictly shorter than the standard prompt: no guidance repeated. */
+    /* The deepseek-harness minimal persona, plus the one discipline sentence
+     * kept from the long prompt: the reasoning-preface rule. */
+    ASSERT(strncmp(prompt, "You are a helpful software engineer assistant.",
+                   45) == 0);
+    ASSERT(strstr(prompt, "Begin every reasoning block with \"We need\"") != NULL);
+    /* Strictly shorter than the standard prompt: process guidance lives in the
+     * tool descriptions instead. */
     ASSERT(strlen(prompt) < strlen(ccode_coding_agent_system_prompt()));
     return 1;
 }
