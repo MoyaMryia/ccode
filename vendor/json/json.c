@@ -1047,6 +1047,15 @@ static int has_only_one_json_root(const char *data, size_t length,
     return offset == length;
 }
 
+/* An explicit JSON `null`, as opposed to an absent key. OpenAI-compatible
+ * streamers (MiMo-V2.6, vLLM, several gateways) keep the key and send null in
+ * every continuation fragment rather than omitting it, so "null" has to mean
+ * "no change here" exactly like a missing key. */
+static int json_token_is_null(const char *data, ccode_jsmntok_t *tok) {
+    return tok->type == CCODE_JSMN_PRIMITIVE &&
+           ccode_jsmn_token_streq(data, tok, "null");
+}
+
 static int parse_tool_calls(const char *data, ccode_jsmntok_t *tokens,
                             int num_tokens,
                             struct ccode_sse_tool_call *tool_calls,
@@ -1112,9 +1121,10 @@ static int parse_tool_calls(const char *data, ccode_jsmntok_t *tokens,
             goto malformed;
         }
 
-        /* "id" must be a string. May be absent on later deltas. */
+        /* "id" must be a string. May be absent -- or explicitly null -- on
+         * later deltas. A non-null non-string (e.g. 42) is still malformed. */
         tok = find_key_in(tokens, num_tokens, parent_idx, data, "id");
-        if (tok) {
+        if (tok && !json_token_is_null(data, tok)) {
             if (tok->type != CCODE_JSMN_STRING) goto malformed;
             slot->id = unescape_json_string(data, tok->start, tok->end,
                                              SIZE_MAX);
@@ -1135,7 +1145,7 @@ static int parse_tool_calls(const char *data, ccode_jsmntok_t *tokens,
             seen_function = 1;
 
             name_tok = find_key_in(tokens, num_tokens, func_idx, data, "name");
-            if (name_tok) {
+            if (name_tok && !json_token_is_null(data, name_tok)) {
                 if (name_tok->type != CCODE_JSMN_STRING) {
                     goto malformed;
                 }

@@ -478,6 +478,63 @@ static int test_tool_call_accumulation(void) {
     return 1;
 }
 
+/* OpenAI-compatible streamers keep `id` and `name` in every tool-call
+ * continuation fragment and send them as explicit null, instead of omitting
+ * the keys the way the mock scripts did:
+ *
+ *   {"delta":{"tool_calls":[{"index":0,"id":null,"type":"function",
+ *                            "function":{"arguments":"{","name":null}}]}}
+ *
+ * Treating that null as malformed aborted the whole response: ccode dropped
+ * the connection mid-stream, exited non-zero and never ran the tool. Found on
+ * 2026-09-22 driving MiMo-V2.6 through the recording proxy. A non-null
+ * non-string (42) must still be rejected -- see
+ * test_strict_tool_calls_rejects_id_not_string. */
+static int test_tool_call_fragment_explicit_null_id_and_name(void) {
+    struct ccode_sse_accumulator acc;
+
+    ccode_sse_accumulator_init(&acc);
+
+    /* Opening fragment: id and name present, arguments still empty. */
+    ASSERT(TEST_PROCESS(&acc,
+        "{\"choices\":[{\"delta\":{\"content\":\"\",\"role\":\"assistant\","
+        "\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\","
+        "\"function\":{\"name\":\"str_replace_editor\",\"arguments\":\"\"}}],"
+        "\"reasoning_content\":null},\"finish_reason\":null,\"index\":0}]}") == 0);
+
+    /* Continuation fragments: id/name explicitly null, arguments dribbled out
+     * one piece at a time. */
+    ASSERT(TEST_PROCESS(&acc,
+        "{\"choices\":[{\"delta\":{\"content\":null,\"role\":null,"
+        "\"tool_calls\":[{\"index\":0,\"id\":null,\"type\":\"function\","
+        "\"function\":{\"arguments\":\"{\",\"name\":null}}],"
+        "\"reasoning_content\":null},\"finish_reason\":null,\"index\":0}]}") == 0);
+    ASSERT(TEST_PROCESS(&acc,
+        "{\"choices\":[{\"delta\":{\"content\":null,\"role\":null,"
+        "\"tool_calls\":[{\"index\":0,\"id\":null,\"type\":\"function\","
+        "\"function\":{\"arguments\":\"}\",\"name\":null}}],"
+        "\"reasoning_content\":null},\"finish_reason\":null,\"index\":0}]}") == 0);
+
+    ASSERT(acc.has_error == 0);
+    ASSERT(acc.tool_call_count == 1);
+    ASSERT(acc.tool_calls[0].id != NULL);
+    ASSERT(strcmp(acc.tool_calls[0].id, "call_1") == 0);
+    ASSERT(acc.tool_calls[0].name != NULL);
+    ASSERT(strcmp(acc.tool_calls[0].name, "str_replace_editor") == 0);
+    ASSERT(acc.tool_calls[0].arguments != NULL);
+    ASSERT(strcmp(acc.tool_calls[0].arguments, "{}") == 0);
+
+    /* Terminal chunk: tool_calls null, a real finish_reason. */
+    ASSERT(TEST_PROCESS(&acc,
+        "{\"choices\":[{\"delta\":{\"content\":null,\"role\":null,"
+        "\"tool_calls\":null,\"reasoning_content\":null},"
+        "\"finish_reason\":\"tool_calls\",\"index\":0}]}") == 0);
+    ASSERT(acc.finish_reason != NULL);
+    ASSERT(strcmp(acc.finish_reason, "tool_calls") == 0);
+
+    ccode_sse_accumulator_destroy(&acc);
+    return 1;
+}
 /* Streaming providers may split a tool-call arguments fragment in the middle
  * of an escape sequence ("\n" delivered as "\" then "n"). Arguments must be
  * accumulated as raw escaped bytes and unescaped exactly once at execution
@@ -968,6 +1025,7 @@ int main(void) {
     TEST(accumulator_stops_after_done);
     TEST(single_tool_call);
     TEST(tool_call_accumulation);
+    TEST(tool_call_fragment_explicit_null_id_and_name);
     TEST(parse_error_message_extract);
     TEST(parse_error_message_missing);
     TEST(parse_error_message_capped);
