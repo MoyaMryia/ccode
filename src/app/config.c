@@ -55,12 +55,14 @@ void ccode_print_usage(const char *program) {
         "      --context-tokens N Approximate context window; auto-compact near it (default 1000000, 0=off)\n"
         "      --max-turns N      Max assistant turns for one prompt (default 50, 0=no limit)\n"
         "      --request-timeout N  Per-request HTTP deadline in seconds (default 900)\n"
+        "      --full-prompt      Long coding-agent prompt + runtime snapshots\n"
         "      --session-dir DIR  Session storage directory\n"
         "  -h, --help             Show this help\n"
         "\n"
         "Environment:\n"
         "  CCODE_MINIMAL              Set 1 for minimal mode (fixed one-line system\n"
         "                             prompt; str_replace_editor + bash tools)\n"
+        "  CCODE_FULL_PROMPT          Set 1 for the long prompt + snapshots\n"
         "  CCODE_SESSION_DIR          Session storage directory\n"
         "  CCODE_SESSION_AUTO_SAVE    Mint auto-*.json chain and save each turn (default: 1;\n"
         "                             0 = persist only with explicit session flags)\n"
@@ -108,6 +110,11 @@ static int opt_minimal(struct ccode_config *c, const char *v) {
     (void)v;
     c->minimal_mode = 1;
     c->tools_enabled = 1;
+    return 0;
+}
+static int opt_full_prompt(struct ccode_config *c, const char *v) {
+    (void)v;
+    c->prompt_full = 1;
     return 0;
 }
 static int opt_default(struct ccode_config *c, const char *v) {
@@ -210,6 +217,7 @@ static const struct ccode_option ccode_options[] = {
     {"--read-only", NULL, 0, opt_read_only},
     {"--write", NULL, 0, opt_write},
     {"--minimal", NULL, 0, opt_minimal},
+    {"--full-prompt", NULL, 0, opt_full_prompt},
     {"--default", NULL, 0, opt_default},
     {"--debug", NULL, 0, opt_debug},
     {"--interactive", "-i", 0, opt_interactive},
@@ -319,6 +327,15 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
             config->minimal_mode = 1;
             config->tools_enabled = 1;
         }
+    }
+    {
+        /* CCODE_FULL_PROMPT=1 restores the historical prompt profile: the
+         * long coding-agent persona plus per-turn change-log/task-list
+         * snapshots in the conversation. The default is the lean profile, so
+         * that `minimal` and the default composition differ only in their
+         * tool list. */
+        const char *fp = getenv("CCODE_FULL_PROMPT");
+        if (fp && fp[0] == '1') config->prompt_full = 1;
     }
     {
         const char *aa = getenv("CCODE_AUTO_APPROVE");

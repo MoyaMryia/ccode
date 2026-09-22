@@ -1059,12 +1059,13 @@ static int json_token_is_null(const char *data, ccode_jsmntok_t *tok) {
 static int parse_tool_calls(const char *data, ccode_jsmntok_t *tokens,
                             int num_tokens,
                             struct ccode_sse_tool_call *tool_calls,
-                            size_t *count) {
+                            size_t *count, int *truncated) {
     ccode_jsmntok_t *tc_array;
     ccode_jsmntok_t *choices_tok;
     ccode_jsmntok_t *delta_tok;
     int i;
     int arr_idx;
+    size_t emitted;
 
     choices_tok = find_key_in(tokens, num_tokens, 0, data, "choices");
     if (!choices_tok || choices_tok->type != CCODE_JSMN_ARRAY) return 0;
@@ -1079,16 +1080,26 @@ static int parse_tool_calls(const char *data, ccode_jsmntok_t *tokens,
                                (int)(delta_tok - tokens), data, "tool_calls");
     }
     if (!tc_array || tc_array->type != CCODE_JSMN_ARRAY) return 0;
-    if (tc_array->size > CCODE_MAX_SSE_TOOL_CALLS) return -1;
+    /* A delta carrying more tool calls than the array holds is not malformed,
+     * it is out of budget: keep the ones that fit and report the overflow.
+     * Treating it as malformed aborted the whole turn -- measured
+     * 2026-09-22 on terminal-bench/sanitize-git-repo, where the model sent a
+     * single 50+-call batch of secret replacements. */
+    emitted = (size_t)tc_array->size;
+    if (emitted > CCODE_MAX_SSE_TOOL_CALLS) {
+        emitted = CCODE_MAX_SSE_TOOL_CALLS;
+        *truncated = 1;
+    }
     arr_idx = (int)(tc_array - tokens);
 
-    for (i = 0; i < tc_array->size; i++) {
+    for (i = 0; (size_t)i < emitted; i++) {
         ccode_jsmntok_t *tc_obj;
         ccode_jsmntok_t *tok;
         int parent_idx;
         int seen_index = 0;
         int seen_id = 0;
         int seen_function = 0;
+        int skip_slot = 0;
         struct ccode_sse_tool_call *slot = &tool_calls[*count];
 
         tc_obj = find_index_in(tokens, num_tokens, arr_idx, i);
@@ -1112,9 +1123,14 @@ static int parse_tool_calls(const char *data, ccode_jsmntok_t *tokens,
             for (k = tok->start; k < tok->end; k++) {
                 if (data[k] < '0' || data[k] > '9') goto malformed;
             }
-            if (ccode_json_token_to_int(data, tok, &v) != 0 || v < 0 ||
-                v >= CCODE_MAX_SSE_TOOL_CALLS)
+            if (ccode_json_token_to_int(data, tok, &v) != 0 || v < 0) 
                 return -1;
+            if (v >= CCODE_MAX_SSE_TOOL_CALLS) {
+                /* Index past the array: drop this call, keep the response.
+                 * The agent reports the overflow to the model. */
+                *truncated = 1;
+                skip_slot = 1;
+            }
             slot->index = (int)v;
             seen_index = 1;
         } else if (tok) {
@@ -1191,6 +1207,18 @@ static int parse_tool_calls(const char *data, ccode_jsmntok_t *tokens,
             slot->index = i;
         }
 
+        if (skip_slot) {
+            /* Declared index is past the array: drop the entry, keep the
+             * response, and let the agent report the overflow. */
+            free(slot->id);
+            free(slot->name);
+            free(slot->arguments);
+            slot->id = NULL;
+            slot->name = NULL;
+            slot->arguments = NULL;
+            continue;
+        }
+
         (*count)++;
         continue;
 
@@ -1251,7 +1279,8 @@ int ccode_parse_sse_delta(const char *data, size_t length,
 
     {
         int r = parse_tool_calls(data, tokens, num_tokens,
-                                 delta->tool_calls, &delta->tool_call_count);
+                                 delta->tool_calls, &delta->tool_call_count,
+                                 &delta->tool_calls_truncated);
         if (r < 0) {
             /* Malformed tool-call shape: free anything we already accepted and
              * surface an error delta so the caller can abort cleanly. */
@@ -1391,7 +1420,14 @@ static int accumulator_add_tool_call(struct ccode_sse_accumulator *acc,
             return ccode_merge_tool_call(&acc->tool_calls[i], tc);
         }
     }
-    if (acc->tool_call_count >= CCODE_MAX_SSE_TOOL_CALLS) return -1;
+    if (acc->tool_call_count >= CCODE_MAX_SSE_TOOL_CALLS) {
+        /* Array full: drop the surplus instead of failing the response. The
+         * conversation stays consistent (everything the accumulator reports
+         * is reported to the provider), and the agent tells the model that
+         * part of its batch did not run. */
+        acc->tool_calls_truncated = 1;
+        return 0;
+    }
     {
         struct ccode_sse_tool_call *slot = &acc->tool_calls[acc->tool_call_count];
         memset(slot, 0, sizeof(*slot));
@@ -1471,6 +1507,7 @@ int ccode_sse_accumulator_process(struct ccode_sse_accumulator *acc,
             return -1;
         }
     }
+    acc->tool_calls_truncated |= delta.tool_calls_truncated;
 
     ccode_free_sse_delta(&delta);
     return 0;

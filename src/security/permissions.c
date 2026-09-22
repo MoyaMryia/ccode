@@ -199,6 +199,7 @@ int ccode_permission_ask(struct ccode_permission_request *req) {
     int level = req ? req->danger_level : CCODE_CONFIRM_NORMAL;
 
     if (req) req->deny_reason[0] = '\0';
+    if (req) req->denied_by_policy = 0;
 
     /* Dangerous tiers are never auto-approved, not even by --auto-approve:
      * only --allowdanger (which skips classification entirely) gets here
@@ -211,11 +212,25 @@ int ccode_permission_ask(struct ccode_permission_request *req) {
         return permission_handler(req, permission_context);
 
     if (!is_interactive) {
+        /* No human is reachable. Say so, and say *why*: a bare "denied" gives
+         * the model nothing to act on, so it re-sends the same command in a
+         * slightly different shape and burns another turn. Measured
+         * 2026-09-22: ccode spent 2 of 19 tool calls that way on regex-log. */
         fputs("  \033[33m[deny]\033[0m  ", stderr);
         ccode_fprint_safe(stderr, req->tool_name, "(unknown)");
         fputc('(', stderr);
         ccode_fprint_safe_full(stderr, req->target, "");
         fputs("): non-interactive mode, denied by default\n", stderr);
+        req->denied_by_policy = 1;
+        snprintf(req->deny_reason, sizeof(req->deny_reason),
+                 "this run is non-interactive so there is no one to approve "
+                 "the request%s%s. Do not re-send this command or a rewording "
+                 "of it: use a workspace-local path, a narrower command, or a "
+                 "different approach entirely.",
+                 (req->danger_reason && req->danger_reason[0])
+                     ? "; it was classified dangerous: " : "",
+                 (req->danger_reason && req->danger_reason[0])
+                     ? req->danger_reason : "");
         return 0;
     }
 

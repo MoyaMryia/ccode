@@ -81,7 +81,8 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "},\"required\":[\"action\"]}"},
 
     {"bash",
-     "Execute a shell command with `bash -c` and return its stdout, stderr, "
+     "Execute a shell command with `bash -c` (POSIX `sh -c` on images that "
+     "have no bash) and return its stdout, stderr, "
      "and exit status. Each call runs in a fresh shell: no working directory, "
      "variables, or functions persist between calls, so pass full paths or "
      "chain commands with `&&` instead of relying on `cd`. A non-zero exit sets "
@@ -188,7 +189,8 @@ static const char ccode_editor_minimal_description[] =
     "hard-linked files.";
 
 static const char ccode_bash_minimal_description[] =
-    "Execute a shell command with `bash -c` and return its stdout, stderr, and "
+    "Execute a shell command with `bash -c` (POSIX `sh -c` on images that "
+    "have no bash) and return its stdout, stderr, and "
     "exit status. Each call runs in a fresh shell: no working directory, "
     "variables, or functions persist between calls, so pass full paths or "
     "chain commands with `&&` instead of relying on `cd`. A non-zero exit sets "

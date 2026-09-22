@@ -12,6 +12,10 @@ struct ccode_config {
      * system prompt and exactly the str_replace_editor + bash tool pair.
      * Implies write tools. */
     int minimal_mode;
+    /* Prompt profile: 0 = lean (default, same one-sentence persona minimal
+     * uses, no per-turn runtime-context snapshots); 1 = full (historical
+     * coding-agent prompt + snapshots) via --full-prompt / CCODE_FULL_PROMPT. */
+    int prompt_full;
     int interactive;
     int tui;
     int json;

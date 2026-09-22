@@ -210,6 +210,10 @@ struct ccode_sse_delta {
     char *finish_reason;
     struct ccode_sse_tool_call tool_calls[CCODE_MAX_SSE_TOOL_CALLS];
     size_t tool_call_count;
+    /* Set when this delta asked for more tool calls than the fixed array can
+     * hold, so the excess was dropped instead of failing the whole response.
+     * See tool_calls_truncated on the accumulator. */
+    int tool_calls_truncated;
 };
 
 struct ccode_sse_accumulator {
@@ -217,6 +221,13 @@ struct ccode_sse_accumulator {
     struct ccode_buf reasoning_content;
     struct ccode_sse_tool_call tool_calls[CCODE_MAX_SSE_TOOL_CALLS];
     size_t tool_call_count;
+    /* Sticky: the provider streamed more tool calls in one turn than the
+     * executor can hold (CCODE_MAX_SSE_TOOL_CALLS); the surplus was dropped.
+     * The turn still runs with the calls that fit -- the agent must tell the
+     * model, because otherwise it believes its whole batch ran. Before this
+     * flag existed an overflow was reported as a malformed response and
+     * aborted the entire turn (ccode exited 1, harness-crash). */
+    int tool_calls_truncated;
     char *finish_reason;
     int stream_done;
     int has_error;

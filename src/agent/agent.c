@@ -785,7 +785,12 @@ void ccode_agent_summary_cache_reset(void) {
 static int sync_runtime_context(struct ccode_conversation *conv,
                                 struct agent_context *ctx,
                                 const struct ccode_agent_config *cfg) {
-    if (cfg->minimal_mode) return 0;
+    /* Lean profile (the default) injects no snapshots -- same as `minimal`.
+     * Historically the read-write composition appended a fresh change-log /
+     * task-list system message whenever either changed; every one of them is
+     * then re-sent for the rest of the session. Measured on regex-log
+     * 2026-09-22: 106,683 of 1,293,240 sent bytes (8.2%). */
+    if (!cfg->prompt_full) return 0;
 
     if (ctx->change_log_dirty) {
         /* An empty log is passed as NULL so a snapshot that was already
@@ -1239,12 +1244,26 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                                 cfg->auto_approve ||
                                 tool_auto_approved(ctx, &prepared);
                         preq.deny_reason[0] = '\0';
+                        preq.denied_by_policy = 0;
 
                         if (!ccode_permission_ask(&preq)) {
                             change_log_add_denied(ctx, acc.tool_calls[i].name);
+                            /* Word the refusal honestly. In a headless run
+                             * there is no user to have denied anything, and
+                             * "Permission denied by user" reads as a human
+                             * veto the model should simply accept -- so it
+                             * re-sends a near-identical command and burns a
+                             * turn. A policy refusal must say it is a policy
+                             * refusal and carry the reason. */
                             deny_json = format_tool_error_reason(
-                                "Permission denied by user",
-                                preq.deny_reason);
+                                preq.denied_by_policy
+                                    ? "Refused: this command needs human "
+                                      "approval and this run is "
+                                      "non-interactive"
+                                    : "Permission denied by user",
+                                (preq.deny_reason[0] != '\0')
+                                    ? preq.deny_reason
+                                    : preq.danger_reason);
                             if (!deny_json ||
                                 append_tool_error(cfg, conv,
                                                   acc.tool_calls[i].id,
@@ -1423,6 +1442,30 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                 if (result < 0) break;
             }
 
+            /* The provider streamed more tool calls in one turn than the
+             * executor can hold; the surplus was dropped while the rest ran
+             * normally, so the conversation stays consistent. The model must
+             * be told, otherwise it believes its whole batch executed and
+             * reports work that never happened. Tell it what to do instead --
+             * split the batch -- rather than letting it retry the same
+             * oversized turn. */
+            if (acc.tool_calls_truncated) {
+                char notice[192];
+                snprintf(notice, sizeof(notice),
+                         "Only the first %d tool calls in that turn were "
+                         "executed. The rest were dropped, not refused. Do not "
+                         "resend the whole batch: send the remaining work in "
+                         "groups of at most %d calls per turn.",
+                         (int)CCODE_MAX_SSE_TOOL_CALLS,
+                         (int)(CCODE_MAX_SSE_TOOL_CALLS / 2));
+                if (ccode_conversation_add(conv, CCODE_ROLE_SYSTEM, notice) != 0) {
+                    ccode_sse_accumulator_destroy(&acc);
+                    fprintf(stderr, "Out of memory.\n");
+                    result = -1;
+                    break;
+                }
+            }
+
             if (acc.finish_reason &&
                 strcmp(acc.finish_reason, "stop") == 0) {
                 ccode_sse_accumulator_destroy(&acc);
@@ -1472,10 +1515,16 @@ static int ensure_system_prompt(struct ccode_conversation *conv,
     if (!(cfg->minimal_mode || cfg->read_only_tools || cfg->tools_enabled))
         return 0;
     if (conversation_has_system(conv)) return 0;
+    /* Both compositions now share one persona. The historical coding-agent
+     * prompt (which also mandated a "We need ..." reasoning preface on every
+     * block) is opt-in via CCODE_FULL_PROMPT=1: measured 2026-09-22, the lean
+     * persona plus a narrow tool set cost 38% less input on regex-log with no
+     * quality loss, and keeping the two prompt profiles distinct would make it
+     * impossible to tell whether that came from the prompt or the tools. */
     return ccode_conversation_add(conv, CCODE_ROLE_SYSTEM,
-                                  cfg->minimal_mode
-                                      ? ccode_minimal_system_prompt()
-                                      : ccode_coding_agent_system_prompt());
+                                  cfg->prompt_full
+                                      ? ccode_coding_agent_system_prompt()
+                                      : ccode_minimal_system_prompt());
 }
 
 /* Keep the oversized-result archive aligned with the active session file.
@@ -2486,11 +2535,13 @@ void test_change_log_add_denied_entry(const char *tool_name) {
  * serialized is the one passed in, never a global. */
 int test_sync_runtime_context(struct ccode_conversation *conv,
                               struct agent_context *ctx, int tools_enabled,
-                              int minimal_mode) {
+                              int prompt_full) {
     struct ccode_agent_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.tools_enabled = tools_enabled;
-    cfg.minimal_mode = minimal_mode;
+    /* Snapshot injection is gated on the prompt profile, not on minimal mode:
+     * the lean profile (the default) injects nothing. */
+    cfg.prompt_full = prompt_full;
     return sync_runtime_context(conv, ctx, &cfg);
 }
 void test_set_respect_gitignore(int v) {

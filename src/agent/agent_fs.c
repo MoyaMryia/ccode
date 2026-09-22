@@ -283,6 +283,35 @@ int append_json_escaped_fixed(char *buf, size_t cap, size_t *pos,
     return 0;
 }
 
+/* Receipt for a committed write/edit. A bare {"ok":true} gives the model no
+ * way to confirm what landed, so it re-reads the file it just wrote -- and
+ * sometimes rewrites it -- purely to reassure itself. Measured 2026-09-22 on
+ * regex-log: of 19 tool calls, one was `wc -c; grep -c ''; cat` of the model's
+ * own output and another rewrote a script it had already written. Echoing the
+ * path and the resulting size removes the reason to look.
+ *
+ * `verb` must be a fixed literal ("created"/"edited"); it is interpolated into
+ * JSON unescaped. file_path is escaped. */
+static char *write_receipt(const char *verb, const char *file_path,
+                           size_t bytes, int not_durable) {
+    char *esc = ccode_json_escape(file_path ? file_path : "");
+    char *out;
+    size_t need;
+
+    if (!esc) return ccode_strdup("{\"ok\":true}");
+    need = strlen(esc) + 128;
+    out = malloc(need);
+    if (!out) {
+        free(esc);
+        return ccode_strdup("{\"ok\":true}");
+    }
+    snprintf(out, need, "{\"ok\":true,\"%s\":\"%s\",\"bytes\":%lu%s}", verb,
+             esc, (unsigned long)bytes,
+             not_durable ? ",\"committed_not_durable\":true" : "");
+    free(esc);
+    return out;
+}
+
 char *format_tool_error_reason(const char *error, const char *reason) {
     static const char fallback[] = "{\"error\":\"Tool refused\"}";
     struct ccode_buf out;
@@ -861,9 +890,8 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
         if (!wr)
             return ccode_strdup("{\"error\":\"Could not create file (target exists?)\"}");
         change_log_add(ctx, "write", file_path, 0, 0);
-        if (strcmp(wr, "committed_not_durable") == 0)
-            return ccode_strdup("{\"ok\":true,\"committed_not_durable\":true}");
-        return ccode_strdup("{\"ok\":true}");
+        return write_receipt("created", file_path, strlen(new_string),
+                             strcmp(wr, "committed_not_durable") == 0);
     }
 
     fd = open_regular_at_workspace(ctx, file_path);
@@ -977,6 +1005,7 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
         return ccode_strdup("{\"error\":\"File changed since preview; edit aborted\"}");
     }
     {
+        size_t new_len = strlen(result);
         char *wr = atomic_write_at_parent(parent_fd, leaf, result, edit_file_mode,
                                           st.st_uid, st.st_gid,
                                           file_id_valid ? &file_id : NULL);
@@ -984,13 +1013,10 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
         free(result);
         if (!wr)
             return ccode_strdup("{\"error\":\"Could not atomically replace file\"}");
-        if (strcmp(wr, "committed_not_durable") == 0) {
-            change_log_add(ctx, "edit", file_path, 0, 0);
-            return ccode_strdup("{\"ok\":true,\"committed_not_durable\":true}");
-        }
+        change_log_add(ctx, "edit", file_path, 0, 0);
+        return write_receipt("edited", file_path, new_len,
+                             strcmp(wr, "committed_not_durable") == 0);
     }
-    change_log_add(ctx, "edit", file_path, 0, 0);
-    return ccode_strdup("{\"ok\":true}");
 }
 
 /* Grow a dynamic JSON buffer to at least `need` bytes. Returns -1 on

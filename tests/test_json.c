@@ -299,7 +299,11 @@ static int test_parse_max_tool_calls(void) {
     ccode_free_sse_delta(&delta);
     free(json);
 
-    /* Past the cap must fail closed, not overflow. */
+    /* Past the cap must truncate, not overflow and not abort the response.
+     * The model can legitimately ask for more calls than the array holds (it
+     * sent a 50+-call secret-replacement batch on sanitize-git-repo); failing
+     * the whole response there turned a batch-size problem into a harness
+     * crash. Keep the calls that fit and report the overflow. */
     json = malloc(cap + 160);
     ASSERT(json != NULL);
     pos = 0;
@@ -313,7 +317,11 @@ static int test_parse_max_tool_calls(void) {
     }
     pos += (size_t)snprintf(json + pos, cap + 160 - pos,
         "]},\"finish_reason\":\"tool_calls\"}]}");
-    ASSERT(ccode_parse_sse_delta(json, pos, &delta) == -1);
+    ASSERT(ccode_parse_sse_delta(json, pos, &delta) == 0);
+    ASSERT(delta.tool_calls_truncated == 1);
+    ASSERT(delta.tool_call_count == 64);
+    ASSERT(strcmp(delta.tool_calls[63].id, "c63") == 0);
+    ccode_free_sse_delta(&delta);
     free(json);
     return 1;
 }
@@ -663,14 +671,38 @@ static int test_strict_tool_calls_rejects_id_not_string(void) {
     return 1;
 }
 
-static int test_strict_tool_calls_rejects_index_out_of_range(void) {
+static int test_strict_tool_calls_drops_index_out_of_range(void) {
+    /* An index past the array is an overflow, not a malformed shape: drop the
+     * entry, keep the response, and set the truncation flag the agent reports
+     * to the model. Failing the response here is what aborted whole turns. */
     const char *json =
         "{\"choices\":[{\"delta\":{"
         "\"tool_calls\":[{\"index\":999,\"id\":\"x\",\"function\":{\"name\":\"r\",\"arguments\":\"{}\"}}]"
         "}}]}";
     struct ccode_sse_delta delta;
     int r = ccode_parse_sse_delta(json, strlen(json), &delta);
-    ASSERT(r == -1);
+    ASSERT(r == 0);
+    ASSERT(delta.tool_calls_truncated == 1);
+    ASSERT(delta.tool_call_count == 0);
+    ccode_free_sse_delta(&delta);
+    return 1;
+}
+
+static int test_strict_tool_calls_keeps_in_range_entries(void) {
+    /* Mixed delta: the in-range call must still be delivered. */
+    const char *json =
+        "{\"choices\":[{\"delta\":{"
+        "\"tool_calls\":["
+        "{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"r\",\"arguments\":\"{}\"}},"
+        "{\"index\":999,\"id\":\"b\",\"function\":{\"name\":\"r\",\"arguments\":\"{}\"}}"
+        "]}}]}";
+    struct ccode_sse_delta delta;
+    int r = ccode_parse_sse_delta(json, strlen(json), &delta);
+    ASSERT(r == 0);
+    ASSERT(delta.tool_calls_truncated == 1);
+    ASSERT(delta.tool_call_count == 1);
+    ASSERT(strcmp(delta.tool_calls[0].id, "a") == 0);
+    ccode_free_sse_delta(&delta);
     return 1;
 }
 
@@ -710,7 +742,7 @@ static int test_strict_tool_calls_accepts_argument_only_fragment(void) {
     return 1;
 }
 
-static int test_strict_tool_calls_rejects_too_many_entries(void) {
+static int test_strict_tool_calls_truncates_too_many_entries(void) {
     const char *prefix = "{\"choices\":[{\"delta\":{\"tool_calls\":[";
     const char *entry = "{\"index\":0}";
     const char *suffix = "]}}]}";
@@ -727,7 +759,10 @@ static int test_strict_tool_calls_rejects_too_many_entries(void) {
         strcat(json, entry);
     }
     strcat(json, suffix);
-    ASSERT(ccode_parse_sse_delta(json, strlen(json), &delta) == -1);
+    ASSERT(ccode_parse_sse_delta(json, strlen(json), &delta) == 0);
+    ASSERT(delta.tool_calls_truncated == 1);
+    ASSERT(delta.tool_call_count == CCODE_MAX_SSE_TOOL_CALLS);
+    ccode_free_sse_delta(&delta);
     free(json);
     return 1;
 }
@@ -1032,11 +1067,12 @@ int main(void) {
     TEST(strict_tool_calls_rejects_non_object);
     TEST(strict_tool_calls_rejects_negative_index);
     TEST(strict_tool_calls_rejects_id_not_string);
-    TEST(strict_tool_calls_rejects_index_out_of_range);
+    TEST(strict_tool_calls_drops_index_out_of_range);
+    TEST(strict_tool_calls_keeps_in_range_entries);
     TEST(strict_tool_calls_rejects_function_not_object);
     TEST(strict_tool_calls_rejects_fragment_with_nothing);
     TEST(strict_tool_calls_accepts_argument_only_fragment);
-    TEST(strict_tool_calls_rejects_too_many_entries);
+    TEST(strict_tool_calls_truncates_too_many_entries);
     TEST(unicode_decodes_bmp_and_surrogate_pair);
     TEST(unicode_rejects_bad_escapes);
     TEST(unicode_rejects_nul_in_tool_fields);

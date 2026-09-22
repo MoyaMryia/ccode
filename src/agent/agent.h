@@ -31,6 +31,14 @@ struct ccode_agent_config {
      * per-turn change-log/task summaries injected into the conversation.
      * Implies write tools at the config layer. */
     int minimal_mode;
+    /* Prompt profile, independent of the tool set:
+     *   0 (default) = lean: the same one-sentence persona `minimal` uses, and
+     *                 no per-turn change-log/task-list snapshots. The only
+     *                 difference left between the two compositions is then the
+     *                 tool list, which is what makes the comparison clean.
+     *   1           = full: the historical coding-agent prompt plus the
+     *                 runtime-context snapshots (CCODE_FULL_PROMPT=1). */
+    int prompt_full;
     int interactive;
     int auto_approve;
     /* DANGER: disable all tool-call policy checks + imply approval. */

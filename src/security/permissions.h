@@ -18,6 +18,11 @@ struct ccode_permission_request {
     const char *danger_reason;
     /* Filled on deny. Empty means a generic user denial. */
     char deny_reason[256];
+    /* Set when the denial came from the non-interactive default-deny policy
+     * rather than from a human saying no. Callers use it to word the tool
+     * result honestly ("refused by policy", not "denied by user") and to
+     * explain what the model should do instead. */
+    int denied_by_policy;
 };
 
 enum ccode_permission_confirm {

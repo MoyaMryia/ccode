@@ -178,8 +178,8 @@ static int resolve_command_path(const char *command, char *path,
     return -1;
 }
 
-/* The "not bash" hint is POSIX-specific; suppress it on Windows. */
-static int sh_is_bash(void) { return 1; }
+/* The "not bash" hint is POSIX-specific; nothing to report on Windows. */
+static int bash_is_available(void) { return 0; }
 
 /* Append one argv element to a CreateProcess command line, quoted per the
  * CommandLineToArgvW / msvcrt rules (backslashes double before a quote or
@@ -533,7 +533,7 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
             if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     ",\"stderr_binary\":true") != 0) goto oom;
         if ((!WIFEXITED(status) || WEXITSTATUS(status) != 0 || timed_out) &&
-            !sh_is_bash()) {
+            !bash_is_available()) {
             static const char note[] =
                 ",\"shell_note\":\"/bin/sh is a POSIX shell, not bash; "
                 "bash-only syntax ([[ ]], ${var//pat}, arrays, "
@@ -659,35 +659,23 @@ static void consume_command_output(int *fd, char *buffer, size_t *length,
  * the executor is not a sandbox and cannot guarantee complete cleanup.
  * (Moved to platform_linux.c as ccode_platform_detect_escaped.) */
 
-/* Detect whether /bin/sh is actually bash (vs ash/dash/busybox on the
- * retro guest). Cached after the first probe. The retro target runs
- * BusyBox ash, so bash-only syntax in shell-string commands fails there;
- * the executor attaches a hint to failed results in that case. */
-static int sh_is_bash(void) {
+/* True when a real bash is reachable from the executor's fixed PATH
+ * (/usr/local/bin:/usr/bin:/bin, see exec_env). Cached after the first
+ * probe: it is a filesystem check, not a fork.
+ *
+ * Why this exists: the `bash` tool describes itself as "Execute a shell
+ * command with `bash -c`", but the executor used to hardcode `sh`, which is
+ * dash on Debian/Ubuntu. The model was therefore promised bash semantics and
+ * handed a POSIX shell, and on failure it got a note saying bash-only syntax
+ * would fail -- which is what discouraged the one-compound-script style that
+ * pi uses to finish in 4 tool calls instead of 19. Prefer bash when it
+ * exists; keep the POSIX fallback for busybox/ash guests. */
+static int bash_is_available(void) {
     static int cached = -1;
-    int pfd[2];
-    pid_t pid;
-    int st;
-    char c = '\0';
+    char resolved[512];
 
     if (cached >= 0) return cached;
-    cached = 0;
-    if (pipe(pfd) != 0) return cached;
-    pid = fork();
-    if (pid == 0) {
-        close(pfd[0]);
-        dup2(pfd[1], STDOUT_FILENO);
-        close(pfd[1]);
-        execl("/bin/sh", "sh", "-c",
-              "printf '%s' \"${BASH_VERSION:-}\"", (char *)NULL);
-        _exit(0);
-    }
-    if (pid > 0) {
-        close(pfd[1]);
-        if (read(pfd[0], &c, 1) == 1 && c != '\0') cached = 1;
-        close(pfd[0]);
-        waitpid(pid, &st, 0);
-    }
+    cached = resolve_command_path("bash", resolved, sizeof(resolved)) == 0;
     return cached;
 }
 
@@ -1058,7 +1046,7 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
             if (ccode_append_cstr(&result, &result_pos, &result_cap,
                     ",\"incomplete_cleanup\":true") != 0) goto oom;
         if ((!WIFEXITED(status) || WEXITSTATUS(status) != 0 || timed_out) &&
-            !sh_is_bash()) {
+            !bash_is_available()) {
             static const char note[] =
                 ",\"shell_note\":\"/bin/sh is a POSIX shell, not bash; "
                 "bash-only syntax ([[ ]], ${var//pat}, arrays, "
@@ -1148,7 +1136,11 @@ char *exec_bash_command(struct agent_context *ctx, const char *workspace,
     argv[0] = "cmd.exe";
     argv[1] = "/c";
 #else
-    argv[0] = "sh";
+    /* Prefer bash: the tool description promises `bash -c`, and the
+     * compound-script style that keeps the turn count down needs real bash
+     * syntax (heredocs into `bash script.sh`, arrays, `[[ ]]`). Fall back to
+     * the POSIX shell on guests that only ship ash/dash. */
+    argv[0] = bash_is_available() ? "bash" : "sh";
     argv[1] = "-c";
 #endif
     argv[2] = cmd_buf;

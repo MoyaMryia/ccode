@@ -43,6 +43,7 @@ static void base_env(void) {
     set_env("CCODE_REQUEST_TIMEOUT", NULL);
     set_env("CCODE_CONTEXT_TOKENS", NULL);
     set_env("CCODE_MINIMAL", NULL);
+    set_env("CCODE_FULL_PROMPT", NULL);
     set_env("CCODE_READ_ONLY_TOOLS", NULL);
     set_env("CCODE_WRITE_TOOLS", NULL);
 }
@@ -189,6 +190,48 @@ static int test_minimal_read_only_conflict(void) {
  * At the previous hard-coded 300s a healthy MiMo-V2.6 turn at
  * thinking_effort=high was cut off mid-stream (first byte at 1.1s, still
  * streaming at 300.0s) while the surrounding task budget was 900s. */
+/* The lean prompt profile is the default: the default composition and
+ * `minimal` must differ only in their tool list, otherwise no token or turn
+ * difference between them can be attributed to either. --full-prompt /
+ * CCODE_FULL_PROMPT=1 restores the historical long prompt + snapshots. */
+static int test_prompt_profile_defaults_to_lean(void) {
+    struct ccode_config config;
+    char *argv[] = {(char *)"ccode-cli", NULL};
+    base_env();
+    ASSERT(ccode_parse_args(1, argv, &config) == 0);
+    ASSERT(config.prompt_full == 0);
+    return 1;
+}
+
+static int test_prompt_profile_flag_sets_full(void) {
+    struct ccode_config config;
+    char *argv[] = {(char *)"ccode-cli", (char *)"--full-prompt", NULL};
+    base_env();
+    ASSERT(ccode_parse_args(2, argv, &config) == 0);
+    ASSERT(config.prompt_full == 1);
+    return 1;
+}
+
+static int test_prompt_profile_env_sets_full(void) {
+    struct ccode_config config;
+    char *argv[] = {(char *)"ccode-cli", NULL};
+    base_env();
+    set_env("CCODE_FULL_PROMPT", "1");
+    ASSERT(ccode_parse_args(1, argv, &config) == 0);
+    ASSERT(config.prompt_full == 1);
+    return 1;
+}
+
+static int test_prompt_profile_env_zero_stays_lean(void) {
+    struct ccode_config config;
+    char *argv[] = {(char *)"ccode-cli", NULL};
+    base_env();
+    set_env("CCODE_FULL_PROMPT", "0");
+    ASSERT(ccode_parse_args(1, argv, &config) == 0);
+    ASSERT(config.prompt_full == 0);
+    return 1;
+}
+
 static int test_request_timeout_default_is_900(void) {
     struct ccode_config config;
     char *argv[] = {(char *)"ccode-cli", NULL};
@@ -280,6 +323,10 @@ int main(void) {
     TEST(bad_flag_rejected);
     TEST(missing_value_rejected);
     TEST(minimal_read_only_conflict);
+    TEST(prompt_profile_defaults_to_lean);
+    TEST(prompt_profile_flag_sets_full);
+    TEST(prompt_profile_env_sets_full);
+    TEST(prompt_profile_env_zero_stays_lean);
     TEST(request_timeout_default_is_900);
     TEST(request_timeout_flag_sets_value);
     TEST(request_timeout_env_sets_value);

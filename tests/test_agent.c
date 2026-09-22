@@ -2328,6 +2328,33 @@ static int test_edit_file_creates_and_replaces(void) {
     return 1;
 }
 
+/* A committed write must say what landed. The old receipt was a bare
+ * {"ok":true}, which gave the model no way to confirm the file it just wrote,
+ * so it re-read (and sometimes rewrote) its own output to be sure -- measured
+ * 2026-09-22: 2 of 19 tool calls on regex-log went to exactly that. */
+static int test_write_receipt_reports_path_and_size(void) {
+    char *r;
+
+    unlink("fixtures/receipt.txt");
+    test_reset_workspace();
+    r = test_exec_edit_file("fixtures", "receipt.txt", "", "12345");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "\"ok\":true") != NULL);
+    ASSERT(strstr(r, "\"created\":\"receipt.txt\"") != NULL);
+    ASSERT(strstr(r, "\"bytes\":5") != NULL);
+    free(r);
+
+    r = test_exec_edit_file("fixtures", "receipt.txt", "12345", "1234567");
+    ASSERT(r != NULL);
+    ASSERT(strstr(r, "\"ok\":true") != NULL);
+    ASSERT(strstr(r, "\"edited\":\"receipt.txt\"") != NULL);
+    ASSERT(strstr(r, "\"bytes\":7") != NULL);
+    free(r);
+
+    unlink("fixtures/receipt.txt");
+    return 1;
+}
+
 static int test_edit_file_preserves_existing_mode(void) {
     struct stat st;
     char *r;
@@ -5713,12 +5740,12 @@ static int test_runtime_snapshot_dirty_gating(void) {
     test_change_log_add_command_full("GLOBAL_MARKER", 0, 0, 0, 0);
 
     /* Nothing changed yet: the conversation must not be touched. */
-    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 1) == 0);
     ASSERT(conv.count == 0);
 
     change_log_add_ex(&ctx, "command", "SCRATCH_MARKER", 0, 0, 0, 0, 0);
     ASSERT(ctx.change_log_dirty == 1);
-    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 1) == 0);
     ASSERT(conv.count == 1);
     ASSERT(ctx.change_log_dirty == 0);
     ASSERT(conv.messages[0].role == CCODE_ROLE_SYSTEM);
@@ -5727,23 +5754,24 @@ static int test_runtime_snapshot_dirty_gating(void) {
 
     /* Unchanged: rebuilding and re-appending an identical snapshot would just
      * duplicate it in the conversation. */
-    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 1) == 0);
     ASSERT(conv.count == 1);
 
     /* A further change appends exactly one more copy of the whole log. */
     change_log_add_ex(&ctx, "command", "SECOND_MARKER", 0, 0, 0, 0, 0);
-    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 1) == 0);
     ASSERT(conv.count == 2);
     ASSERT(strstr(conv.messages[1].content, "SECOND_MARKER") != NULL);
     ASSERT(strstr(conv.messages[1].content, "SCRATCH_MARKER") != NULL);
 
-    /* Minimal mode injects nothing, and must leave the change pending. */
+    /* The lean profile (the default, and what `minimal` uses) injects
+     * nothing and must leave the change pending. */
     change_log_add_ex(&ctx, "command", "AFTER_MINIMAL", 0, 0, 0, 0, 0);
     ASSERT(ctx.change_log_dirty == 1);
-    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 1) == 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
     ASSERT(conv.count == 2);
     ASSERT(ctx.change_log_dirty == 1);
-    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 1) == 0);
     ASSERT(conv.count == 3);
     ASSERT(ctx.change_log_dirty == 0);
     ASSERT(strstr(conv.messages[2].content, "AFTER_MINIMAL") != NULL);
@@ -5752,15 +5780,15 @@ static int test_runtime_snapshot_dirty_gating(void) {
     for (i = 0; i < CCODE_MAX_CHANGES + 5; i++)
         change_log_add_ex(&ctx, "command", "FILLER", 0, 0, 0, 0, 0);
     ASSERT(ctx.change_log_dirty == 1);
-    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 1) == 0);
     ASSERT(conv.count == 4);
     ASSERT(ctx.change_log_dirty == 0);
-    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 1) == 0);
     ASSERT(conv.count == 4);
     /* ...and an entry dropped by CCODE_MAX_CHANGES is not a change at all. */
     change_log_add_ex(&ctx, "command", "OVER_CAP", 0, 0, 0, 0, 0);
     ASSERT(ctx.change_log_dirty == 0);
-    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 1) == 0);
     ASSERT(conv.count == 4);
 
     /* Task list: gated the same way, and only carried by write tools. */
@@ -5768,20 +5796,20 @@ static int test_runtime_snapshot_dirty_gating(void) {
     ASSERT(r != NULL);
     free(r);
     ASSERT(ctx.task_list_dirty == 1);
-    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 1) == 0);
     ASSERT(conv.count == 5);
     ASSERT(ctx.task_list_dirty == 0);
     ASSERT(strstr(conv.messages[4].content, "task one") != NULL);
-    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 1) == 0);
     ASSERT(conv.count == 5);
 
     r = exec_task_update(&ctx, "1", "completed");
     ASSERT(r != NULL);
     free(r);
     ASSERT(ctx.task_list_dirty == 1);
-    ASSERT(test_sync_runtime_context(&conv, &ctx, 0, 0) == 0); /* no write tools */
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 0, 1) == 0); /* no write tools */
     ASSERT(conv.count == 5);
-    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 1) == 0);
     ASSERT(conv.count == 6);
     ASSERT(strstr(conv.messages[5].content, "completed") != NULL);
 
@@ -5790,9 +5818,37 @@ static int test_runtime_snapshot_dirty_gating(void) {
     change_log_reset(&ctx);
     ASSERT(ctx.change_log_dirty == 1);
     n = conv.count;
-    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 1) == 0);
     ASSERT(ctx.change_log_dirty == 0);
     ASSERT(conv.count == n);
+
+    free(ctx.last_change_summary);
+    free(ctx.last_task_summary);
+    agent_context_free_lists(&ctx);
+    ccode_conversation_destroy(&conv);
+    return 1;
+}
+
+/* The lean prompt profile is the default and injects no runtime snapshots, so
+ * `minimal` and the default composition differ only in their tool list. This
+ * is the de-confounding guarantee: without it, a token/turn difference between
+ * the two compositions cannot be attributed to either one. */
+static int test_runtime_snapshot_absent_in_lean_profile(void) {
+    struct agent_context ctx;
+    struct ccode_conversation conv;
+
+    ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
+    ccode_agent_context_init(&ctx);
+    task_list_reset(&ctx);
+
+    change_log_add_ex(&ctx, "command", "LEAN_MARKER", 0, 0, 0, 0, 0);
+    ASSERT(ctx.change_log_dirty == 1);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(conv.count == 0);
+
+    ASSERT(exec_task_update(&ctx, "1", "completed") != NULL);
+    ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
+    ASSERT(conv.count == 0);
 
     free(ctx.last_change_summary);
     free(ctx.last_task_summary);
@@ -6076,6 +6132,7 @@ int main(int argc, char **argv) {
     TEST(decoded_argument_length_limit);
     TEST(scan_byte_budget_truncates);
     TEST(edit_file_creates_and_replaces);
+    TEST(write_receipt_reports_path_and_size);
     TEST(edit_file_preserves_existing_mode);
     TEST(edit_file_creation_rejects_unsafe_paths);
     TEST(edit_file_creation_arguments_are_strict);
@@ -6236,6 +6293,7 @@ int main(int argc, char **argv) {
     TEST(compaction_after_request_build);
     TEST(tool_catalog_is_pure);
     TEST(runtime_snapshot_dirty_gating);
+    TEST(runtime_snapshot_absent_in_lean_profile);
     TEST(session_prune_keep_count);
 
     fprintf(stderr, "\n=== Results: %d tests, %d failed ===\n",
