@@ -40,6 +40,10 @@ initfs.gz
 *~
 reference/
 
+# clangd / IDE index cache and generated compilation database
+/.cache/
+/compile_commands.json
+
 # OS
 .DS_Store
 Thumbs.db
