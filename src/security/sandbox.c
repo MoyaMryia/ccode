@@ -69,28 +69,55 @@ static int is_word_char(char c) {
            (c >= '0' && c <= '9') || c == '_';
 }
 
+/* Defined below; used by the rm detectors before their definitions. */
+static int is_cmd_sep(unsigned char c);
+static int token_is_root_glob(const char *tok, size_t len);
+
+/* Find the next literal "rm" that sits on a token boundary and is followed
+ * by a separator. The earlier scan only accepted a literal space after
+ * "rm", so a TAB ("rm\t-rf\t/") slipped past every destructive check. */
+static const char *find_rm_word(const char *text) {
+    const char *p = text;
+    while ((p = strstr(p, "rm")) != NULL) {
+        if (p != text && is_word_char(p[-1])) { p += 2; continue; }
+        if (p[2] != '\0' && !is_cmd_sep((unsigned char)p[2])) {
+            p += 2;
+            continue;
+        }
+        return p;
+    }
+    return NULL;
+}
+
+/* Given the text just past an "rm", skip whitespace and option tokens and
+ * return the first operand. Handles literal tabs and several options
+ * ("rm -r -f /"); the old single-option, space-only scan missed both. */
+static const char *rm_first_operand(const char *p) {
+    const char *q = p;
+    while (*q == ' ' || *q == '\t') q++;
+    while (*q == '-' && q[1] != '\0' && q[1] != ' ' && q[1] != '\t') {
+        while (*q != '\0' && !is_cmd_sep((unsigned char)*q)) q++;
+        while (*q == ' ' || *q == '\t') q++;
+    }
+    return q;
+}
+
 /* Set the start/len outputs to the "rm ... /" span when the command
  * deletes the filesystem root. Returns 1 on a hit. */
 static int find_rm_root(const char *text, size_t *start, size_t *len) {
-    const char *p = text;
-    while ((p = strstr(p, "rm ")) != NULL) {
-        const char *q;
-        if (p != text && is_word_char(p[-1])) { p += 3; continue; }
-        q = p + 3;
-        while (*q == ' ') q++;
-        if (*q == '-') {
-            q++;
-            while (*q && *q != ' ' && *q != ';' && *q != '&') q++;
+    const char *p = find_rm_word(text);
+    while (p != NULL) {
+        const char *s = rm_first_operand(p + 2);
+        if (*s == '/') {
+            const char *e = s;
+            while (*e != '\0' && !is_cmd_sep((unsigned char)*e)) e++;
+            if (token_is_root_glob(s, (size_t)(e - s))) {
+                if (start) *start = (size_t)(p - text);
+                if (len) *len = (size_t)(e - p);
+                return 1;
+            }
         }
-        while (*q == ' ') q++;
-        if (*q == '/' &&
-            (q[1] == ' ' || q[1] == '\0' || q[1] == ';' ||
-             q[1] == '&' || q[1] == '*')) {
-            if (start) *start = (size_t)(p - text);
-            if (len) *len = (size_t)(q - p) + 1;
-            return 1;
-        }
-        p += 3;
+        p = find_rm_word(p + 2);
     }
     return 0;
 }
@@ -117,28 +144,51 @@ static int is_filename_char(unsigned char c) {
            (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-';
 }
 
+/* Try to match `pat` starting at text[i], treating runs of '/' as one
+ * separator and skipping "." path components, so /etc//shadow and
+ * /etc/./shadow still match the "etc/shadow" pattern. On success sets
+ * *end to the original index just past the match. */
+static int path_pattern_match_at(const char *text, size_t tl,
+                                 const char *pat, size_t pl,
+                                 size_t i, size_t *end) {
+    size_t ti = i, pi = 0;
+    while (pi < pl) {
+        if (pat[pi] == '/') {
+            if (ti >= tl || text[ti] != '/') return 0;
+            while (ti < tl && text[ti] == '/') ti++;
+            while (ti < tl && text[ti] == '.' &&
+                   (ti + 1 >= tl || text[ti + 1] == '/')) {
+                ti++;
+                while (ti < tl && text[ti] == '/') ti++;
+            }
+            pi++;
+            continue;
+        }
+        if (ti >= tl) return 0;
+        if (tolower((unsigned char)text[ti]) !=
+            tolower((unsigned char)pat[pi]))
+            return 0;
+        ti++;
+        pi++;
+    }
+    if (end) *end = ti;
+    return 1;
+}
+
 /* Case-insensitive match of `pat` in `text` that must sit on filename
- * boundaries. Unlike a raw substring test this keeps "known_hosts" from
- * matching "known_hosts_sample.txt" and "proc/mem" from matching
- * "proc/meminfo", while still matching inside a longer path
- * ("/home/u/.ssh/id_rsa"). */
+ * boundaries and tolerates redundant separators and single-dot components,
+ * so path obfuscation cannot downgrade a sensitive-path tier. */
 static int find_path_pattern_ci(const char *text, const char *pat,
                                 size_t *pos) {
     size_t pl = strlen(pat);
     size_t tl = strlen(text);
     size_t i;
-    if (pl == 0 || pl > tl) return 0;
-    for (i = 0; i + pl <= tl; i++) {
-        size_t j;
-        for (j = 0; j < pl; j++) {
-            if (tolower((unsigned char)text[i + j]) !=
-                tolower((unsigned char)pat[j]))
-                break;
-        }
-        if (j != pl) continue;
+    if (pl == 0) return 0;
+    for (i = 0; i < tl; i++) {
+        size_t end;
+        if (!path_pattern_match_at(text, tl, pat, pl, i, &end)) continue;
         if (i > 0 && is_filename_char((unsigned char)text[i - 1])) continue;
-        if (i + pl < tl && is_filename_char((unsigned char)text[i + pl]))
-            continue;
+        if (end < tl && is_filename_char((unsigned char)text[end])) continue;
         if (pos) *pos = i;
         return 1;
     }
@@ -313,6 +363,28 @@ static int token_inside_workspace(const char *tok, size_t len,
         }
     }
 
+    /* Attached short-option value: "-C/tmp/outside", "-t/tmp/out",
+     * "-I./inc". Option letters carry no path punctuation, so the value
+     * begins at the first non-letter. Anything we cannot resolve as a
+     * plain path (linker commas, punctuation) fails closed rather than
+     * being mistaken for a workspace-relative file. */
+    if (p[0] == '-' && p[1] != '\0' && p[1] != '-') {
+        const char *q = p + 1;
+        while (isalpha((unsigned char)*q)) q++;
+        if (*q == '\0') {
+            return 1; /* bare flag cluster such as "-rf" */
+        }
+        if (*q == '=') {
+            p = q + 1;
+        } else if (*q == '/' || *q == '.' || *q == '~' ||
+                   is_filename_char((unsigned char)*q)) {
+            if (strchr(q, ',') != NULL) return 0;
+            p = q;
+        } else {
+            return 0;
+        }
+    }
+
     if (*p == '\0') return 1;
     if (strchr(p, '$') != NULL || strchr(p, '`') != NULL) return 0;
     if (strchr(p, '\\') != NULL) return 0;
@@ -380,9 +452,14 @@ int ccode_command_stays_in_workspace(const char *text, const char *workspace) {
                 break;
             }
         }
-        if (!pathlike && ((len == 1 && start[0] == '.') ||
-                          (len == 2 && start[0] == '.' && start[1] == '.')))
-            pathlike = 1;
+        if (!pathlike) {
+            for (i = 0; i + 1 < len; i++) {
+                if (start[i] == '.' && start[i + 1] == '.') {
+                    pathlike = 1;
+                    break;
+                }
+            }
+        }
         /* A bare word or flag with no path separator cannot escape. */
         if (!pathlike) continue;
         if (!token_inside_workspace(start, len, workspace)) return 0;
@@ -408,17 +485,134 @@ static int token_starts_with_word(const char *tok, size_t len,
     return !is_word_char((unsigned char)tok[wl]);
 }
 
-static int is_wrapper_name(const char *tok, size_t len) {
-    static const char *const wrappers[] = {
-        "sudo", "doas", "pkexec", "env", "nice", "nohup", "command",
-        "time"
-    };
+/* Command wrappers the scanner unwraps so a dangerous command cannot hide
+ * behind a prefix. `arg_opts` lists options that consume the next token
+ * when written separately; `cmd_opts` lists options whose argument is the
+ * command itself ("-c") and after which leading operands no longer apply;
+ * `operands` counts leading positional arguments before the command, and
+ * `numeric_operand` restricts those to a leading digit (timeout's
+ * DURATION, nice's adjustment) so "nice reboot" is still unwrapped.
+ *
+ * This is a pragmatic option grammar, not a full shell parser. It covers
+ * the wrappers the audit exercised and their common neighbours. Exotic
+ * encodings (busybox applet options, command strings assembled with
+ * printf/base64, options placed after the wrapped command) are not
+ * unwrapped; they fall back to the raw-text checks instead. Those checks
+ * are wrapper-independent for the destructive cases -- root/critical rm,
+ * block devices, account files, sysrq, fork bombs -- so the residual gap is
+ * confined to commands whose only signal is the command name (power and
+ * some escalate tooling) hidden behind an unlisted wrapper. */
+struct wrapper_spec {
+    const char *name;
+    const char *arg_opts;
+    const char *cmd_opts;
+    int operands;
+    int numeric_operand;
+};
+
+static const struct wrapper_spec wrapper_specs[] = {
+    {"sudo", "-u -g -h -p -C -r -t -U -T --user --group --host "
+             "--prompt --close-from --role --type --other-user", "", 0, 0},
+    {"doas", "-u -C --user --config", "", 0, 0},
+    {"pkexec", "-u --user", "", 0, 0},
+    {"env", "-u -C -S --unset --chdir --split-string", "", 0, 0},
+    {"nice", "-n --adjustment", "", 1, 1},
+    {"time", "-f -o --format --output", "", 0, 0},
+    {"nohup", "", "", 0, 0},
+    {"command", "", "", 0, 0},
+    {"timeout", "-k -s --kill-after --signal", "", 1, 1},
+    {"setsid", "", "", 0, 0},
+    {"stdbuf", "-i -o -e --input --output --error", "", 0, 0},
+    {"ionice", "-c -n -p --class --classdata --pid", "", 0, 0},
+    {"chrt", "-p -o -T -P -D --pid --sched-runtime --sched-deadline "
+             "--sched-period", "", 1, 1},
+    {"taskset", "-p --pid", "", 1, 0},
+    {"chroot", "--userspec --groups", "", 1, 0},
+    {"flock", "-w -E --wait --conflict-exit-code", "-c --command", 1, 0},
+    {"xargs", "-I -n -P -s -L -E -d -a --replace --max-args --max-procs "
+              "--max-chars --max-lines --eof --delimiter --arg-file", "", 0, 0},
+    {"watch", "-n -d --interval --differences", "", 0, 0},
+    {"su", "-s -g -G --shell --group --supplementary-group",
+            "-c --command", 1, 0},
+    {"runuser", "-s -g -G --shell --group --supplementary-group",
+                "-c --command", 1, 0},
+    {"sh", "-o --rcfile --init-file", "-c", 0, 0},
+    {"bash", "-o --rcfile --init-file", "-c", 0, 0},
+    {"dash", "-o", "-c", 0, 0},
+    {"zsh", "-o --rcfile --init-file", "-c", 0, 0},
+    {"ksh", "-o", "-c", 0, 0},
+    {"ash", "-o", "-c", 0, 0},
+    {"fish", "-o", "-c", 0, 0},
+    {"csh", "", "-c", 0, 0},
+    {"tcsh", "", "-c", 0, 0},
+    {"busybox", "", "", 0, 0}
+};
+
+static const struct wrapper_spec *wrapper_lookup(const char *tok,
+                                                 size_t len) {
     size_t i;
-    for (i = 0; i < sizeof(wrappers) / sizeof(wrappers[0]); i++) {
-        size_t wl = strlen(wrappers[i]);
-        if (len == wl && strncmp(tok, wrappers[i], wl) == 0) return 1;
+    for (i = 0; i < sizeof(wrapper_specs) / sizeof(wrapper_specs[0]); i++) {
+        size_t wl = strlen(wrapper_specs[i].name);
+        if (len == wl && strncmp(tok, wrapper_specs[i].name, wl) == 0)
+            return &wrapper_specs[i];
+    }
+    return NULL;
+}
+
+/* Match `opt` against the space-separated `list`. Returns 1 on a match;
+ * *attached is set when the token carries its value inline ("-sKILL",
+ * "--signal=KILL") and *match_len receives the option-name length, so the
+ * caller can scan an attached value or decide whether to consume the next
+ * token. */
+static int opt_in_list(const char *opt, size_t len, const char *list,
+                       int *attached, size_t *match_len) {
+    const char *p = list;
+    if (attached) *attached = 0;
+    if (match_len) *match_len = 0;
+    while (*p != '\0') {
+        const char *e = strchr(p, ' ');
+        size_t l = e ? (size_t)(e - p) : strlen(p);
+        if (l > 0 && len >= l && strncmp(opt, p, l) == 0) {
+            if (len == l) {
+                if (match_len) *match_len = l;
+                return 1;
+            }
+            if (p[1] == '-' && opt[l] == '=') {
+                if (attached) *attached = 1;
+                if (match_len) *match_len = l;
+                return 1;
+            }
+            if (p[0] == '-' && p[1] != '-' && l == 2) {
+                if (attached) *attached = 1;
+                if (match_len) *match_len = l;
+                return 1;
+            }
+        }
+        if (e == NULL) break;
+        p = e + 1;
     }
     return 0;
+}
+
+static int wrapper_opt_consumes_arg(const struct wrapper_spec *w,
+                                    const char *opt, size_t len) {
+    int attached = 0;
+    if (w == NULL) return 0;
+    if (opt_in_list(opt, len, w->arg_opts, &attached, NULL))
+        return !attached;
+    return 0;
+}
+
+static int wrapper_opt_is_command(const struct wrapper_spec *w,
+                                  const char *opt, size_t len,
+                                  size_t *prefix) {
+    int attached = 0;
+    size_t ml = 0;
+    if (prefix) *prefix = 0;
+    if (w == NULL) return 0;
+    if (!opt_in_list(opt, len, w->cmd_opts, &attached, &ml)) return 0;
+    if (prefix) *prefix = ml;
+    return 1;
 }
 
 static int has_command_name(const char *text, const char *word,
@@ -426,13 +620,23 @@ static int has_command_name(const char *text, const char *word,
     size_t i = 0;
     size_t n = strlen(text);
     int at_start = 1;
+    int need_arg = 0;
+    int pending = 0;
+    int numeric_only = 0;
+    const struct wrapper_spec *w = NULL;
+
     while (i < n) {
         size_t s, e;
         unsigned char c = (unsigned char)text[i];
         if (is_cmd_sep(c)) {
             if (c == ';' || c == '|' || c == '&' || c == '(' || c == ')' ||
-                c == '\n' || c == '\r' || c == '`')
+                c == '\n' || c == '\r' || c == '`') {
                 at_start = 1;
+                w = NULL;
+                need_arg = 0;
+                pending = 0;
+                numeric_only = 0;
+            }
             i++;
             continue;
         }
@@ -440,14 +644,55 @@ static int has_command_name(const char *text, const char *word,
         while (i < n && !is_cmd_sep((unsigned char)text[i])) i++;
         e = i;
         if (!at_start) continue;
+
+        /* The previous option takes a separate argument: eat it. */
+        if (need_arg) {
+            need_arg = 0;
+            continue;
+        }
+        /* Options of the active wrapper. A "-c" style option resets the
+         * leading-operand counter because its argument is the command. */
+        if (text[s] == '-') {
+            size_t cmd_prefix = 0;
+            if (wrapper_opt_is_command(w, text + s, e - s, &cmd_prefix)) {
+                /* "-cCOMMAND": the command is attached to the option.
+                 * Check just this token's suffix; the outer loop walks any
+                 * following words, so no recursion (and no quadratic
+                 * re-scan of deeply nested "-c"). */
+                if (e - s > cmd_prefix &&
+                    token_starts_with_word(text + s + cmd_prefix,
+                                           (e - s) - cmd_prefix,
+                                           word, allow_suffix))
+                    return 1;
+                pending = 0;
+                numeric_only = 0;
+                continue;
+            }
+            if (wrapper_opt_consumes_arg(w, text + s, e - s)) {
+                need_arg = 1;
+                continue;
+            }
+            continue;
+        }
+        /* Leading positional operands before the wrapped command
+         * (timeout's duration, chroot's root, ...). */
+        if (pending > 0) {
+            if (!numeric_only ||
+                (e > s && text[s] >= '0' && text[s] <= '9')) {
+                pending--;
+                continue;
+            }
+        }
         if (token_starts_with_word(text + s, e - s, word, allow_suffix))
             return 1;
-        /* Wrappers, options and leading VAR= assignments keep us at the
-         * command position, so "sudo reboot", "env FOO=1 reboot" and
-         * "sudo -u root reboot" are all seen as power commands. */
-        if (is_wrapper_name(text + s, e - s) || text[s] == '-' ||
-            memchr(text + s, '=', e - s) != NULL)
+        /* Leading VAR= assignments keep us at the command position. */
+        if (memchr(text + s, '=', e - s) != NULL) continue;
+        w = wrapper_lookup(text + s, e - s);
+        if (w != NULL) {
+            pending = w->operands;
+            numeric_only = w->numeric_operand;
             continue;
+        }
         at_start = 0;
     }
     return 0;
@@ -497,11 +742,34 @@ static const char *const critical_dirs[] = {
 static int token_is_critical_dir(const char *tok, size_t len) {
     char buf[64];
     size_t i;
-    while (len > 0 && (tok[len - 1] == '*' || tok[len - 1] == '/')) len--;
-    if (len == 0) return 1; /* the root itself, or a bare glob */
-    if (len >= sizeof(buf)) return 0;
-    memcpy(buf, tok, len);
-    buf[len] = '\0';
+    size_t n = 0;
+
+    if (len == 0) return 1;
+    /* A relative operand is never one of the absolute critical_dirs; the
+     * old byte compare only refused a bare relative glob. */
+    if (tok[0] != '/') {
+        for (i = 0; i < len; i++)
+            if (tok[i] != '*' && tok[i] != '/') return 0;
+        return 1;
+    }
+    /* Canonicalise the absolute form before comparing: collapse "//",
+     * drop "." components and glob chars. A byte-for-byte compare missed
+     * "//etc" and "/etc/./", downgrading them to an ordinary prompt. */
+    for (i = 0; i < len && n + 1 < sizeof(buf); i++) {
+        if (tok[i] == '/') {
+            if (n == 0 || buf[n - 1] != '/') buf[n++] = '/';
+        } else if (tok[i] == '.' &&
+                   (i + 1 == len || tok[i + 1] == '/')) {
+            while (i + 1 < len && tok[i + 1] == '/') i++;
+        } else if (tok[i] == '*') {
+            /* glob: dropped; a critical-dir glob is still caught */
+        } else {
+            buf[n++] = tok[i];
+        }
+    }
+    while (n > 0 && (buf[n - 1] == '/' || buf[n - 1] == '*')) n--;
+    buf[n] = '\0';
+    if (n == 0) return 1; /* the root itself, or a root glob */
     for (i = 0; i < sizeof(critical_dirs) / sizeof(critical_dirs[0]); i++)
         if (strcmp(buf, critical_dirs[i]) == 0) return 1;
     return 0;
@@ -510,36 +778,19 @@ static int token_is_critical_dir(const char *tok, size_t len) {
 /* Locate an "rm [options] <critical dir>" pattern. Options are skipped;
  * only the first operand is judged, which is the dangerous case. */
 static int find_rm_critical(const char *text, size_t *start, size_t *len) {
-    const char *p = text;
-    while ((p = strstr(p, "rm ")) != NULL) {
-        const char *q;
-        if (p != text && is_word_char(p[-1])) {
-            p += 3;
-            continue;
-        }
-        q = p + 3;
-        for (;;) {
-            while (*q == ' ' || *q == '\t') q++;
-            if (*q == '-' && q[1] != '\0' && q[1] != ' ') {
-                while (*q != '\0' && *q != ' ' && *q != '\t' &&
-                       *q != ';' && *q != '&' && *q != '|')
-                    q++;
-                continue;
-            }
-            break;
-        }
-        if (*q != '\0') {
-            size_t s = (size_t)(q - text);
-            size_t e = s;
-            while (text[e] != '\0' && !is_cmd_sep((unsigned char)text[e]))
-                e++;
-            if (token_is_critical_dir(text + s, e - s)) {
-                if (start) *start = s;
-                if (len) *len = e - s;
+    const char *p = find_rm_word(text);
+    while (p != NULL) {
+        const char *s = rm_first_operand(p + 2);
+        if (*s != '\0') {
+            const char *e = s;
+            while (*e != '\0' && !is_cmd_sep((unsigned char)*e)) e++;
+            if (token_is_critical_dir(s, (size_t)(e - s))) {
+                if (start) *start = (size_t)(p - text);
+                if (len) *len = (size_t)(e - p);
                 return 1;
             }
         }
-        p += 3;
+        p = find_rm_word(p + 2);
     }
     return 0;
 }
