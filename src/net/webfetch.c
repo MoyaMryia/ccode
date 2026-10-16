@@ -22,6 +22,7 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <stdint.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -139,6 +140,27 @@ static int wf_rate_limit_exceeded(void) {
     return 0;
 }
 
+/* Reject bytes that would break HTTP/1.1 request-line and header framing
+ * (CR/LF, NUL, other C0 controls, DEL) in any component the request line or
+ * Host header is built from. Shared by the hostname and bracketed-IPv6
+ * parser paths so neither can bypass it. */
+static int wf_framing_ok(const char *host, const char *port,
+                         const char *path) {
+    const char *parts[3];
+    size_t fi;
+    parts[0] = host;
+    parts[1] = port;
+    parts[2] = path;
+    for (fi = 0; fi < 3; fi++) {
+        const unsigned char *p = (const unsigned char *)parts[fi];
+        if (!p) continue;
+        for (; *p != '\0'; p++) {
+            if (*p < 0x20 || *p == 0x7f) return 0;
+        }
+    }
+    return 1;
+}
+
 static int wf_parse_url(const char *url, struct wf_url *out) {
     const char *host_start;
     const char *path_start;
@@ -193,7 +215,7 @@ static int wf_parse_url(const char *url, struct wf_url *out) {
             memcpy(out->port, port_str, port_len);
             out->port[port_len] = '\0';
         }
-        return 0;
+        return wf_framing_ok(out->host, out->port, out->path) ? 0 : -1;
     }
 
     memcpy(out->host, host_start, host_len);
@@ -211,39 +233,153 @@ static int wf_parse_url(const char *url, struct wf_url *out) {
         out->host[name_len] = '\0';
     }
 
-    /* Reject bytes that would break HTTP/1.1 request-line and header
-     * framing (CR/LF, NUL, other C0 controls, DEL): a model-supplied URL
-     * path or Host must never be able to inject request headers. */
-    {
-        const char *framing_parts[3];
-        size_t fi;
-        framing_parts[0] = out->host;
-        framing_parts[1] = out->port;
-        framing_parts[2] = out->path;
-        for (fi = 0; fi < 3; fi++) {
-            const unsigned char *p = (const unsigned char *)framing_parts[fi];
-            for (; *p != '\0'; p++) {
-                if (*p < 0x20 || *p == 0x7f) return -1;
-            }
-        }
-    }
+    return wf_framing_ok(out->host, out->port, out->path) ? 0 : -1;
+}
 
+/* ── private / non-routable address classification ── */
+
+/* True for IPv4 addresses that must not be reached by a model-supplied URL:
+ * loopback 127/8, this-network 0/8, RFC1918 10/8 + 172.16/12 + 192.168/16,
+ * link-local 169.254/16, CGNAT 100.64/10, multicast 224/4 and reserved
+ * 240/4. Address is host byte order. */
+static int wf_ipv4_is_private(uint32_t ip) {
+    if ((ip & 0xff000000u) == 0x7f000000u) return 1; /* 127.0.0.0/8 */
+    if ((ip & 0xff000000u) == 0x0a000000u) return 1; /* 10.0.0.0/8 */
+    if ((ip & 0xff000000u) == 0x00000000u) return 1; /* 0.0.0.0/8 */
+    if ((ip & 0xffff0000u) == 0xa9fe0000u) return 1; /* 169.254.0.0/16 */
+    if ((ip & 0xfff00000u) == 0xac100000u) return 1; /* 172.16.0.0/12 */
+    if ((ip & 0xffff0000u) == 0xc0a80000u) return 1; /* 192.168.0.0/16 */
+    if ((ip & 0xffc00000u) == 0x64400000u) return 1; /* 100.64.0.0/10 */
+    if ((ip & 0xf0000000u) == 0xe0000000u) return 1; /* 224.0.0.0/4 */
+    if ((ip & 0xf0000000u) == 0xf0000000u) return 1; /* 240.0.0.0/4 */
     return 0;
 }
 
-/* Default-deny fetch targets that reach private networks. Parse-level
- * best-effort: hostnames that DNS-resolve to private space are not caught
- * here (no resolver in the gate), but IP-literal and localhost targets --
- * the SSRF shapes a model actually writes -- are.
+/* Classify an IPv6 address held as raw bytes. Handles loopback, unspecified,
+ * ULA fc00::/7, link-local fe80::/10, deprecated site-local fec0::/10,
+ * multicast ff00::/8 and IPv4-mapped / IPv4-compatible forms by recursing on
+ * the embedded IPv4 address (e.g. ::ffff:127.0.0.1 and ::ffff:7f00:1). */
+static int wf_ipv6_is_private(const unsigned char b[16]) {
+    static const unsigned char zero[16] = {0};
+    static const unsigned char loop[16] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1
+    };
+    size_t i;
+    int is_mapped = 1, is_compat = 1;
+
+    if (memcmp(b, zero, sizeof(zero)) == 0) return 1;
+    if (memcmp(b, loop, sizeof(loop)) == 0) return 1;
+    if ((b[0] & 0xfe) == 0xfc) return 1;                  /* fc00::/7 */
+    if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) return 1; /* fe80::/10 */
+    if (b[0] == 0xfe && (b[1] & 0xc0) == 0xc0) return 1; /* fec0::/10 */
+    if (b[0] == 0xff) return 1;                           /* ff00::/8 */
+
+    for (i = 0; i < 10; i++) if (b[i] != 0) { is_mapped = 0; break; }
+    for (i = 0; i < 12; i++) if (b[i] != 0) { is_compat = 0; break; }
+    if ((is_mapped && b[10] == 0xff && b[11] == 0xff) || is_compat) {
+        uint32_t ip = ((uint32_t)b[12] << 24) | ((uint32_t)b[13] << 16) |
+                      ((uint32_t)b[14] << 8) | (uint32_t)b[15];
+        return wf_ipv4_is_private(ip);
+    }
+    return 0;
+}
+
+static int wf_sockaddr_is_private(const struct sockaddr *sa) {
+    if (!sa) return 0;
+    if (sa->sa_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
+        return wf_ipv4_is_private(ntohl(sin->sin_addr.s_addr));
+    }
+    if (sa->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)sa;
+        return wf_ipv6_is_private(sin6->sin6_addr.s6_addr);
+    }
+    return 0;
+}
+
+/* Parse an IPv4 literal in any of the historical inet_aton shapes: four
+ * dotted decimal/octal/hex parts, or the 1-, 2- and 3-part short forms
+ * ("2130706433", "127.1", "0x7f000001", "0177.0.0.1"). Returns 1 and the
+ * host-order address on success. A plain hostname never parses. */
+static int wf_parse_ipv4_legacy(const char *host, uint32_t *out) {
+    uint32_t parts[4];
+    int n = 0;
+    const char *p = host;
+
+    if (!host || host[0] == '\0') return 0;
+    for (;;) {
+        int base = 10;
+        unsigned long v;
+        char *end;
+
+        if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+            base = 16;
+            p += 2;
+        } else if (p[0] == '0' && p[1] != '\0') {
+            base = 8;
+        }
+        errno = 0;
+        v = strtoul(p, &end, base);
+        if (end == p || errno != 0 || v > 0xffffffffUL) return 0;
+        if (n >= 4) return 0;
+        parts[n++] = (uint32_t)v;
+        p = end;
+        if (*p == '.') {
+            p++;
+            if (*p == '\0' || n >= 4) return 0;
+            continue;
+        }
+        break;
+    }
+    if (*p != '\0') return 0;
+
+    if (n == 1) {
+        *out = parts[0];
+    } else if (n == 2) {
+        if (parts[0] > 0xff || parts[1] > 0xffffffUL) return 0;
+        *out = (parts[0] << 24) | parts[1];
+    } else if (n == 3) {
+        if (parts[0] > 0xff || parts[1] > 0xff || parts[2] > 0xffffUL)
+            return 0;
+        *out = (parts[0] << 24) | (parts[1] << 16) | parts[2];
+    } else {
+        if (parts[0] > 0xff || parts[1] > 0xff || parts[2] > 0xff ||
+            parts[3] > 0xff)
+            return 0;
+        *out = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) |
+               parts[3];
+    }
+    return 1;
+}
+
+/* True when the operator has explicitly allowed private-network fetches
+ * (tests, local mock servers). Checked by both the literal gate and the
+ * resolved-address gate so they stay consistent. */
+static int wf_allow_private(void) {
+    const char *allow = getenv("CCODE_WEB_FETCH_ALLOW_PRIVATE");
+    return allow && allow[0] == '1';
+}
+
+/* True when a redirect leaves an encrypted hop for plaintext HTTP. Such a
+ * downgrade is refused unless the operator explicitly overrides it. */
+static int wf_insecure_downgrade(int prev_secure, int secure) {
+    return prev_secure && !secure;
+}
+
+/* Default-deny fetch targets that reach private networks. This is the
+ * cheap, pre-connect gate for IP literals (including legacy spellings) and
+ * localhost names. Hostnames are additionally checked against their resolved
+ * addresses at connect time (wf_connect), which is the authoritative defence
+ * against DNS that points into private space.
  * CCODE_WEB_FETCH_ALLOW_PRIVATE=1 disables the gate (tests, local mock
  * servers). */
 static int wf_host_is_private(const char *host) {
-    const char *allow = getenv("CCODE_WEB_FETCH_ALLOW_PRIVATE");
-    unsigned a, b, c, d;
-    char tail;
+    struct in_addr v4;
+    struct in6_addr v6;
+    uint32_t ip;
     size_t len;
 
-    if (allow && allow[0] == '1') return 0;
+    if (wf_allow_private()) return 0;
     if (!host || host[0] == '\0') return 0;
 
     /* localhost and *.localhost */
@@ -252,37 +388,11 @@ static int wf_host_is_private(const char *host) {
         (len > 10 && strcmp(host + len - 10, ".localhost") == 0))
         return 1;
 
-    /* IPv4 literal: loopback 127/8, private 10/8 + 172.16/12 + 192.168/16,
-     * link-local 169.254/16, this-network 0/8. */
-    if (sscanf(host, "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) == 4 &&
-        a <= 255 && b <= 255 && c <= 255 && d <= 255) {
-        if (a == 127 || a == 10 || a == 0 || a == 169 ||
-            (a == 172 && b >= 16 && b <= 31) ||
-            (a == 192 && b == 168))
-            return 1;
-        return 0;
-    }
-
-    /* IPv6 literal (brackets already stripped): loopback, unspecified,
-     * link-local fe80::/10, ULA fc00::/7, v4-mapped ::ffff:a.b.c.d. */
-    if (strchr(host, ':') != NULL) {
-        if (strcmp(host, "::1") == 0 || strcmp(host, "::") == 0)
-            return 1;
-        if (strncmp(host, "fe8", 3) == 0 || strncmp(host, "fe9", 3) == 0 ||
-            strncmp(host, "fea", 3) == 0 || strncmp(host, "feb", 3) == 0)
-            return 1;
-        if (host[0] == 'f' && (host[1] == 'c' || host[1] == 'd'))
-            return 1;
-        if (strncmp(host, "::ffff:", 7) == 0 &&
-            sscanf(host + 7, "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) == 4 &&
-            a <= 255 && b <= 255 && c <= 255 && d <= 255) {
-            if (a == 127 || a == 10 || a == 0 || a == 169 ||
-                (a == 172 && b >= 16 && b <= 31) ||
-                (a == 192 && b == 168))
-                return 1;
-        }
-        return 0;
-    }
+    if (wf_parse_ipv4_legacy(host, &ip)) return wf_ipv4_is_private(ip);
+    if (inet_pton(AF_INET, host, &v4) == 1)
+        return wf_ipv4_is_private(ntohl(v4.s_addr));
+    if (inet_pton(AF_INET6, host, &v6) == 1)
+        return wf_ipv6_is_private(v6.s6_addr);
     return 0;
 }
 
@@ -396,16 +506,24 @@ static int wf_resolve(const char *host, const char *port,
 
 /* ── TCP connect ── */
 
-static int wf_connect(const char *host, const char *port, long long deadline) {
+static int wf_connect(const char *host, const char *port, long long deadline,
+                      int deny_private, int *private_denied) {
     struct wf_resolved addrs[16];
     int n = wf_resolve(host, port, addrs, 16, deadline);
     int i;
+    int attempted_public = 0;
 
     if (n < 0) return -1;
     for (i = 0; i < n && wf_now_ms() < deadline; i++) {
         int fd;
         int flags;
         struct sockaddr *sa = (struct sockaddr *)&addrs[i].addr;
+
+        /* Check the address the resolver actually returned, not the
+         * spelling the caller supplied: this catches hostnames whose DNS
+         * answer is loopback/private and legacy IPv4/IVA-mapped forms. */
+        if (deny_private && wf_sockaddr_is_private(sa)) continue;
+        attempted_public = 1;
         fd = socket(addrs[i].family, addrs[i].socktype, addrs[i].protocol);
         if (fd < 0) continue;
         flags = fcntl(fd, F_GETFL, 0);
@@ -429,6 +547,11 @@ static int wf_connect(const char *host, const char *port, long long deadline) {
         }
         close(fd);
     }
+    /* Only report a private-network denial when every candidate was private;
+     * if a public candidate was attempted (and simply failed), that is a
+     * plain connection failure. */
+    if (private_denied && deny_private && n > 0 && !attempted_public)
+        *private_denied = 1;
     return -1;
 }
 
@@ -471,11 +594,13 @@ static int wf_polarssl_recv(void *context, unsigned char *data, size_t length) {
 #endif
 
 static int wf_transport_open(struct wf_transport *transport,
-                             const struct wf_url *url, long long deadline) {
+                             const struct wf_url *url, long long deadline,
+                             int deny_private, int *private_denied) {
     memset(transport, 0, sizeof(*transport));
     transport->fd = -1;
 
-    transport->fd = wf_connect(url->host, url->port, deadline);
+    transport->fd = wf_connect(url->host, url->port, deadline, deny_private,
+                               private_denied);
     if (transport->fd < 0) return -1;
 
 #if CCODE_TLS_BACKEND == CCODE_TLS_MBEDTLS
@@ -885,6 +1010,8 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
     int status = 0;
     int dechunk_truncated = 0;
     int body_truncated = 0;
+    struct wf_url orig_url;
+    int prev_secure;
 
     memset(&transport, 0, sizeof(transport));
     transport.fd = -1;
@@ -922,6 +1049,18 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
         method = "GET";
     }
 
+    /* Capture the original origin up front: credentials are only ever sent
+     * to it, and a later HTTPS->HTTP redirect is refused. Done after the
+     * method check so the original error precedence is unchanged. */
+    if (wf_parse_url(opts->url, &orig_url) != 0) {
+        result = malloc(128);
+        if (result)
+            snprintf(result, 128,
+                     "{\"error\":\"Invalid URL or unsupported protocol\"}");
+        goto done;
+    }
+    prev_secure = orig_url.secure;
+
     current_url = opts->url;
 
     for (redirect_count = 0; redirect_count <= CCODE_WF_MAX_REDIRECTS; redirect_count++) {
@@ -941,6 +1080,22 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
             if (result) snprintf(result, 128, "{\"error\":\"Invalid URL or unsupported protocol\"}");
             goto done;
         }
+
+        /* Never follow a redirect that drops from HTTPS to plaintext HTTP:
+         * the first hop was authenticated/encrypted and the second would
+         * silently expose it (and any credentials) to the network. */
+        if (redirect_count > 0 &&
+            wf_insecure_downgrade(prev_secure, url.secure)) {
+            const char *allow_insecure =
+                getenv("CCODE_WEB_FETCH_ALLOW_INSECURE_REDIRECT");
+            if (!(allow_insecure && allow_insecure[0] == '1')) {
+                result = ccode_json_error(
+                    "Refusing to follow HTTPS-to-HTTP redirect "
+                    "(insecure downgrade)");
+                goto done;
+            }
+        }
+        prev_secure = url.secure;
 
         if (!opts->allow_danger && wf_host_blacklisted(url.host)) {
             size_t host_len = strlen(url.host);
@@ -972,17 +1127,43 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
         deadline = wf_now_ms() + io_timeout + connect_timeout;
         conn_deadline = wf_now_ms() + connect_timeout;
 
-        if (wf_transport_open(&transport, &url, conn_deadline) != 0) {
-            size_t host_len = strlen(url.host);
-            result = malloc(128 + host_len);
-            if (result) snprintf(result, 128 + host_len, "{\"error\":\"Could not connect to %s\"}", url.host);
-            goto done;
+        {
+            int private_denied = 0;
+            if (wf_transport_open(&transport, &url, conn_deadline,
+                                  !opts->allow_danger && !wf_allow_private(),
+                                  &private_denied) != 0) {
+                size_t host_len = strlen(url.host);
+                if (private_denied) {
+                    result = malloc(176 + host_len);
+                    if (result)
+                        snprintf(result, 176 + host_len,
+                                 "{\"error\":\"Fetch to private network "
+                                 "addresses is denied\",\"reason\":\"host '%s' "
+                                 "resolves to loopback, private, or "
+                                 "link-local; set "
+                                 "CCODE_WEB_FETCH_ALLOW_PRIVATE=1 to allow\"}",
+                                 url.host);
+                } else {
+                    result = malloc(128 + host_len);
+                    if (result) snprintf(result, 128 + host_len, "{\"error\":\"Could not connect to %s\"}", url.host);
+                }
+                goto done;
+            }
         }
 
         {
             const char *user_agent = getenv("CCODE_WEB_FETCH_USER_AGENT");
+            int same_origin;
+            const char *auth_header;
             if (!user_agent) user_agent = "ccode/1.0";
-            if (opts->auth_header) {
+            /* Strip Authorization the moment a redirect crosses origin
+             * (scheme, host or port): the credential belongs to the first
+             * origin only and must not be replayed to another server. */
+            same_origin = url.secure == orig_url.secure &&
+                          strcmp(url.host, orig_url.host) == 0 &&
+                          strcmp(url.port, orig_url.port) == 0;
+            auth_header = same_origin ? opts->auth_header : NULL;
+            if (auth_header) {
                 req_len = snprintf(req_buf, sizeof(req_buf),
                     "%s %s HTTP/1.1\r\n"
                     "Host: %s\r\n"
@@ -991,7 +1172,7 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
                     "Accept: */*\r\n"
                     "Connection: close\r\n"
                     "\r\n",
-                    method, url.path, url.host, user_agent, opts->auth_header);
+                    method, url.path, url.host, user_agent, auth_header);
             } else {
                 req_len = snprintf(req_buf, sizeof(req_buf),
                     "%s %s HTTP/1.1\r\n"
@@ -1103,27 +1284,33 @@ char *ccode_web_fetch(const struct ccode_web_fetch_opts *opts) {
         }
 
         if (status >= 400) {
-            size_t err_len = (size_t)(nread > 0 ? nread : 0);
-            char *err_body = err_len > 0 ? body_ptr : "HTTP error";
-            if (err_len > 200) err_len = 200;
-            result = malloc(256 + err_len);
-            if (result) {
-                char * esc;
-                size_t pos;
-                const char *prefix = "{\"error\":\"";
-                size_t prefix_len = strlen(prefix);
-                memcpy(result, prefix, prefix_len);
-                pos = prefix_len;
-                esc = ccode_json_escape(err_body);
-                if (esc) {
-                    size_t el = strlen(esc);
-                    if (pos + el + 32 > 256 + err_len)
-                        el = 256 + err_len - pos - 32;
-                    memcpy(result + pos, esc, el); pos += el;
-                    free(esc);
-                }
-                snprintf(result + pos, 256 + err_len - pos, "\",\"status\":%d}", status);
+            /* The error body is the server's error page, not information the
+             * model can act on: report the status concisely instead. */
+            const char *phrase = "HTTP error";
+            switch (status) {
+            case 400: phrase = "Bad Request"; break;
+            case 401: phrase = "Unauthorized"; break;
+            case 403: phrase = "Forbidden"; break;
+            case 404: phrase = "Not Found"; break;
+            case 405: phrase = "Method Not Allowed"; break;
+            case 408: phrase = "Request Timeout"; break;
+            case 429: phrase = "Too Many Requests"; break;
+            case 500: phrase = "Internal Server Error"; break;
+            case 502: phrase = "Bad Gateway"; break;
+            case 503: phrase = "Service Unavailable"; break;
+            case 504: phrase = "Gateway Timeout"; break;
+            default:
+                /* Unknown status: fall back to a class-level phrase rather
+                 * than echoing any server-supplied reason text (which would
+                 * need JSON escaping). */
+                phrase = status >= 500 ? "Server Error" : "Client Error";
+                break;
             }
+            result = malloc(96);
+            if (result)
+                snprintf(result, 96,
+                         "{\"error\":\"HTTP %d %s\",\"status\":%d}",
+                         status, phrase, status);
             goto done;
         }
 
