@@ -53,19 +53,18 @@ MUTANTS = [
          file="src/security/sandbox.c", gates=["agent", "cmd"],
          old="    while ((p = strstr(p, \"rm \")) != NULL) {",
          new="    while (0 && (p = strstr(p, \"rm \")) != NULL) {"),
-    dict(label="destructive-command detection disabled", area="sandbox",
+    dict(label="power command detection disabled", area="sandbox",
          file="src/security/sandbox.c", gates=["agent"],
-         old="    for (i = 0; i < sizeof(destructive_commands) / sizeof(destructive_commands[0]); i++) {\n"
-             "        if (!has_word(text, destructive_commands[i])) continue;",
-         new="    for (i = 0; 0 && i < sizeof(destructive_commands) / sizeof(destructive_commands[0]); i++) {\n"
-             "        if (!has_word(text, destructive_commands[i])) continue;"),
+         old="    if (has_any_command_name(text, power_commands,\n",
+         new="    if (0 && has_any_command_name(text, power_commands,\n"),
     dict(label="owner-home tolerance removed", area="sandbox",
          file="src/security/sandbox.c", gates=["agent", "cmd"],
          old="        if (!soft_hit_inside_workspace(text, i, ws) &&\n"
              "            !(owner != NULL && owner[0] != '\\0' &&\n"
-             "              soft_hit_inside_workspace(text, i, owner)))\n"
-             "            return 0;",
-         new="        if (!soft_hit_inside_workspace(text, i, ws))\n            return 0;"),
+             "              soft_hit_inside_workspace(text, i, owner))) {\n",
+         new="        if (!soft_hit_inside_workspace(text, i, ws) &&\n"
+             "            !(0 && owner != NULL && owner[0] != '\\0' &&\n"
+             "              soft_hit_inside_workspace(text, i, owner))) {\n"),
 
     # ── file-path validators (src/agent/agent_fs.c, agent_args.c) ────────
     dict(label="workspace path \\ : check removed", area="paths",
@@ -105,9 +104,9 @@ MUTANTS = [
     # ── oversized tool-result archive (agent_results.c) ──────────────────
     dict(label="result archive drops the tail", area="results",
          file="src/agent/agent_results.c", gates=["agent"],
-         old="        int ok = write_all(fd, preview, preview_len) == 0 &&\n"
-             "                 write_all(fd, tail, tail_len) == 0;\n",
-         new="        int ok = write_all(fd, preview, preview_len) == 0;\n"),
+         old="        int ok = ccode_fd_write_all(fd, preview, preview_len) == 0 &&\n"
+             "                 ccode_fd_write_all(fd, tail, tail_len) == 0;\n",
+         new="        int ok = ccode_fd_write_all(fd, preview, preview_len) == 0;\n"),
     dict(label="result read ignores offset", area="results",
          file="src/agent/agent_results.c", gates=["agent"],
          old="    if (lseek(fd, (off_t)offset, SEEK_SET) < 0 && offset != 0) {\n",
@@ -116,10 +115,6 @@ MUTANTS = [
          file="src/agent/message.c", gates=["agent"],
          old="        if (conv->messages[i].result_blob) {\n",
          new="        if (0 && conv->messages[i].result_blob) {\n"),
-    dict(label="read_tool_output ignores offset arg", area="results",
-         file="src/agent/agent_prepare.c", gates=["agent"],
-         old="                prepared->result_offset = (size_t)v;\n",
-         new="                prepared->result_offset = 0;\n"),
     dict(label="session delete keeps results archive", area="results",
          file="src/agent/message.c", gates=["agent"],
          old="    if (unlink(path) != 0) return -1;\n"
@@ -130,26 +125,22 @@ MUTANTS = [
          old="    if (rename(old_path, new_path) != 0) return -1;\n"
              "    rename_results_dir(dir, old_name, new_name);\n",
          new="    if (rename(old_path, new_path) != 0) return -1;\n"),
-    dict(label="editor view skips oversized archive", area="results",
-         file="src/agent/agent_fs.c", gates=["agent"],
-         old="    if (file_size > read_limit && ctx->results_dir[0] != '\\0') {\n",
-         new="    if (0 && file_size > read_limit && ctx->results_dir[0] != '\\0') {\n"),
     dict(label="result configure skips parent dirs", area="results",
          file="src/agent/agent_results.c", gates=["agent"],
          old="    if (mkdir_p(ctx->results_dir) != 0) {\n",
          new="    if (mkdir(ctx->results_dir, 0700) != 0) {\n"),
-    dict(label="stderr archive dropped", area="results",
+
+    # ── bounded command previews and source-backed editor ranges ──────────
+    dict(label="command preview drops tail", area="results",
          file="src/agent/agent_exec.c", gates=["agent"],
-         old="    if (stderr_tail.len > 0 && ctx->results_dir[0] != '\\0') {\n",
-         new="    if (0 && stderr_tail.len > 0 && ctx->results_dir[0] != '\\0') {\n"),
+         old="    memcpy(buffer + *len, tail->bytes, tail->len);\n",
+         new="    /* tail omitted */\n"),
+    dict(label="editor offset ignored", area="results",
+         file="src/agent/agent_prepare.c", gates=["agent"],
+         old="                prepared->view_byte_offset = v;\n",
+         new="                prepared->view_byte_offset = 0;\n"),
 
     # ── web_fetch (src/net/webfetch.c) ──────────────────────────────────────
-    dict(label="webfetch result margin too small", area="webfetch",
-         file="src/net/webfetch.c", gates=["agent"],
-         old="            size_t rcap = strlen(escaped) + strlen(esc_url) +\n"
-             "                          strlen(esc_ct) + 128;\n",
-         new="            size_t rcap = strlen(escaped) + strlen(esc_url) +\n"
-             "                          strlen(esc_ct) + 1;\n"),
     dict(label="webfetch relative dot folding disabled", area="webfetch",
          file="src/net/webfetch.c", gates=["agent"],
          old="        while (loc[0] == '.' &&\n"

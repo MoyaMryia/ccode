@@ -40,14 +40,11 @@ struct ccode_message {
     struct ccode_tool_call *tool_calls;
     size_t tool_call_count;
     char *tool_call_id;
-    /* For a tool result whose output exceeded the inline preview: the id of
-     * the archived full output under the session's results dir, and its total
-     * byte count. Local metadata only - never sent upstream. NULL when the
-     * result fit inline. */
+    /* Legacy result archive reference from older sessions. Local metadata
+     * only; never sent upstream. New tool calls leave this NULL. */
     char *result_blob;
     size_t result_total_bytes;
-    /* Optional second archive for a command's stderr overflow. NULL when the
-     * stderr preview was complete. */
+    /* Legacy stderr archive reference from older sessions. */
     char *result_blob_err;
     size_t result_err_total_bytes;
     /* Derived request artifacts: the exact `{"role":...,...}` JSON object this
@@ -98,7 +95,7 @@ int ccode_conversation_add(struct ccode_conversation *conv, enum ccode_role role
 int ccode_conversation_set_reasoning(struct ccode_conversation *conv,
                                      const char *reasoning);
 
-/* Attach an archived-result reference to the most recently added message,
+/* Attach legacy archive metadata to the most recently added message,
  * which must be a tool result. blob_id may be NULL to clear it. Returns 0 on
  * success or -1 when the conversation is empty/not on a tool message or OOM. */
 int ccode_conversation_set_result_blob(struct ccode_conversation *conv,

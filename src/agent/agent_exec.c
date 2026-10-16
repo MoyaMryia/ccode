@@ -133,6 +133,61 @@ static char *command_argv_refuse(size_t argc, char *const argv[],
     return classify_refusal(cls, why);
 }
 
+/* Keep a small tail while draining all command output, including output
+ * beyond the model preview. This bounds memory even for an unbounded writer. */
+struct ccode_command_tail {
+    char bytes[CCODE_COMMAND_TAIL_BYTES];
+    size_t len;
+    size_t total;
+};
+
+static void command_tail_append(struct ccode_command_tail *tail,
+                                const char *data, size_t n) {
+    size_t excess;
+    if (!tail || n == 0) return;
+    if (tail->total > (size_t)-1 - n) tail->total = (size_t)-1;
+    else tail->total += n;
+    if (n >= CCODE_COMMAND_TAIL_BYTES) {
+        memcpy(tail->bytes, data + n - CCODE_COMMAND_TAIL_BYTES,
+               CCODE_COMMAND_TAIL_BYTES);
+        tail->len = CCODE_COMMAND_TAIL_BYTES;
+        return;
+    }
+    excess = tail->len + n > CCODE_COMMAND_TAIL_BYTES
+             ? tail->len + n - CCODE_COMMAND_TAIL_BYTES : 0;
+    if (excess > 0) {
+        memmove(tail->bytes, tail->bytes + excess, tail->len - excess);
+        tail->len -= excess;
+    }
+    memcpy(tail->bytes + tail->len, data, n);
+    tail->len += n;
+}
+
+static void command_preview_finish(char *buffer, size_t *len,
+                                   struct ccode_command_tail *tail,
+                                   int *truncated) {
+    size_t omitted;
+    int n;
+    if (!tail || tail->total == 0) {
+        buffer[*len] = '\0';
+        return;
+    }
+    omitted = tail->total > tail->len ? tail->total - tail->len : 0;
+    if (omitted > 0) {
+        n = snprintf(buffer + *len, CCODE_COMMAND_PREVIEW_CAP - *len,
+                     "\n... [%lu bytes omitted] ...\n",
+                     (unsigned long)omitted);
+        if (n > 0 && (size_t)n < CCODE_COMMAND_PREVIEW_CAP - *len)
+            *len += (size_t)n;
+        *truncated = 1;
+    } else {
+        *truncated = 0;
+    }
+    memcpy(buffer + *len, tail->bytes, tail->len);
+    *len += tail->len;
+    buffer[*len] = '\0';
+}
+
 #ifdef _WIN32
 /* ────────────────────────────────────────────────────────────────────
  * Native Win32 execution backend (CreateProcess + reader threads).
@@ -279,6 +334,7 @@ struct win32_pipe_reader {
     char *buf;
     size_t *len;
     int *truncated;
+    struct ccode_command_tail *tail;
 };
 
 static DWORD WINAPI win32_reader_thread(void *arg) {
@@ -297,7 +353,10 @@ static DWORD WINAPI win32_reader_thread(void *arg) {
             memcpy(r->buf + *r->len, chunk, take);
             *r->len += take;
         }
-        if (take < (size_t)got) *r->truncated = 1;
+        if (take < (size_t)got) {
+            *r->truncated = 1;
+            command_tail_append(r->tail, chunk + take, (size_t)got - take);
+        }
     }
     return 0;
 }
@@ -305,10 +364,12 @@ static DWORD WINAPI win32_reader_thread(void *arg) {
 static char *exec_run_command_ex(struct agent_context *ctx, const char *workspace,
                                char * const *argv, size_t argc,
                                int timeout_ms) {
-    char stdout_buf[CCODE_COMMAND_OUTPUT_LIMIT + 1];
-    char stderr_buf[CCODE_COMMAND_OUTPUT_LIMIT + 1];
+    char stdout_buf[CCODE_COMMAND_PREVIEW_CAP];
+    char stderr_buf[CCODE_COMMAND_PREVIEW_CAP];
     size_t stdout_len = 0;
     size_t stderr_len = 0;
+    struct ccode_command_tail stdout_tail = {{0}, 0, 0};
+    struct ccode_command_tail stderr_tail = {{0}, 0, 0};
     int timed_out = 0;
     int truncated_out = 0;
     int truncated_err = 0;
@@ -403,6 +464,7 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     ccode_cancel_child_register((pid_t)(intptr_t)pi.hProcess);
     child_registered = 1;
 
+    out_reader.tail = &stdout_tail; err_reader.tail = &stderr_tail;
     out_reader.h = out_read; out_reader.buf = stdout_buf;
     out_reader.len = &stdout_len; out_reader.truncated = &truncated_out;
     err_reader.h = err_read; err_reader.buf = stderr_buf;
@@ -447,8 +509,10 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     CloseHandle(pi.hThread);
     if (child_registered) ccode_cancel_child_unregister();
 
-    stdout_buf[stdout_len] = '\0';
-    stderr_buf[stderr_len] = '\0';
+    command_preview_finish(stdout_buf, &stdout_len, &stdout_tail,
+                           &truncated_out);
+    command_preview_finish(stderr_buf, &stderr_len, &stderr_tail,
+                           &truncated_err);
 
     result_cap = 4096;
     result = malloc(result_cap);
@@ -626,7 +690,7 @@ static int terminate_command_group(pid_t child, int *status) {
 
 static void consume_command_output(int *fd, char *buffer, size_t *length,
                                    int *truncated,
-                                   struct ccode_result_tail *tail) {
+                                   struct ccode_command_tail *tail) {
     char discard[4096];
     ssize_t n;
     size_t remaining;
@@ -643,7 +707,7 @@ static void consume_command_output(int *fd, char *buffer, size_t *length,
         n = read(*fd, discard, sizeof(discard));
         if (n > 0) {
             *truncated = 1;
-            if (tail) (void)ccode_result_tail_append(tail, discard, (size_t)n);
+            command_tail_append(tail, discard, (size_t)n);
             return;
         }
     }
@@ -727,10 +791,12 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     int stderr_pipe[2] = {-1, -1};
     pid_t child;
     int status;
-    char stdout_buf[CCODE_COMMAND_OUTPUT_LIMIT + 1];
-    char stderr_buf[CCODE_COMMAND_OUTPUT_LIMIT + 1];
+    char stdout_buf[CCODE_COMMAND_PREVIEW_CAP];
+    char stderr_buf[CCODE_COMMAND_PREVIEW_CAP];
     size_t stdout_len = 0;
     size_t stderr_len = 0;
+    struct ccode_command_tail stdout_tail = {{0}, 0, 0};
+    struct ccode_command_tail stderr_tail = {{0}, 0, 0};
     struct timespec deadline;
     int timed_out = 0;
     pid_t child_pgid = -1;
@@ -750,11 +816,6 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     int arc;
     const char *lang_env;
     char ceiling_env[4096 + 32];
-    struct ccode_result_tail stdout_tail;
-    struct ccode_result_tail stderr_tail;
-
-    memset(&stdout_tail, 0, sizeof(stdout_tail));
-    memset(&stderr_tail, 0, sizeof(stderr_tail));
     free(ctx->last_result_blob);
     ctx->last_result_blob = NULL;
     ctx->last_result_total = 0;
@@ -954,8 +1015,10 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
     if (stdout_pipe[0] >= 0) close(stdout_pipe[0]);
     if (stderr_pipe[0] >= 0) close(stderr_pipe[0]);
     ccode_cancel_child_unregister();
-    stdout_buf[stdout_len] = '\0';
-    stderr_buf[stderr_len] = '\0';
+    command_preview_finish(stdout_buf, &stdout_len, &stdout_tail,
+                           &truncated_out);
+    command_preview_finish(stderr_buf, &stderr_len, &stderr_tail,
+                           &truncated_err);
 
     result_cap = 4096;
     result = malloc(result_cap);
@@ -1077,37 +1140,9 @@ static char *exec_run_command_ex(struct agent_context *ctx, const char *workspac
                        truncated_err || stderr_preview_cut);
         ccode_buf_free(&summary);
     }
-    /* Archive the raw stdout whenever the inline preview was cut, by the
-     * byte cap (tail present) or by the escaped-length budget, so the model
-     * can retrieve it with read_tool_output. Same for stderr. */
-    if ((stdout_tail.len > 0 || stdout_preview_cut) &&
-        ctx->results_dir[0] != '\0') {
-        char *blob_id = NULL;
-        size_t total = 0;
-        if (ccode_results_archive(ctx, stdout_buf, stdout_len,
-                                  stdout_tail.data, stdout_tail.len,
-                                  &blob_id, &total) == 0) {
-            ctx->last_result_blob = blob_id;
-            ctx->last_result_total = total;
-        }
-    }
-    if ((stderr_tail.len > 0 || stderr_preview_cut) &&
-        ctx->results_dir[0] != '\0') {
-        char *blob_id = NULL;
-        size_t total = 0;
-        if (ccode_results_archive(ctx, stderr_buf, stderr_len,
-                                  stderr_tail.data, stderr_tail.len,
-                                  &blob_id, &total) == 0) {
-            ctx->last_result_blob_err = blob_id;
-            ctx->last_result_total_err = total;
-        }
-    }
-    ccode_result_tail_free(&stdout_tail);
-    ccode_result_tail_free(&stderr_tail);
     return result;
 
 oom:
-    ccode_result_tail_free(&stdout_tail);
     free(result);
     return NULL;
 }

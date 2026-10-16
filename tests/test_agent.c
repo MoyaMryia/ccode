@@ -632,47 +632,46 @@ static int test_result_archive_and_read(void) {
     return 1;
 }
 
-/* read_tool_output argument parsing: valid window, defaults, rejects. */
-static int test_read_tool_output_prepare(void) {
+/* Editor view range parsing: valid bounds, defaults, and rejects. */
+static int test_editor_view_range_prepare(void) {
     struct prepared_tool p;
-
     memset(&p, 0, sizeof(p));
-    ASSERT(prepare_tool("read_tool_output",
-        "{\"tool_call_id\":\"call_spill1\",\"offset\":65536,"
-        "\"limit\":200000}", &p) == NULL);
-    ASSERT(p.kind == PREPARED_READ_TOOL_OUTPUT);
-    ASSERT(strcmp(p.value, "call_spill1") == 0);
-    ASSERT(p.result_offset == 65536);
-    ASSERT(p.result_limit == CCODE_RESULT_PREVIEW_BYTES);
-    prepared_tool_free(&p);
-
-    memset(&p, 0, sizeof(p));
-    ASSERT(prepare_tool("read_tool_output",
-        "{\"tool_call_id\":\"c1\"}", &p) == NULL);
-    ASSERT(p.result_offset == 0);
-    ASSERT(p.result_limit == CCODE_RESULT_PREVIEW_BYTES);
-    prepared_tool_free(&p);
-
-    memset(&p, 0, sizeof(p));
-    ASSERT(prepare_tool("read_tool_output",
-        "{\"tool_call_id\":\"c1\",\"stream\":\"stderr\"}", &p) == NULL);
-    ASSERT(strcmp(p.content, "stderr") == 0);
+    ASSERT(prepare_tool("str_replace_editor",
+        "{\"command\":\"view\",\"file_path\":\"x.txt\","
+        "\"start_line\":2,\"end_line\":4}", &p) == NULL);
+    ASSERT(p.kind == PREPARED_READ_FILE);
+    ASSERT(p.view_start_line == 2 && p.view_end_line == 4);
     prepared_tool_free(&p);
     memset(&p, 0, sizeof(p));
-    ASSERT(prepare_tool("read_tool_output",
-        "{\"tool_call_id\":\"c1\",\"stream\":\"bogus\"}", &p) != NULL);
+    ASSERT(prepare_tool("str_replace_editor",
+        "{\"command\":\"view\",\"file_path\":\"x.txt\"}", &p) == NULL);
+    ASSERT(p.view_start_line == 1 && p.view_end_line == 0);
     prepared_tool_free(&p);
-
+    ASSERT(test_prepare_tool_error("str_replace_editor",
+        "{\"command\":\"view\",\"file_path\":\"x\",\"start_line\":0}") != NULL);
+    ASSERT(test_prepare_tool_error("str_replace_editor",
+        "{\"command\":\"view\",\"file_path\":\"x\",\"start_line\":4,\"end_line\":2}") != NULL);
+    ASSERT(test_prepare_tool_error("str_replace_editor",
+        "{\"command\":\"view\",\"file_path\":\"x\",\"start_line\":\"2\"}") != NULL);
+    ASSERT(test_prepare_tool_error("str_replace_editor",
+        "{\"command\":\"view\",\"file_path\":\"x\",\"start_line\":2,\"start_line\":3}") != NULL);
+    ASSERT(test_prepare_tool_error("str_replace_editor",
+        "{\"command\":\"str_replace\",\"file_path\":\"x\","
+        "\"old_string\":\"a\",\"new_string\":\"b\",\"start_line\":2}") != NULL);
     memset(&p, 0, sizeof(p));
-    ASSERT(prepare_tool("read_tool_output", "{}", &p) != NULL);
+    ASSERT(prepare_tool("str_replace_editor",
+        "{\"command\":\"view\",\"file_path\":\"x\",\"byte_offset\":40000}",
+        &p) == NULL);
+    ASSERT(p.view_byte_offset == 40000);
     prepared_tool_free(&p);
-    memset(&p, 0, sizeof(p));
-    ASSERT(prepare_tool("read_tool_output",
-        "{\"tool_call_id\":\"c1\",\"bogus\":1}", &p) != NULL);
-    prepared_tool_free(&p);
+    ASSERT(test_prepare_tool_error("str_replace_editor",
+        "{\"command\":\"view\",\"file_path\":\"x\",\"byte_offset\":-1}") != NULL);
+    ASSERT(test_prepare_tool_error("str_replace_editor",
+        "{\"command\":\"view\",\"file_path\":\"x\","
+        "\"start_line\":2,\"byte_offset\":3}") != NULL);
+    ASSERT(test_prepare_tool_error("read_tool_output", "{}") != NULL);
     return 1;
 }
-
 static int dir_exists(const char *p) {
     struct stat st;
     return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
@@ -753,264 +752,146 @@ static int test_result_stress_windows(void) {
     return 1;
 }
 
-/* read_file on a file larger than the preview must archive the whole file and
- * expose it through the result store, not silently drop the tail. */
-static int test_read_file_archives_oversized(void) {
-    struct agent_context local;
-    char base[512], ws[256], *r, *data;
-    const char *blob;
-    size_t i, n = 120000, returned = 0, total = 0;
-    int truncated = 0;
-    char *content = malloc(n + 1);
-
-    ASSERT(content != NULL);
-    for (i = 0; i < n; i++) content[i] = (char)('a' + (int)(i % 26));
-    content[n] = '\0';
-    /* Isolated temp workspace: never perturb fixtures/ (glob/gitignore tests
-     * scan it, and a failed assertion here must not leave junk behind). */
-    snprintf(ws, sizeof(ws), "/tmp/ccode_read_ws_%d", (int)getpid());
+/* A line range must read directly from a large source file. */
+static int test_editor_view_line_range(void) {
+    char ws[256], path[512], *r;
+    FILE *f;
+    int i;
+    snprintf(ws, sizeof(ws), "/tmp/ccode_lines_ws_%d", (int)getpid());
     mkdir(ws, 0700);
-    write_file_in(ws, "oversized_read.txt", content, n);
-    free(content);
-
+    snprintf(path, sizeof(path), "%s/lines.txt", ws);
+    f = fopen(path, "wb");
+    ASSERT(f != NULL);
+    for (i = 1; i <= 10000; i++)
+        ASSERT(fprintf(f, "line-%05d\n", i) > 0);
+    ASSERT(fclose(f) == 0);
     test_reset_workspace();
-    snprintf(base, sizeof(base), "/tmp/ccode_read_archive_%d.json",
-             (int)getpid());
-    unlink(base);
-    ASSERT(test_configure_results(base) == 0);
-
-    r = test_exec_read_file(ws, "oversized_read.txt");
+    r = test_exec_tool(ws, "str_replace_editor",
+        "{\"command\":\"view\",\"file_path\":\"lines.txt\","
+        "\"start_line\":9000,\"end_line\":9002}");
     ASSERT(r != NULL);
+    ASSERT(strstr(r, "line-09000") != NULL);
+    ASSERT(strstr(r, "line-09002") != NULL);
+    ASSERT(strstr(r, "line-08999") == NULL);
+    ASSERT(strstr(r, "line-09003") == NULL);
     ASSERT(strstr(r, "\"truncated\":true") != NULL);
+    ASSERT(test_last_result_blob() == NULL);
     free(r);
-
-    blob = test_last_result_blob();
-    ASSERT(blob != NULL);
-    memset(&local, 0, sizeof(local));
-    ASSERT(ccode_results_configure(&local, base) == 0);
-    data = ccode_results_read(&local, blob, 0, n + 10, &returned, &total,
-                              &truncated);
-    ASSERT(data != NULL);
-    ASSERT(total == n && returned == n && truncated == 0);
-    ASSERT(strncmp(data, "abcdefghij", 10) == 0);
-    ASSERT(data[n - 1] == "abcdefghijklmnopqrstuvwxyz"[(n - 1) % 26]);
-    free(data);
-
-    {
-        char p[8192];
-        snprintf(p, sizeof(p), "%s/%s", local.results_dir, blob);
-        unlink(p);
-    }
-    rmdir(local.results_dir);
-    {
-        char p[1200];
-        snprintf(p, sizeof(p), "%s/oversized_read.txt", ws);
-        unlink(p);
-    }
+    r = test_exec_tool(ws, "str_replace_editor",
+        "{\"command\":\"view\",\"file_path\":\"lines.txt\","
+        "\"start_line\":20000}");
+    ASSERT(r != NULL && strstr(r, "start_line beyond end of file") != NULL);
+    free(r);
+    unlink(path);
     rmdir(ws);
     return 1;
 }
-
-/* A command whose stderr overflows the preview archives stderr separately. */
-static int test_command_archives_stderr(void) {
-    struct agent_context local;
-    char base[512], *r, *data;
-    const char *blob;
-    size_t returned = 0, total = 0;
-    int truncated = 0;
-
+/* A command with long stderr retains a bounded head and tail. */
+static int test_command_bounded_stderr(void) {
+    char *r;
     test_reset_workspace();
-    snprintf(base, sizeof(base), "/tmp/ccode_stderr_archive_%d.json",
-             (int)getpid());
-    unlink(base);
-    ASSERT(test_configure_results(base) == 0);
-
     r = test_exec_tool(".", "bash",
-        "{\"command\":\"yes E | head -c 200000 1>&2\"}");
+        "{\"command\":\"yes E | head -c 200000 1>&2; printf ENDERR 1>&2\"}");
     ASSERT(r != NULL);
+    ASSERT(strlen(r) < 20000);
     ASSERT(strstr(r, "\"stderr_truncated\":true") != NULL);
+    ASSERT(strstr(r, "bytes omitted") != NULL);
+    ASSERT(strstr(r, "ENDERR") != NULL);
+    ASSERT(test_last_result_blob_err() == NULL);
     free(r);
-
-    blob = test_last_result_blob_err();
-    ASSERT(blob != NULL);
-    memset(&local, 0, sizeof(local));
-    ASSERT(ccode_results_configure(&local, base) == 0);
-    data = ccode_results_read(&local, blob, 0, 300000, &returned, &total,
-                              &truncated);
-    ASSERT(data != NULL);
-    ASSERT(total > 65536 && returned == total && truncated == 0);
-    ASSERT(strncmp(data, "E\n", 2) == 0);
-    free(data);
-
-    {
-        char p[8192];
-        snprintf(p, sizeof(p), "%s/%s", local.results_dir, blob);
-        unlink(p);
-    }
-    rmdir(local.results_dir);
     return 1;
 }
-
-/* Both streams oversized: the escaped-length budget keeps the whole result
- * JSON under the conversation content cap (it used to be cut mid-JSON,
- * losing the trailing *_truncated flags and the session's validity), and
- * both raw streams stay retrievable from the archive. */
+/* Both streams oversized: keep bounded previews and valid JSON with both
+ * truncation flags and terminal markers. */
 static int test_command_dual_stream_budget(void) {
-    struct agent_context local;
-    char base[512], *r, *data;
-    const char *blob, *blob_err;
+    char *r;
     ccode_jsmntok_t toks[64];
-    size_t returned = 0, total = 0;
-    int truncated = 0;
-
     test_reset_workspace();
-    snprintf(base, sizeof(base), "/tmp/ccode_dual_stream_%d.json",
-             (int)getpid());
-    unlink(base);
-    ASSERT(test_configure_results(base) == 0);
-
     r = test_exec_tool(".", "bash",
-        "{\"command\":\"yes S | head -c 200000; "
-        "yes E | head -c 200000 1>&2\"}");
+        "{\"command\":\"yes S | head -c 200000; printf ENDOUT; "
+        "yes E | head -c 200000 1>&2; printf ENDERR 1>&2\"}");
     ASSERT(r != NULL);
-    ASSERT(strlen(r) <= CCODE_MAX_CONTENT_LEN);
+    ASSERT(strlen(r) < 20000);
     ASSERT(ccode_json_parse(r, strlen(r), toks, 64) > 0);
     ASSERT(strstr(r, "\"stdout_truncated\":true") != NULL);
     ASSERT(strstr(r, "\"stderr_truncated\":true") != NULL);
-
-    blob = test_last_result_blob();
-    blob_err = test_last_result_blob_err();
-    ASSERT(blob != NULL && blob_err != NULL);
-    memset(&local, 0, sizeof(local));
-    ASSERT(ccode_results_configure(&local, base) == 0);
-    data = ccode_results_read(&local, blob, 199000, 65536, &returned,
-                              &total, &truncated);
-    ASSERT(data != NULL);
-    ASSERT(total == 200000 && returned == 1000);
-    free(data);
-    data = ccode_results_read(&local, blob_err, 199000, 65536, &returned,
-                              &total, &truncated);
-    ASSERT(data != NULL);
-    ASSERT(total == 200000 && returned == 1000);
-    ASSERT(data[0] == 'E');
-    free(data);
-
-    {
-        char p[8192];
-        snprintf(p, sizeof(p), "%s/%s", local.results_dir, blob);
-        unlink(p);
-        snprintf(p, sizeof(p), "%s/%s", local.results_dir, blob_err);
-        unlink(p);
-    }
-    rmdir(local.results_dir);
+    ASSERT(strstr(r, "ENDOUT") != NULL);
+    ASSERT(strstr(r, "ENDERR") != NULL);
+    ASSERT(test_last_result_blob() == NULL);
+    ASSERT(test_last_result_blob_err() == NULL);
     free(r);
     return 1;
 }
-
-/* Output under the raw 64 KiB cap can still exceed the escaped-length
- * budget (quote-dense text); the result must stay valid JSON, carry the
- * truncation flag, and archive the raw bytes for read_tool_output. */
-static int test_command_escaped_budget_archives(void) {
-    struct agent_context local;
-    char base[512], *r, *data;
-    const char *blob;
+/* Quote-dense command output still needs valid bounded JSON and a
+ * truncation flag. */
+static int test_command_escaped_budget_bounded(void) {
+    char *r;
     ccode_jsmntok_t toks[64];
-    size_t returned = 0, total = 0;
-    int truncated = 0;
-
     test_reset_workspace();
-    snprintf(base, sizeof(base), "/tmp/ccode_escape_budget_%d.json",
-             (int)getpid());
-    unlink(base);
-    ASSERT(test_configure_results(base) == 0);
-
     r = test_exec_tool(".", "bash",
         "{\"command\":\"yes '\\\"' | head -c 50000\"}");
     ASSERT(r != NULL);
-    ASSERT(strlen(r) <= CCODE_MAX_CONTENT_LEN);
+    ASSERT(strlen(r) < 20000);
     ASSERT(ccode_json_parse(r, strlen(r), toks, 64) > 0);
     ASSERT(strstr(r, "\"stdout_truncated\":true") != NULL);
-
-    blob = test_last_result_blob();
-    ASSERT(blob != NULL);
-    memset(&local, 0, sizeof(local));
-    ASSERT(ccode_results_configure(&local, base) == 0);
-    data = ccode_results_read(&local, blob, 0, 100000, &returned, &total,
-                              &truncated);
-    ASSERT(data != NULL);
-    ASSERT(total == 50000 && returned == 50000 && truncated == 0);
-    ASSERT(data[0] == '"');
-    free(data);
-
-    {
-        char p[8192];
-        snprintf(p, sizeof(p), "%s/%s", local.results_dir, blob);
-        unlink(p);
-    }
-    rmdir(local.results_dir);
+    ASSERT(test_last_result_blob() == NULL);
     free(r);
     return 1;
 }
-
-/* A quote-dense file under the 50 KiB raw cap still overflows the escaped
- * budget: read_file must flag truncation AND archive the file (it used to
- * archive only when the raw cap was hit, leaving the tail unrecoverable). */
-static int test_read_file_escaped_budget_archives(void) {
-    struct agent_context local;
-    char base[512], ws[256], *r, *data;
-    const char *blob;
-    ccode_jsmntok_t toks[64];
-    size_t i, n = 49500, returned = 0, total = 0;
-    int truncated = 0;
-    char *content = malloc(n + 1);
-
-    ASSERT(content != NULL);
-    for (i = 0; i < n; i++) content[i] = '"';
-    content[n] = '\0';
+/* A quote-dense file can overflow the escaped JSON budget. The view must
+ * flag truncation, and a source-backed byte offset must reach the rest. */
+static int test_read_file_escaped_budget_bounded(void) {
+    char ws[256], path[512], *r;
+    FILE *f;
+    ccode_jsmntok_t toks[64], *tok;
+    char args[160], *content;
+    size_t i;
+    long next_offset;
+    int ntok;
     snprintf(ws, sizeof(ws), "/tmp/ccode_quote_ws_%d", (int)getpid());
     mkdir(ws, 0700);
-    write_file_in(ws, "quotes.txt", content, n);
-    free(content);
-
+    snprintf(path, sizeof(path), "%s/quotes.txt", ws);
+    f = fopen(path, "wb");
+    ASSERT(f != NULL);
+    for (i = 0; i < 49500; i++) ASSERT(fputc('"', f) != EOF);
+    ASSERT(fclose(f) == 0);
     test_reset_workspace();
-    snprintf(base, sizeof(base), "/tmp/ccode_quote_archive_%d.json",
-             (int)getpid());
-    unlink(base);
-    ASSERT(test_configure_results(base) == 0);
-
     r = test_exec_read_file(ws, "quotes.txt");
     ASSERT(r != NULL);
     ASSERT(strlen(r) <= CCODE_MAX_CONTENT_LEN);
-    ASSERT(ccode_json_parse(r, strlen(r), toks, 64) > 0);
+    ntok = ccode_json_parse(r, strlen(r), toks, 64);
+    ASSERT(ntok > 0);
     ASSERT(strstr(r, "\"truncated\":true") != NULL);
-
-    blob = test_last_result_blob();
-    ASSERT(blob != NULL);
-    memset(&local, 0, sizeof(local));
-    ASSERT(ccode_results_configure(&local, base) == 0);
-    data = ccode_results_read(&local, blob, 0, n + 10, &returned, &total,
-                              &truncated);
-    ASSERT(data != NULL);
-    ASSERT(total == n && returned == n && truncated == 0);
-    ASSERT(data[0] == '"');
-    free(data);
-
-    {
-        char p[8192];
-        snprintf(p, sizeof(p), "%s/%s", local.results_dir, blob);
-        unlink(p);
-    }
-    rmdir(local.results_dir);
-    {
-        char p[1200];
-        snprintf(p, sizeof(p), "%s/quotes.txt", ws);
-        unlink(p);
-    }
-    rmdir(ws);
+    tok = ccode_json_find_key(toks, ntok, 0, r, "next_byte_offset");
+    ASSERT(tok != NULL);
+    ASSERT(ccode_json_token_to_int(r, tok, &next_offset) == 0);
+    ASSERT(next_offset > 40000 && next_offset < 49500);
+    tok = ccode_json_find_key(toks, ntok, 0, r, "content");
+    ASSERT(tok != NULL);
+    content = ccode_json_token_string(r, tok);
+    ASSERT(content != NULL && strlen(content) == (size_t)next_offset);
+    free(content);
+    ASSERT(test_last_result_blob() == NULL);
     free(r);
+    snprintf(args, sizeof(args),
+             "{\"command\":\"view\",\"file_path\":\"quotes.txt\","
+             "\"byte_offset\":%ld}", next_offset);
+    r = test_exec_tool(ws, "str_replace_editor", args);
+    ASSERT(r != NULL);
+    ntok = ccode_json_parse(r, strlen(r), toks, 64);
+    ASSERT(ntok > 0);
+    ASSERT(strstr(r, "\"truncated\":true") == NULL);
+    tok = ccode_json_find_key(toks, ntok, 0, r, "content");
+    ASSERT(tok != NULL);
+    content = ccode_json_token_string(r, tok);
+    ASSERT(content != NULL &&
+           strlen(content) == (size_t)(49500 - next_offset));
+    free(content);
+    free(r);
+    unlink(path);
+    rmdir(ws);
     return 1;
 }
-
 /* A tool result JSON over the conversation content cap must be stored as a
  * valid bounded envelope, never as a raw mid-JSON cut. */
 static int test_tool_result_over_cap_envelope(void) {
@@ -1238,7 +1119,7 @@ static int test_path_outside_workspace_rejected(void) {
     test_reset_workspace();
     r = test_exec_read_file("fixtures", "/etc/passwd");
     ASSERT(r != NULL);
-    ASSERT(strstr(r, "Path outside workspace or not found") != NULL);
+    ASSERT(strstr(r, "Path outside workspace") != NULL);
     free(r);
     unlink("fixtures/ancestor_link");
     unlink("fixtures/ancestor_real/secret.txt");
@@ -1265,7 +1146,7 @@ static int test_read_rejects_symlink_ancestor(void) {
     test_reset_workspace();
     r = test_exec_read_file("fixtures", "ancestor_link/secret.txt");
     ASSERT(r != NULL);
-    ASSERT(strstr(r, "Path outside workspace or not found") != NULL);
+    ASSERT(strstr(r, "Not a regular file or not accessible") != NULL);
     free(r);
     return 1;
 }
@@ -1277,7 +1158,7 @@ static int test_read_rejects_fifo(void) {
     test_reset_workspace();
     r = test_exec_read_file("fixtures", "input_fifo");
     ASSERT(r != NULL);
-    ASSERT(strstr(r, "Path outside workspace or not found") != NULL);
+    ASSERT(strstr(r, "Not a regular file or not accessible") != NULL);
     free(r);
     unlink("fixtures/input_fifo");
     return 1;
@@ -1369,13 +1250,13 @@ static int test_path_separator_hardening(void) {
     {
         char *r = test_exec_read_file("fixtures", "..\\..\\etc\\passwd");
         ASSERT(r != NULL);
-        ASSERT(strstr(r, "Path outside workspace") != NULL);
+        ASSERT(strstr(r, "Invalid path") != NULL);
         free(r);
     }
     {
         char *r = test_exec_read_file("fixtures", "C:\\Windows\\win.ini");
         ASSERT(r != NULL);
-        ASSERT(strstr(r, "Path outside workspace") != NULL);
+        ASSERT(strstr(r, "Invalid path") != NULL);
         free(r);
     }
     /* A real file whose name contains backslashes: the fd-relative walk must
@@ -1384,7 +1265,7 @@ static int test_path_separator_hardening(void) {
     {
         char *r = test_exec_read_file("fixtures", "..\\..\\etc\\passwd");
         ASSERT(r != NULL);
-        ASSERT(strstr(r, "Path outside workspace") != NULL);
+        ASSERT(strstr(r, "Invalid path") != NULL);
         free(r);
     }
     unlink("fixtures/..\\..\\etc\\passwd");
@@ -1981,11 +1862,12 @@ static int test_tool_argument_shapes(void) {
           "{\"arguments\":{\"command\":\"true\",\"timeout_ms\":1000,\"timeout_ms\":2000}}",
           "Invalid bash arguments" },
 
-        /* grep context hostility */
+        /* grep context hostility: out-of-range values name the range, a
+         * wrong-typed value keeps the generic shape error. */
         { "grep", "{\"arguments\":{\"pattern\":\"n\",\"context\":101}}",
-          "Invalid grep arguments" },
+          "grep context must be an integer between 0 and 100" },
         { "grep", "{\"arguments\":{\"pattern\":\"n\",\"context\":-1}}",
-          "Invalid grep arguments" },
+          "grep context must be an integer between 0 and 100" },
         { "grep", "{\"arguments\":{\"pattern\":\"n\",\"context\":\"2\"}}",
           "Invalid grep arguments" },
 
@@ -2552,6 +2434,287 @@ static int test_edit_file_creation_requires_parent(void) {
     return 1;
 }
 
+/* ── Tool clarity regression tests (docs/TOOL-CLARITY-AUDIT.md) ── */
+
+static int test_view_accepts_dot_slash_and_absolute(void) {
+    char *r;
+    char arg[4600];
+    const char *ws;
+    write_file("fixtures/clarity_target.txt", "dot-slash ok\n", 13);
+    test_reset_workspace();
+    /* Leading ./ must behave like the plain relative spelling: grep output
+     * teaches the model the ./name form, refusing it wastes a round trip. */
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"view\",\"file_path\":\"./clarity_target.txt\"}");
+    ASSERT(r != NULL && strstr(r, "dot-slash ok") != NULL);
+    free(r);
+    /* An absolute path inside the workspace maps to its relative form. */
+    ws = test_workspace_root();
+    ASSERT(ws != NULL);
+    snprintf(arg, sizeof(arg),
+             "{\"command\":\"view\",\"file_path\":\"%s/clarity_target.txt\"}", ws);
+    r = test_exec_tool("fixtures", "str_replace_editor", arg);
+    ASSERT(r != NULL && strstr(r, "dot-slash ok") != NULL);
+    free(r);
+    unlink("fixtures/clarity_target.txt");
+    return 1;
+}
+
+static int test_view_errors_name_the_cause(void) {
+    char *r;
+    test_reset_workspace();
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"view\",\"file_path\":\"no_such_file_xyz.txt\"}");
+    ASSERT(r != NULL && strstr(r, "File not found") != NULL);
+    free(r);
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"view\",\"file_path\":\".\"}");
+    ASSERT(r != NULL && strstr(r, "Is a directory") != NULL);
+    free(r);
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"view\",\"file_path\":\"/etc/passwd\"}");
+    ASSERT(r != NULL && strstr(r, "Path outside workspace") != NULL);
+    free(r);
+    return 1;
+}
+
+static int test_view_rejects_mostly_binary_file(void) {
+    char *r;
+    /* 8 of 23 bytes are broken UTF-8: over the 5% threshold, so the file is
+     * reported as binary instead of being handed to the model as mojibake. */
+    static const char mostly_bin[] = "bin \xbe\xad\xff\xfe more \x80\x81\x82\x83 end\n";
+    /* A single bad byte in otherwise valid text is still sanitized, not
+     * rejected (existing behavior kept). */
+    static const char mostly_text[] =
+        "this is a perfectly valid text line with one \xff bad byte in it\n";
+    write_file("fixtures/clarity_bin.dat", mostly_bin, sizeof(mostly_bin) - 1);
+    write_file("fixtures/clarity_text.txt", mostly_text, sizeof(mostly_text) - 1);
+    test_reset_workspace();
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"view\",\"file_path\":\"clarity_bin.dat\"}");
+    ASSERT(r != NULL && strstr(r, "Binary file") != NULL);
+    free(r);
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"view\",\"file_path\":\"clarity_text.txt\"}");
+    ASSERT(r != NULL && strstr(r, "perfectly valid") != NULL &&
+           strstr(r, "\\ufffd") != NULL);
+    free(r);
+    unlink("fixtures/clarity_bin.dat");
+    unlink("fixtures/clarity_text.txt");
+    return 1;
+}
+
+static int test_glob_grep_invalid_regex_errors(void) {
+    char *r;
+    test_reset_workspace();
+    r = test_exec_tool("fixtures", "glob",
+                       "{\"pattern\":\"(\",\"regex\":true}");
+    ASSERT(r != NULL && strstr(r, "Invalid regular expression") != NULL);
+    free(r);
+    r = test_exec_tool("fixtures", "grep",
+                       "{\"pattern\":\"(\",\"regex\":true}");
+    ASSERT(r != NULL && strstr(r, "Invalid regular expression") != NULL);
+    free(r);
+    return 1;
+}
+
+/* Regression: an explicitly empty glob pattern and an out-of-range grep
+ * context must name the broken argument; the context message must state the
+ * same bound the validator uses. Both still flow through explain_tool_error,
+ * so they keep the tool's parameter hint. */
+static int test_glob_empty_pattern_and_grep_context_range(void) {
+    const char *err;
+    char *r;
+
+    /* glob: an explicit empty pattern is precise... */
+    err = test_prepare_tool_error("glob", "{\"pattern\":\"\"}");
+    ASSERT(err != NULL &&
+           strstr(err, "glob pattern must not be empty") != NULL);
+    ASSERT(strstr(err, "expected parameters") != NULL);
+    /* ...while a missing pattern keeps the generic shape error. */
+    err = test_prepare_tool_error("glob", "{\"path\":\"src\"}");
+    ASSERT(err != NULL && strstr(err, "Invalid glob arguments") != NULL);
+    /* Duplicate pattern is rejected even when the first value is empty. */
+    err = test_prepare_tool_error("glob",
+        "{\"pattern\":\"\",\"pattern\":\"*.c\"}");
+    ASSERT(err != NULL && strstr(err, "Invalid glob arguments") != NULL);
+    /* A non-empty pattern still prepares. */
+    err = test_prepare_tool_error("glob", "{\"pattern\":\"*.c\"}");
+    ASSERT(err == NULL);
+
+    /* grep context: the range comes from the same bound the check reads. */
+    err = test_prepare_tool_error("grep",
+        "{\"pattern\":\"n\",\"context\":101}");
+    ASSERT(err != NULL &&
+           strstr(err, "grep context must be an integer between 0 and 100") != NULL);
+    err = test_prepare_tool_error("grep",
+        "{\"pattern\":\"n\",\"context\":-1}");
+    ASSERT(err != NULL &&
+           strstr(err, "grep context must be an integer between 0 and 100") != NULL);
+    err = test_prepare_tool_error("grep",
+        "{\"pattern\":\"n\",\"context\":1.5}");
+    ASSERT(err != NULL &&
+           strstr(err, "grep context must be an integer between 0 and 100") != NULL);
+    /* Boundary values 0 and 100 are valid. */
+    err = test_prepare_tool_error("grep",
+        "{\"pattern\":\"n\",\"context\":0}");
+    ASSERT(err == NULL);
+    err = test_prepare_tool_error("grep",
+        "{\"pattern\":\"n\",\"context\":100}");
+    ASSERT(err == NULL);
+    /* A JSON string is the wrong type, so it keeps the shape error. */
+    err = test_prepare_tool_error("grep",
+        "{\"pattern\":\"n\",\"context\":\"2\"}");
+    ASSERT(err != NULL && strstr(err, "Invalid grep arguments") != NULL);
+
+    /* The precise failures also surface through the execute path. */
+    test_reset_workspace();
+    r = test_exec_tool("fixtures", "glob", "{\"pattern\":\"\"}");
+    ASSERT(r != NULL &&
+           strstr(r, "glob pattern must not be empty") != NULL);
+    free(r);
+    r = test_exec_tool("fixtures", "grep",
+                       "{\"pattern\":\"n\",\"context\":101}");
+    ASSERT(r != NULL &&
+           strstr(r, "grep context must be an integer between 0 and 100") != NULL);
+    free(r);
+    return 1;
+}
+
+static int test_grep_skips_binary_matches(void) {
+    char *r;
+    /* Mostly-broken UTF-8: grep must skip the file rather than return a
+     * match line full of mojibake. */
+    static const char bincontent[] = "clarityneedle \xde\xad\xbe\xff garbage\n";
+    write_file("fixtures/grep_bin.dat", bincontent, sizeof(bincontent) - 1);
+    test_reset_workspace();
+    r = test_exec_tool("fixtures", "grep", "{\"pattern\":\"clarityneedle\"}");
+    ASSERT(r != NULL && strstr(r, "grep_bin.dat") == NULL);
+    free(r);
+    unlink("fixtures/grep_bin.dat");
+    return 1;
+}
+
+static int test_delete_file_names_the_cause(void) {
+    char *r;
+    test_reset_workspace();
+    r = test_exec_tool("fixtures", "delete_file",
+                       "{\"file_path\":\"ghost_xyz.txt\"}");
+    ASSERT(r != NULL && strstr(r, "File not found") != NULL);
+    free(r);
+    test_mkdir_p("fixtures/del_dir");
+    test_reset_workspace();
+    r = test_exec_tool("fixtures", "delete_file",
+                       "{\"file_path\":\"del_dir\"}");
+    ASSERT(r != NULL && strstr(r, "Is a directory") != NULL);
+    free(r);
+    rmdir("fixtures/del_dir");
+    return 1;
+}
+
+static int test_edit_messages_are_actionable(void) {
+    char *r;
+    static const char content[] = "alpha dup\nbeta\ngamma dup\ndelta\n";
+    write_file("fixtures/edit_multi.txt", content, sizeof(content) - 1);
+    test_reset_workspace();
+    /* Multiple matches: count and line numbers guide the next attempt. */
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"str_replace\",\"file_path\":\"edit_multi.txt\","
+                       "\"old_string\":\"dup\",\"new_string\":\"x\"}");
+    ASSERT(r != NULL && strstr(r, "Multiple matches found") != NULL &&
+           strstr(r, "\"count\":2") != NULL &&
+           strstr(r, "\"lines\":[1,3]") != NULL);
+    free(r);
+    /* Creating over an existing file is a definitive refusal, no hedging. */
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"str_replace\",\"file_path\":\"edit_multi.txt\","
+                       "\"old_string\":\"\",\"new_string\":\"x\"}");
+    ASSERT(r != NULL && strstr(r, "Could not create file") != NULL &&
+           strstr(r, "already exists") != NULL);
+    free(r);
+    unlink("fixtures/edit_multi.txt");
+    return 1;
+}
+
+static int test_edit_too_large_reports_limit(void) {
+    char *r;
+    char *big = malloc(60001);
+    size_t i;
+    ASSERT(big != NULL);
+    for (i = 0; i < 60000; i++) big[i] = (char)('a' + i % 26);
+    big[60000] = '\0';
+    write_file("fixtures/edit_big.txt", big, 60000);
+    free(big);
+    test_reset_workspace();
+    r = test_exec_tool("fixtures", "str_replace_editor",
+                       "{\"command\":\"str_replace\",\"file_path\":\"edit_big.txt\","
+                       "\"old_string\":\"zzz\",\"new_string\":\"x\"}");
+    ASSERT(r != NULL && strstr(r, "File too large to edit") != NULL &&
+           strstr(r, "\"limit\":") != NULL && strstr(r, "\"bytes\":") != NULL);
+    free(r);
+    unlink("fixtures/edit_big.txt");
+    return 1;
+}
+
+static int test_task_invalid_status_lists_valid(void) {
+    char *r;
+    char args[256];
+    const char *p;
+    const char *e;
+    char id[16];
+    size_t n;
+    test_reset_workspace();
+    r = test_exec_tool("fixtures", "task",
+                       "{\"action\":\"create\",\"content\":\"t\"}");
+    ASSERT(r != NULL);
+    p = strstr(r, "\"id\":\"");
+    ASSERT(p != NULL);
+    p += 6;
+    e = strchr(p, '"');
+    ASSERT(e != NULL && (size_t)(e - p) < sizeof(id));
+    n = (size_t)(e - p);
+    memcpy(id, p, n);
+    id[n] = '\0';
+    free(r);
+    snprintf(args, sizeof(args),
+             "{\"action\":\"update\",\"id\":\"%s\",\"status\":\"bogus\"}", id);
+    r = test_exec_tool("fixtures", "task", args);
+    ASSERT(r != NULL && strstr(r, "Invalid status") != NULL &&
+           strstr(r, "pending") != NULL && strstr(r, "blocked") != NULL);
+    free(r);
+    return 1;
+}
+
+static int test_prepare_error_is_concise(void) {
+    struct prepared_tool prepared;
+    const char *err;
+
+    memset(&prepared, 0, sizeof(prepared));
+    err = prepare_tool("str_replace_editor",
+                       "{\"command\":\"view\",\"file_path\":\"x\",\"start_line\":0}",
+                       &prepared);
+    ASSERT(err != NULL && strstr(err, "Invalid start_line") != NULL &&
+           strlen(err) < 300);
+    prepared_tool_free(&prepared);
+
+    memset(&prepared, 0, sizeof(prepared));
+    err = prepare_tool("str_replace_editor",
+                       "{\"command\":\"view\",\"file_path\":\"x\","
+                       "\"start_line\":5,\"end_line\":2}",
+                       &prepared);
+    ASSERT(err != NULL && strstr(err, "end_line is before start_line") != NULL);
+    prepared_tool_free(&prepared);
+
+    /* Generic argument errors name the expected shape compactly: no full
+     * JSON schema dump (that used to cost ~300 tokens per error). */
+    memset(&prepared, 0, sizeof(prepared));
+    err = prepare_tool("str_replace_editor", "{\"command\":\"view\"}", &prepared);
+    ASSERT(err != NULL && strstr(err, "expected parameters") != NULL &&
+           strstr(err, "\"properties\"") == NULL && strlen(err) < 400);
+    prepared_tool_free(&prepared);
+    return 1;
+}
+
 static int test_edit_file_rejects_symlink(void) {
     char *r;
     write_file("fixtures/edit_real_target.txt", "original", 8);
@@ -2561,7 +2724,7 @@ static int test_edit_file_rejects_symlink(void) {
     r = test_exec_tool("fixtures", "str_replace_editor",
                        "{\"command\":\"str_replace\",\"file_path\":\"edit_link.txt\","
                        "\"old_string\":\"original\",\"new_string\":\"changed\"}");
-    ASSERT(r != NULL && strstr(r, "Path outside workspace or not found") != NULL);
+    ASSERT(r != NULL && strstr(r, "Not a regular file or not accessible") != NULL);
     free(r);
     r = test_exec_read_file("fixtures", "edit_real_target.txt");
     ASSERT(r != NULL && strstr(r, "original") != NULL);
@@ -3064,7 +3227,7 @@ static int test_move_file_refuses_existing_destination(void) {
     test_reset_workspace();
     /* Missing source leaf: parent directory exists, so rename fails. */
     r = test_exec_tool("fixtures", "move_file", args);
-    ASSERT(r != NULL && strstr(r, "Could not move file") != NULL);
+    ASSERT(r != NULL && strstr(r, "Source not found") != NULL);
     free(r);
 
     write_file("fixtures/mv_src.txt", "src-content\n", 12);
@@ -3135,6 +3298,12 @@ static int test_sensitive_reason_names_the_path(void) {
                                   "/home/bob/proj", why,
                                   sizeof(why)) == CCODE_CMD_TIER1);
     ASSERT(strstr(why, "/home/alice/.bashrc") != NULL);
+    /* The owner's home is handled as an ordinary out-of-workspace path. */
+    ASSERT(ccode_command_classify("cat /home/bob/.config/x",
+                                  "/home/bob/proj", why,
+                                  sizeof(why)) == CCODE_CMD_TIER1);
+    ASSERT(strcmp(why, "mentions a path or expansion outside the workspace")
+           == 0);
     ASSERT(ccode_command_classify("cat ~/.ssh/id_rsa",
                                   "/home/bob/proj", why,
                                   sizeof(why)) == CCODE_CMD_TIER2);
@@ -3192,8 +3361,7 @@ static int test_tool_auto_approval_tiers(void) {
                                    "{\"command\":\"view\",\"file_path\":\"x\"}") == 1);
     ASSERT(test_tool_auto_approved("glob", "{\"pattern\":\"*.c\"}") == 1);
     ASSERT(test_tool_auto_approved("grep", "{\"pattern\":\"x\"}") == 1);
-    ASSERT(test_tool_auto_approved("read_tool_output",
-                                   "{\"tool_call_id\":\"call_1\"}") == 1);
+    ASSERT(test_tool_auto_approved("read_tool_output", "{}") == -1);
     ASSERT(test_tool_auto_approved("task", "{\"action\":\"list\"}") == 1);
     ASSERT(test_tool_auto_approved("agent_tool",
                                    "{\"task\":\"look around\"}") == 1);
@@ -3850,7 +4018,7 @@ static int test_new_tool_arguments_are_strict(void) {
                        "{\"command\":\"str_replace\",\"file_path\":\"a\",\"old_string\":\"b\","
                        "\"new_string\":\"c\"}");
     ASSERT(r != NULL && strstr(r, "\"ok\":true") == NULL &&
-           strstr(r, "Path outside workspace") != NULL);
+           strstr(r, "File not found") != NULL);
     free(r);
     return 1;
 }
@@ -5274,30 +5442,28 @@ static int test_minimal_tools_json(void) {
     ASSERT(strstr(json, "\"delete_file\"") == NULL);
     ASSERT(strstr(json, "\"move_file\"") == NULL);
     ASSERT(strstr(json, "\"read_tool_output\"") == NULL);
-    /* The descriptions must not name it either: the model is told to narrow
-     * with bash instead of chasing an archive it cannot retrieve. */
+    /* The descriptions must point toward targeted reads and workspace logs. */
     ASSERT(strstr(json, "read_tool_output") == NULL);
-    ASSERT(strstr(json, "not retrievable") != NULL);
+    ASSERT(strstr(json, "workspace log") != NULL);
     ASSERT(strstr(json, "sed -n") != NULL);
     free(json);
     return 1;
 }
 
-/* Oversized reads/outputs must steer the model toward narrowing, and the
- * archive/retrieval promise may only appear where read_tool_output is in the
- * tool set (minimal drops it - see test_minimal_tools_json). */
+/* Tool descriptions must steer the model toward source ranges and bounded
+ * command output in every composition. */
 static int test_tool_descriptions_discourage_whole_reads(void) {
     char *write = ccode_build_write_tools_json();
     char *readonly = ccode_build_readonly_tools_json();
     ASSERT(write != NULL);
     ASSERT(readonly != NULL);
-    /* write / read-only keep the promise: read_tool_output is present there. */
-    ASSERT(strstr(write, "read_tool_output") != NULL);
-    ASSERT(strstr(readonly, "read_tool_output") != NULL);
+    /* No composition offers the removed retrieval tool. */
+    ASSERT(strstr(write, "read_tool_output") == NULL);
+    ASSERT(strstr(readonly, "read_tool_output") == NULL);
     /* Both steer away from whole-file views and whole-output dumps. */
-    ASSERT(strstr(write, "Do not read a large file whole") != NULL);
+    ASSERT(strstr(write, "start_line") != NULL);
     ASSERT(strstr(write, "Keep output bounded") != NULL);
-    ASSERT(strstr(readonly, "Do not read a large file whole") != NULL);
+    ASSERT(strstr(readonly, "start_line") != NULL);
     /* read-only ships no shell, so the shell tip has to be qualified. */
     ASSERT(strstr(readonly, "when the bash tool is available") != NULL);
     ASSERT(strstr(readonly, "\"name\":\"bash\"") == NULL);
@@ -5739,7 +5905,7 @@ static int test_tool_catalog_is_pure(void) {
     ASSERT(strcmp(w1, w2) == 0);          /* safe to cache for the whole run */
     ASSERT(strstr(w1, "str_replace_editor") != NULL);
     ASSERT(strstr(m, "read_tool_output") == NULL);
-    ASSERT(strstr(r, "read_tool_output") != NULL);
+    ASSERT(strstr(r, "read_tool_output") == NULL);
 
     ASSERT(ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) == 0);
     ASSERT(ccode_conversation_add(&conv, CCODE_ROLE_USER, "hi") == 0);
@@ -5885,7 +6051,11 @@ static int test_runtime_snapshot_absent_in_lean_profile(void) {
     ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
     ASSERT(conv.count == 0);
 
-    ASSERT(exec_task_update(&ctx, "1", "completed") != NULL);
+    {
+        char *tu = exec_task_update(&ctx, "1", "completed");
+        ASSERT(tu != NULL);
+        free(tu);
+    }
     ASSERT(test_sync_runtime_context(&conv, &ctx, 1, 0) == 0);
     ASSERT(conv.count == 0);
 
@@ -6186,6 +6356,19 @@ int main(int argc, char **argv) {
     TEST(edit_file_rejects_symlink);
     TEST(edit_file_arguments_are_strict);
 
+    /* Tool clarity regression tests (docs/TOOL-CLARITY-AUDIT.md) */
+    TEST(view_accepts_dot_slash_and_absolute);
+    TEST(view_errors_name_the_cause);
+    TEST(view_rejects_mostly_binary_file);
+    TEST(glob_grep_invalid_regex_errors);
+    TEST(glob_empty_pattern_and_grep_context_range);
+    TEST(grep_skips_binary_matches);
+    TEST(delete_file_names_the_cause);
+    TEST(edit_messages_are_actionable);
+    TEST(edit_too_large_reports_limit);
+    TEST(task_invalid_status_lists_valid);
+    TEST(prepare_error_is_concise);
+
     /* Phase 2: run_command tests */
     TEST(run_command_nul_is_not_truncated);
     TEST(run_command_background_descendant_killed);
@@ -6257,12 +6440,12 @@ int main(int argc, char **argv) {
     TEST(result_blob_round_trip_and_strip);
     TEST(result_ref_requires_tool);
     TEST(result_archive_and_read);
-    TEST(read_tool_output_prepare);
-    TEST(read_file_archives_oversized);
-    TEST(command_archives_stderr);
+    TEST(editor_view_range_prepare);
+    TEST(editor_view_line_range);
+    TEST(command_bounded_stderr);
     TEST(command_dual_stream_budget);
-    TEST(command_escaped_budget_archives);
-    TEST(read_file_escaped_budget_archives);
+    TEST(command_escaped_budget_bounded);
+    TEST(read_file_escaped_budget_bounded);
     TEST(tool_result_over_cap_envelope);
     TEST(result_lifecycle_delete_and_rename);
     TEST(result_stress_windows);

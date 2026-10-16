@@ -32,6 +32,7 @@
 #include <poll.h>
 #include <time.h>
 #include <stdint.h>
+#include <limits.h>
 #include <regex.h>
 
 #include "agent_internal.h"
@@ -158,7 +159,11 @@ int strict_nonnegative_integer_token(const char *json,
         int digit;
         if (json[i] < '0' || json[i] > '9') return -1;
         digit = json[i] - '0';
-        if (result > (300000L - digit) / 10L) return -1;
+        /* Decode the full representable range of `long`; each parameter
+         * enforces its own bound at the call site (timeout, byte_offset,
+         * max_size, ...). A fixed shared ceiling here silently rejected
+         * legal values such as byte_offset=300001 or max_size=1048576. */
+        if (result > (LONG_MAX - digit) / 10L) return -1;
         result = result * 10L + digit;
     }
     *value = result;

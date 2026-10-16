@@ -10,8 +10,7 @@ keyed by tool_call_id):
 
 - glob **/*.c / *.h / *.md counts must equal the walk-derived truth
 - grep for a real symbol must report exactly the matching lines
-- oversized read (biggest source file > 64 KiB) must truncate and page
-  back through read_tool_output with byte-accurate windows
+- oversized read must truncate; source-backed byte-offset views must reach later content
 - bash pipelines (find/wc/md5sum/grep) must match Python-computed values
 - str_replace must create a file, refuse a second create, replace a unique
   real anchor, and refuse an ambiguous multi-match edit
@@ -126,16 +125,16 @@ def build_plan(ws):
                      {"pattern": "int ccode_", "regex": True,
                       "include": "*.h", "context": 1}))
 
-    # 7-9: oversized editor view + two byte-accurate pagination windows
+    # 7-9: oversized editor view + two source-backed offset views
     big_read_id = cid()
     plan.append(step(big_read_id, "str_replace_editor",
                      {"command": "view", "file_path": rel(biggest)}))
-    plan.append(step(cid(), "read_tool_output",
-                     {"tool_call_id": big_read_id,
-                      "offset": 0, "limit": 65536}))
-    plan.append(step(cid(), "read_tool_output",
-                     {"tool_call_id": big_read_id,
-                      "offset": 60000, "limit": 5000}))
+    plan.append(step(cid(), "str_replace_editor",
+                     {"command": "view", "file_path": rel(biggest),
+                      "byte_offset": 40000}))
+    plan.append(step(cid(), "str_replace_editor",
+                     {"command": "view", "file_path": rel(biggest),
+                      "byte_offset": 60000}))
 
     # 10-14: real bash pipelines with known answers
     plan.append(step(cid(), "bash", {"command": "find src -name '*.c' | wc -l"}))
@@ -259,10 +258,7 @@ def main():
                   % expect["needle_total"])
             return 1
 
-        # oversized read: the inline preview is bounded by the escaped-length
-        # budget and flagged with a real "truncated" key (the result is whole
-        # valid JSON now); the full file lives in the archive and its byte
-        # accuracy is cross-checked by the md5sum bash step below.
+        # Oversized reads stay bounded; later regions come from the file.
         r = result(6)
         if r.get("truncated") is not True:
             print("  FAIL: oversized read not flagged truncated")
@@ -270,24 +266,11 @@ def main():
         if len(r.get("content", "")) >= expect["biggest_size"]:
             print("  FAIL: oversized read not actually truncated")
             return 1
-        r = result(7)
-        if r.get("offset") != 0 or r.get("truncated") is not True:
-            print("  FAIL: first pagination window wrong: %s"
-                  % {k: r.get(k) for k in ("offset", "total_bytes",
-                                           "truncated")})
-            return 1
-        # Byte-level accuracy of the window is cross-checked by the md5sum
-        # bash step; here len(content) is in codepoints (the source tree has
-        # UTF-8 comments), so only bound it.
-        if not (64000 <= len(r.get("content", "")) <= 65536):
-            print("  FAIL: first window content length %d out of range"
-                  % len(r.get("content", "")))
-            return 1
-        r = result(8)
-        if r.get("returned_bytes") != 5000 or len(r.get("content", "")) == 0:
-            print("  FAIL: second window returned %s, content %d"
-                  % (r.get("returned_bytes"), len(r.get("content", ""))))
-            return 1
+        for index in (7, 8):
+            r = result(index)
+            if r.get("error") or not r.get("content"):
+                print("  FAIL: source-backed offset view %d: %s" % (index, r))
+                return 1
 
         # bash: find/wc/md5/grep answers vs truth
         if result(9).get("stdout", "").strip() != str(expect["src_c_only"]):

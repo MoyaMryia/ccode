@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end battle test: all 11 tools on a real project (this repo).
+"""End-to-end battle test: all 10 tools on a real project (this repo).
 
 Spins up the real mock provider (tests/mock_provider.py), scripts every
 model reply as a tool-call plan, then drives the real ccode-cli over a
@@ -10,7 +10,7 @@ task end to end:
   -> real rebuild (make) -> behavior check on the built binary -> git diff
   -> file ops (create / duplicate-create refusal / move / move-onto-existing
   refusal / delete) -> web_fetch + web_search against the mock's loopback
-  pages -> oversized output archive + read_tool_output -> task close-out ->
+  pages -> bounded command previews + ranged file view -> task close-out ->
   read-only sub-agent.
 
 Every tool result is verified exactly against the saved session, and the
@@ -74,10 +74,13 @@ def setup_workspace(root):
     with open(path, "w", encoding="utf-8") as f:
         f.write(src.replace(DEFECT_OLD, DEFECT_BAD, 1))
 
-    # Quote-dense file under the 50 KiB raw cap that still overflows the
-    # escaped-length budget: editor view must flag and archive it.
+    # A quote-dense view must remain valid JSON and flag truncation.
     with open(os.path.join(ws, "quotes.txt"), "w") as f:
         f.write('"' * QUOTES_BYTES)
+
+    with open(os.path.join(ws, "lines.txt"), "w") as f:
+        for line in range(1, 301):
+            f.write("line-%03d\n" % line)
 
     def git(*args):
         subprocess.run(["git", "-C", ws] + list(args), check=True,
@@ -146,17 +149,14 @@ def build_plan(port):
              {"command":
               "printf START; yes A | head -c 200000; printf ENDMARK9999; "
               "yes E | head -c 200000 1>&2; printf ENDERR2 1>&2"}),
-        step("call_window", "read_tool_output",
-             {"tool_call_id": "call_big", "offset": 199000,
-              "limit": 65536}),
-        step("call_window_err", "read_tool_output",
-             {"tool_call_id": "call_big", "stream": "stderr",
-              "offset": 199000, "limit": 65536}),
         step("call_readq", "str_replace_editor",
              {"command": "view", "file_path": "quotes.txt"}),
-        step("call_readq_win", "read_tool_output",
-             {"tool_call_id": "call_readq", "offset": 40000,
-              "limit": 65536}),
+        step("call_readq_offset", "str_replace_editor",
+             {"command": "view", "file_path": "quotes.txt",
+              "byte_offset": 40000}),
+        step("call_lines", "str_replace_editor",
+             {"command": "view", "file_path": "lines.txt",
+              "start_line": 150, "end_line": 152}),
         step("call_task_done", "task",
              {"action": "update", "id": "1", "status": "completed"}),
         step("call_task_ls", "task", {"action": "list"}),
@@ -194,7 +194,7 @@ def main():
     root = tempfile.mkdtemp(prefix="ccode_e2e_real_")
     mock = None
     try:
-        print("=== ccode battle test: all 11 tools on the real repo tree ===")
+        print("=== ccode battle test: all 10 tools on the real repo tree ===")
         ws, defect_line = setup_workspace(root)
         n_c = count_src_c_files(ws)
         port = free_port()
@@ -362,48 +362,44 @@ def main():
               results[1].get("snippet") == "snippet 'two' here",
               "results=%s" % json.dumps(results)[:160])
 
-        # -- oversized output: budget cut, archive, windowed retrieval ------
+        # -- bounded output and source-backed ranged reading --------------
         big = r("call_big")
-        check("dual-stream cut keeps valid JSON with both flags",
+        check("dual-stream previews keep the final markers",
               big.get("exit_code") == 0 and
               big.get("stdout_truncated") is True and
               big.get("stderr_truncated") is True and
-              0 < len(big.get("stdout", "")) < BIG_STDOUT_BYTES,
+              "ENDMARK9999" in big.get("stdout", "") and
+              "ENDERR2" in big.get("stderr", "") and
+              len(big.get("stdout", "")) < 8000 and
+              len(big.get("stderr", "")) < 8000,
               "exit=%s flags=%s/%s"
               % (big.get("exit_code"), big.get("stdout_truncated"),
                  big.get("stderr_truncated")))
-        win = r("call_window")
-        check("read_tool_output returned the exact stdout tail window",
-              win.get("stream") == "stdout" and
-              win.get("total_bytes") == BIG_STDOUT_BYTES and
-              win.get("returned_bytes") == BIG_STDOUT_BYTES - 199000 and
-              win.get("truncated") is False and
-              (win.get("content") or "").endswith("ENDMARK9999"),
-              "offset=%s total=%s returned=%s"
-              % (win.get("offset"), win.get("total_bytes"),
-                 win.get("returned_bytes")))
-        winerr = r("call_window_err")
-        check("stderr window retrieved via stream=stderr",
-              winerr.get("stream") == "stderr" and
-              winerr.get("total_bytes") == BIG_STDERR_BYTES and
-              winerr.get("returned_bytes") == BIG_STDERR_BYTES - 199000 and
-              (winerr.get("content") or "").endswith("ENDERR2"),
-              "total=%s returned=%s content=%r"
-              % (winerr.get("total_bytes"), winerr.get("returned_bytes"),
-                 (winerr.get("content") or "")[-20:]))
         readq = r("call_readq")
         check("quote-dense file read is bounded with explicit flag",
               readq.get("truncated") is True and
               0 < len(readq.get("content", "")) < QUOTES_BYTES,
               "truncated=%s content=%d"
               % (readq.get("truncated"), len(readq.get("content", ""))))
-        winq = r("call_readq_win")
-        check("archived quote file windowed back",
-              winq.get("total_bytes") == QUOTES_BYTES and
-              winq.get("returned_bytes") == QUOTES_BYTES - 40000 and
-              (winq.get("content") or "").endswith('"'),
-              "total=%s returned=%s"
-              % (winq.get("total_bytes"), winq.get("returned_bytes")))
+        readq_tail = r("call_readq_offset")
+        check("quote-dense file tail is source-readable",
+              len(readq_tail.get("content", "")) == QUOTES_BYTES - 40000 and
+              readq_tail.get("truncated") is not True,
+              "content=%d" % len(readq_tail.get("content", "")))
+        lines = r("call_lines")
+        check("editor reads a requested line range",
+              "line-150" in lines.get("content", "") and
+              "line-152" in lines.get("content", "") and
+              "line-149" not in lines.get("content", "") and
+              "line-153" not in lines.get("content", ""),
+              "content=%r" % lines.get("content", "")[:100])
+        check("no output archive created",
+              not os.path.exists(session_path + ".results"), "")
+        with open(session_path, encoding="utf-8") as f:
+            session_doc = json.load(f)
+        check("new session has no result references",
+              all("result_ref" not in m
+                  for m in session_doc.get("messages", [])), "")
 
         # -- close-out: tasks + sub-agent ----------------------------------
         check("task update ok",

@@ -410,6 +410,23 @@ static void read_only_accepts_json_booleans_and_legacy_strings(void) {
     }
 }
 
+static void byte_offset_errors_are_specific(void) {
+    const char *cases[] = {
+        "{\"command\":\"view\",\"file_path\":\"x\",\"byte_offset\":-1}",
+        "{\"command\":\"view\",\"file_path\":\"x\",\"byte_offset\":\"1\"}"
+    };
+    size_t i;
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct prepared_tool prepared;
+        const char *err;
+        memset(&prepared, 0, sizeof(prepared));
+        err = prepare_tool("str_replace_editor", cases[i], &prepared);
+        CHECK(err != NULL && strstr(err, "byte_offset") != NULL);
+        CHECK(err != NULL && strstr(err, i == 0 ? "negative" : "JSON number") != NULL);
+        prepared_tool_free(&prepared);
+    }
+}
+
 static void latest_whitespace_answer_does_not_fall_back(void) {
     struct ccode_conversation conv;
     char *answer;
@@ -431,6 +448,7 @@ int main(void) {
     partial_answer_is_marked_incomplete();
     partial_answer_is_bounded();
     read_only_accepts_json_booleans_and_legacy_strings();
+    byte_offset_errors_are_specific();
     latest_whitespace_answer_does_not_fall_back();
     if (failures) {
         fprintf(stderr, "=== Results: %d failure(s) ===\n", failures);

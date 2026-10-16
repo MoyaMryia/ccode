@@ -101,7 +101,6 @@ static int verify_file_identity_at(int parent_fd, const char *leaf,
 #define CCODE_MAX_ARGUMENT_LEN   4095
 #define CCODE_MAX_ARGS           16
 #define CCODE_RUN_COMMAND_TIMEOUT 120000
-#define CCODE_COMMAND_OUTPUT_LIMIT (64 * 1024)
 
 static unsigned long write_temp_counter = 0;
 
@@ -475,7 +474,8 @@ char *exec_task_update(struct agent_context *ctx, const char *id,
                 strcmp(status, "in_progress") != 0 &&
                 strcmp(status, "completed") != 0 &&
                 strcmp(status, "blocked") != 0)
-                return ccode_strdup("{\"error\":\"Invalid status\"}");
+                return ccode_strdup("{\"error\":\"Invalid status (expected "
+                       "pending, in_progress, completed, or blocked)\"}");
             snprintf(t->status, sizeof(t->status),
                      "%.*s", (int)sizeof(t->status) - 1, status);
             ctx->task_list_dirty = 1;
@@ -776,6 +776,110 @@ int is_home_relative_path(const char *path) {
            (path[1] == '/' || path[1] == '\\' || path[1] == '\0');
 }
 
+/* Syntactic path check for the prepare layer, which does not know the
+ * workspace root: refuses traversal ("..", empty components, backslash,
+ * colon, ~, leading -) but permits absolute paths and leading "./" so the
+ * exec layer can normalize them against the workspace root. */
+int is_workspace_path_syntax(const char *path, int allow_dot) {
+    char copy[4096];
+    char *component;
+    char *next;
+    const char *p = path;
+
+    if (!path || path[0] == '\0' || path[0] == '-' || path[0] == '~' ||
+        strlen(path) >= sizeof(copy))
+        return 0;
+    if (strchr(path, '\\') != NULL || strchr(path, ':') != NULL)
+        return 0;
+    while (p[0] == '.' && p[1] == '/') p += 2;
+    if (p[0] == '\0') return 0;
+    if (allow_dot && strcmp(p, ".") == 0) return 1;
+    if (p[0] == '/') p++;               /* absolute: exec decides inside/outside */
+    memcpy(copy, p, strlen(p) + 1);
+    component = copy;
+    for (;;) {
+        next = strchr(component, '/');
+        if (next) *next = '\0';
+        if (component[0] == '\0' || strcmp(component, ".") == 0 ||
+            strcmp(component, "..") == 0)
+            return 0;
+        if (!next) return 1;
+        component = next + 1;
+    }
+}
+
+/* Normalize a user-supplied path to workspace-relative form: strip leading
+ * "./" components and map an absolute path that points inside the workspace
+ * to its relative form. Requires init_workspace. Returns PATH_NORM_OK, or
+ * PATH_NORM_OUTSIDE / PATH_NORM_INVALID describing the real cause so error
+ * messages can name it instead of guessing. */
+#define PATH_NORM_OK 0
+#define PATH_NORM_OUTSIDE 1
+#define PATH_NORM_INVALID 2
+static int normalize_workspace_path(struct agent_context *ctx, const char *in,
+                                    char *out, size_t out_size) {
+    const char *p = in;
+    size_t n;
+
+    if (!in || in[0] == '\0') return PATH_NORM_INVALID;
+    if (in[0] == '/') {
+        if (strncmp(in, ctx->workspace_root, ctx->workspace_root_len) == 0 &&
+            in[ctx->workspace_root_len] == '/')
+            p = in + ctx->workspace_root_len + 1;
+        else
+            return PATH_NORM_OUTSIDE;
+    }
+    while (p[0] == '.' && p[1] == '/') p += 2;
+    while (p[0] == '/') p++;            /* collapse duplicate slashes */
+    if (p[0] == '\0') return PATH_NORM_INVALID;
+    n = strlen(p);
+    while (n > 1 && p[n - 1] == '/') n--;   /* strip trailing slashes */
+    if (n >= out_size) return PATH_NORM_INVALID;
+    memcpy(out, p, n);
+    out[n] = '\0';
+    if (strcmp(out, ".") == 0) return PATH_NORM_OK; /* the workspace root */
+    {
+        const char *seg = out;
+        for (;;) {
+            const char *slash = strchr(seg, '/');
+            size_t sn = slash ? (size_t)(slash - seg) : strlen(seg);
+            if (sn == 0 || (sn == 1 && seg[0] == '.'))
+                return PATH_NORM_INVALID;
+            if (sn == 2 && seg[0] == '.' && seg[1] == '.')
+                return PATH_NORM_OUTSIDE;
+            if (memchr(seg, '\\', sn) != NULL || memchr(seg, ':', sn) != NULL)
+                return PATH_NORM_INVALID;
+            if (!slash) break;
+            seg = slash + 1;
+        }
+    }
+    return PATH_NORM_OK;
+}
+
+static char *path_reject_error(int rc, const char *path) {
+    if (rc == PATH_NORM_OUTSIDE)
+        return format_tool_error_reason("Path outside workspace", path);
+    return format_tool_error_reason("Invalid path", path);
+}
+
+/* After a normalized path fails to open, classify why so the message can
+ * say "Is a directory" instead of implying the file does not exist. The
+ * diagnostic stat follows symlinks on purpose: a path that exists only
+ * through a symlink the secure walk refused is "not accessible", not
+ * "not found". */
+static char *file_open_error(struct agent_context *ctx, const char *path) {
+    struct stat st;
+
+    if (strcmp(path, ".") == 0)
+        return format_tool_error_reason("Is a directory", path);
+    if (fstatat(ctx->workspace_dir_fd, path, &st, 0) != 0)
+        return format_tool_error_reason("File not found", path);
+    if (S_ISDIR(st.st_mode))
+        return format_tool_error_reason("Is a directory", path);
+    return format_tool_error_reason("Not a regular file or not accessible",
+                                    path);
+}
+
 /* Returns NULL on failure (not committed), "ok" on full success, or
  * "committed_not_durable" when rename succeeded but directory fsync failed
  * (content is live but durability is unverified). */
@@ -863,11 +967,17 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
     struct file_identity file_id;
     int file_id_valid = 0;
     uint64_t content_digest = 0;
+    char npath[4096];
+    int nrc;
 
     if (!file_path || !old_string || !new_string)
         return ccode_strdup("{\"error\":\"Missing edit_file argument\"}");
     if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
+    nrc = normalize_workspace_path(ctx, file_path, npath, sizeof(npath));
+    if (nrc != PATH_NORM_OK)
+        return path_reject_error(nrc, file_path);
+    file_path = npath;
 
     /* Empty old_string means create a new file: the atomic write runs with
      * no expected identity, and its pre-rename verify refuses to proceed
@@ -882,13 +992,23 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
                                                     create_leaf,
                                                     sizeof(create_leaf));
         if (create_parent_fd < 0)
-            return format_tool_error_reason("Path outside workspace or parent not found",
-                                       file_path);
+            return format_tool_error_reason(
+                    "Could not create file: parent not found", file_path);
+        {
+            struct stat cst;
+            if (fstatat(create_parent_fd, create_leaf, &cst,
+                        AT_SYMLINK_NOFOLLOW) == 0) {
+                close(create_parent_fd);
+                return format_tool_error_reason(
+                        "Could not create file: target already exists",
+                        file_path);
+            }
+        }
         wr = atomic_write_at_parent(create_parent_fd, create_leaf, new_string,
                                     0644, geteuid(), getegid(), NULL);
         close(create_parent_fd);
         if (!wr)
-            return ccode_strdup("{\"error\":\"Could not create file (target exists?)\"}");
+            return ccode_strdup("{\"error\":\"Could not create file\"}");
         change_log_add(ctx, "write", file_path, 0, 0);
         return write_receipt("created", file_path, strlen(new_string),
                              strcmp(wr, "committed_not_durable") == 0);
@@ -896,8 +1016,7 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
 
     fd = open_regular_at_workspace(ctx, file_path);
     if (fd < 0)
-        return format_tool_error_reason("Path outside workspace or not found",
-                                       file_path);
+        return file_open_error(ctx, file_path);
 
     if (fstat(fd, &st) == 0) {
         if (st.st_nlink > 1) {
@@ -918,8 +1037,17 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
 
     fsize = (long)file_id.st_size;
     if (fsize < 0 || (size_t)fsize > MAX_TOOL_OUTPUT) {
+        char *m = NULL;
+        struct ccode_buf msg;
+        ccode_buf_init(&msg);
+        if (ccode_buf_printf(&msg,
+                "{\"error\":\"File too large to edit\",\"bytes\":%ld,\"limit\":%ld}",
+                fsize, (long)MAX_TOOL_OUTPUT) == 0)
+            m = ccode_buf_detach(&msg);
+        else
+            ccode_buf_free(&msg);
         close(fd);
-        return ccode_strdup("{\"error\":\"File too large to edit\"}");
+        return m;
     }
 
     source = malloc((size_t)fsize + 1);
@@ -935,10 +1063,21 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
     file_id.content_digest = content_digest;
     file_id_valid = 1;
 
-    if (is_binary_content((const unsigned char *)source, read_size)) {
+    if (is_probably_binary_file((const unsigned char *)source, read_size)) {
         free(source);
         return format_tool_error_reason("Refusing to edit binary file",
                                        file_path);
+    }
+
+    /* A mostly-text file can hold one or two NUL bytes and still slip past
+     * the binary heuristic above. Matching and the atomic write below are
+     * C-string based (strstr/strlen), so an embedded NUL would silently
+     * truncate the rewritten file at the first NUL. Refuse before any
+     * mutation so the original bytes are preserved untouched. */
+    if (memchr(source, '\0', read_size) != NULL) {
+        free(source);
+        return format_tool_error_reason(
+                "Refusing to edit file: embedded NUL byte", file_path);
     }
 
     old_len = strlen(old_string);
@@ -956,8 +1095,42 @@ char *exec_edit_file(struct agent_context *ctx, const char *workspace, const cha
     {
         char *second = strstr(match + 1, old_string);
         if (second) {
+            /* Name the count and the first few line numbers so the next
+             * attempt can carry enough context instead of re-reading the
+             * whole file to locate the duplicates. */
+            int count = 0;
+            long lines[8];
+            int nlines = 0;
+            long line_no = 1;
+            const char *scan = source;
+            const char *hit = source;
+            struct ccode_buf msg;
+            char *m = NULL;
+            int i2;
+
+            while ((hit = strstr(hit, old_string)) != NULL) {
+                while (scan < hit) {
+                    if (*scan == '\n') line_no++;
+                    scan++;
+                }
+                if (nlines < 8) lines[nlines++] = line_no;
+                count++;
+                hit++;
+            }
+            ccode_buf_init(&msg);
+            if (ccode_buf_append(&msg,
+                    "{\"error\":\"Multiple matches found\",\"count\":") == 0 &&
+                ccode_buf_printf(&msg, "%d,\"lines\":[", count) == 0) {
+                for (i2 = 0; i2 < nlines; i2++)
+                    if (ccode_buf_printf(&msg, "%s%ld", i2 ? "," : "",
+                                         lines[i2]) != 0)
+                        break;
+                if (ccode_buf_append(&msg, "]}") == 0)
+                    m = ccode_buf_detach(&msg);
+            }
+            if (!m) ccode_buf_free(&msg);
             free(source);
-            return ccode_strdup("{\"error\":\"Multiple matches found\"}");
+            return m;
         }
     }
 
@@ -1153,6 +1326,31 @@ int is_binary_content(const unsigned char *buf, size_t len) {
     return 0;
 }
 
+/* Stricter text check for content handed to the model as file text: the
+ * control-byte heuristic above, plus an invalid-UTF-8 ratio. Files that are
+ * mostly text with a few bad bytes pass (the escape layer substitutes
+ * U+FFFD, which keeps them readable); files with a meaningful fraction of
+ * broken sequences are treated as binary so the model never sees mojibake
+ * it might mistake for real content. bash output keeps the lenient check:
+ * partial corruption in command output is information, not corruption. */
+int is_probably_binary_file(const unsigned char *buf, size_t len) {
+    size_t i = 0;
+    size_t bad = 0;
+
+    if (is_binary_content(buf, len)) return 1;
+    while (i < len) {
+        unsigned char c = buf[i];
+        int seq;
+        if (c < 0x80) { i++; continue; }
+        seq = ccode_utf8_seq_len(buf + i, len - i);
+        if (seq > 0) { i += (size_t)seq; continue; }
+        bad++;
+        i++;
+        if (bad > 1 && bad * 20 > len) return 1;   /* >5% broken */
+    }
+    return bad > 1 && bad * 20 > len;
+}
+
 /* If a read was cut at a byte cap, back off an incomplete trailing UTF-8
  * sequence so the JSON string handed to the model stays valid UTF-8. */
 static size_t trim_incomplete_utf8(const unsigned char *s, size_t n) {
@@ -1175,29 +1373,44 @@ static size_t trim_incomplete_utf8(const unsigned char *s, size_t n) {
     return (cont + 1 < need) ? k - 1 : n;
 }
 
-char *exec_read_file(struct agent_context *ctx, const char *workspace, const char *file_path) {
+char *exec_read_file_range(struct agent_context *ctx, const char *workspace,
+                           const char *file_path, long start_line,
+                           long end_line, long byte_offset) {
     char * output;
     int fd;
     FILE *f;
     long fsize;
     unsigned char *source;
-    size_t read_size;
+    size_t read_size, raw_read_size;
     size_t output_cap, output_pos;
-    size_t content_start;
+    size_t content_start, source_start, emitted_bytes, next_byte_offset;
     int content_cut;
     size_t file_size;
     size_t read_limit;
+    long line;
+    long final_position;
+    int ch;
+    char npath[4096];
+    int nrc;
 
+    if (start_line < 1 || byte_offset < 0 ||
+        (end_line != 0 && end_line < start_line) ||
+        (byte_offset > 0 && (start_line != 1 || end_line != 0)))
+        return ccode_strdup("{\"error\":\"Invalid editor line range\"}");
     if (!file_path)
         return ccode_strdup("{\"error\":\"Missing file_path argument\"}");
 
     if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
 
+    nrc = normalize_workspace_path(ctx, file_path, npath, sizeof(npath));
+    if (nrc != PATH_NORM_OK)
+        return path_reject_error(nrc, file_path);
+    file_path = npath;
+
     fd = open_regular_at_workspace(ctx, file_path);
     if (fd < 0)
-        return format_tool_error_reason("Path outside workspace or not found",
-                                       file_path);
+        return file_open_error(ctx, file_path);
 
     f = fdopen(fd, "rb");
     if (!f) {
@@ -1210,20 +1423,72 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
     if (fsize < 0) { fclose(f); return ccode_strdup("{\"error\":\"Could not determine file size\"}"); }
     if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return ccode_strdup("{\"error\":\"Could not seek file\"}"); }
 
-    /* Cap the bytes handed to the model. A larger file is truncated (not
-     * rejected) and the result carries an explicit truncation marker so a
-     * partial read never looks complete. */
+    /* Skip to the requested 1-based line before allocating the bounded
+     * preview. Ranged reads use the same fixed workspace fd and path checks
+     * as ordinary view; no second copy of the file is stored. */
     file_size = (size_t)fsize;
-    read_limit = file_size > MAX_TOOL_OUTPUT ? (size_t)MAX_TOOL_OUTPUT : file_size;
+    line = 1;
+    if (byte_offset > 0) {
+        if (byte_offset > fsize) {
+            fclose(f);
+            return ccode_strdup("{\"error\":\"byte_offset is beyond end of file\"}");
+        }
+        if (fseek(f, byte_offset, SEEK_SET) != 0) {
+            fclose(f);
+            return ccode_strdup("{\"error\":\"Could not seek to byte_offset\"}");
+        }
+        /* An offset into a UTF-8 codepoint starts at the next complete one. */
+        while ((ch = fgetc(f)) != EOF && (ch & 0xc0) == 0x80) {}
+        if (ch != EOF && fseek(f, -1, SEEK_CUR) != 0) {
+            fclose(f);
+            return ccode_strdup("{\"error\":\"Could not seek file\"}");
+        }
+    } else {
+        while (line < start_line && (ch = fgetc(f)) != EOF) {
+            if (ch == '\n') line++;
+        }
+    }
+    if (ferror(f)) {
+        fclose(f);
+        return ccode_strdup("{\"error\":\"Error reading file\"}");
+    }
+    if (line < start_line) {
+        fclose(f);
+        return ccode_strdup("{\"error\":\"start_line beyond end of file\"}");
+    }
+    final_position = ftell(f);
+    if (final_position < 0) {
+        fclose(f);
+        return ccode_strdup("{\"error\":\"Could not determine file position\"}");
+    }
+    read_limit = file_size - (size_t)final_position;
+    if (read_limit > MAX_TOOL_OUTPUT) read_limit = MAX_TOOL_OUTPUT;
     source = malloc(read_limit + 1);
     if (!source) { fclose(f); return NULL; }
-    read_size = fread(source, 1, read_limit, f);
-    if (ferror(f)) { fclose(f); free(source); return ccode_strdup("{\"error\":\"Error reading file\"}"); }
+    read_size = 0;
+    while (read_size < read_limit && (end_line == 0 || line <= end_line)) {
+        ch = fgetc(f);
+        if (ch == EOF) break;
+        source[read_size++] = (unsigned char)ch;
+        if (ch == '\n') line++;
+    }
+    if (ferror(f)) {
+        fclose(f);
+        free(source);
+        return ccode_strdup("{\"error\":\"Error reading file\"}");
+    }
+    final_position = ftell(f);
     fclose(f);
+    if (final_position < 0) {
+        free(source);
+        return ccode_strdup("{\"error\":\"Could not determine file position\"}");
+    }
+    raw_read_size = read_size;
+    source_start = (size_t)final_position - raw_read_size;
     read_size = trim_incomplete_utf8(source, read_size);
     source[read_size] = '\0';
 
-    if (is_binary_content(source, read_size)) {
+    if (is_probably_binary_file(source, read_size)) {
         free(source);
         return ccode_strdup("{\"error\":\"Binary file contents are not supported\"}");
     }
@@ -1236,6 +1501,7 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
     output_pos = snprintf(output, output_cap, "{\"content\":\"");
     content_start = output_pos;
     content_cut = 0;
+    emitted_bytes = 0;
     {
         size_t i;
         for (i = 0; i < read_size && output_pos + 8 < output_cap; i++) {
@@ -1284,49 +1550,12 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
             } else {
                 output[output_pos++] = (char)c;
             }
-        }
-    }
-
-    /* When the preview is cut short (by the raw-byte cap or the escaped
-     * length budget), keep the untruncated file in the archive so the model
-     * can page through it with read_tool_output. Only raw bytes are
-     * archived; binary payloads are skipped (read_file rejects them
-     * anyway). */
-    if ((file_size > read_limit || content_cut) &&
-        ctx->results_dir[0] != '\0') {
-        int afd = open_regular_at_workspace(ctx, file_path);
-        if (afd >= 0) {
-            size_t cap = file_size > CCODE_RESULT_BLOB_MAX
-                         ? CCODE_RESULT_BLOB_MAX : file_size;
-            char *full = malloc(cap + 1);
-            if (full) {
-                size_t got = 0;
-                while (got < cap) {
-                    ssize_t r = read(afd, full + got, cap - got);
-                    if (r <= 0) break;
-                    got += (size_t)r;
-                }
-                if (got > 0 &&
-                    !is_binary_content((const unsigned char *)full, got)) {
-                    char *bid = NULL;
-                    size_t tot = 0;
-                    if (ccode_results_archive(ctx, full, got, "", 0,
-                                              &bid, &tot) == 0) {
-                        /* Replace any previous blob (a prior tool in the
-                         * same turn may have left one): exec_run_command_ex
-                         * frees at entry, so mirror that here. */
-                        free(ctx->last_result_blob);
-                        ctx->last_result_blob = bid;
-                        ctx->last_result_total = tot;
-                    }
-                }
-                free(full);
-            }
-            close(afd);
+            emitted_bytes = i + 1;
         }
     }
 
     free(source);
+    next_byte_offset = source_start + emitted_bytes;
 
     /* Close the content string BEFORE appending the flag: the marker is a
      * real JSON key, not a note inside the string (writing it before the
@@ -1337,18 +1566,24 @@ char *exec_read_file(struct agent_context *ctx, const char *workspace, const cha
         return ccode_strdup("{\"error\":\"Output too large\"}");
     }
     output[output_pos++] = '"';
-    if (read_size < file_size || content_cut) {
-        static const char marker[] = ",\"truncated\":true";
-        if (output_pos + sizeof(marker) + 3 > output_cap) {
+    if (next_byte_offset < file_size || content_cut) {
+        int written = snprintf(output + output_pos, output_cap - output_pos,
+                               ",\"truncated\":true,\"next_byte_offset\":%lu",
+                               (unsigned long)next_byte_offset);
+        if (written <= 0 || (size_t)written >= output_cap - output_pos - 2) {
             free(output);
             return ccode_strdup("{\"error\":\"Output too large\"}");
         }
-        memcpy(output + output_pos, marker, sizeof(marker) - 1);
-        output_pos += sizeof(marker) - 1;
+        output_pos += (size_t)written;
     }
     output[output_pos++] = '}';
     output[output_pos] = '\0';
     return output;
+}
+
+char *exec_read_file(struct agent_context *ctx, const char *workspace,
+                     const char *file_path) {
+    return exec_read_file_range(ctx, workspace, file_path, 1, 0, 0);
 }
 
 /* Strip a leading globstar sequence (star-star-slash) because glob_recursive
@@ -1530,6 +1765,7 @@ static int is_gitignored(struct agent_context *ctx, const char *name,
 
 static void glob_recursive(struct agent_context *ctx, int parent_fd,
                             const char *rel_dir,
+                            const char *match_prefix,
                             const char *pattern, int depth,
                             int use_regex,
                             char **result, size_t *total, size_t *cap,
@@ -1615,7 +1851,22 @@ static void glob_recursive(struct agent_context *ctx, int parent_fd,
             const char *normalized = normalize_glob(pattern);
             int match_ok = 0;
             if (S_ISREG(st.st_mode)) {
-                const char *match_subject = strchr(normalized, '/') ? rel_path : d_name;
+                const char *match_subject;
+                if (strchr(normalized, '/')) {
+                    /* A pattern with a directory component is relative to
+                     * the search root: path='src' plus a 'lib/<name>.c'
+                     * pattern matches src/lib/foo.c. The emitted entry stays
+                     * workspace-relative (rel_path). When no path was given
+                     * match_prefix is empty and this is the old behaviour. */
+                    size_t plen = match_prefix ? strlen(match_prefix) : 0;
+                    match_subject = rel_path;
+                    if (plen > 0 &&
+                        strncmp(rel_path, match_prefix, plen) == 0 &&
+                        rel_path[plen] == '/')
+                        match_subject = rel_path + plen + 1;
+                } else {
+                    match_subject = d_name;
+                }
                 if (gregex_ok)
                     match_ok = (regexec(&gregex, match_subject, 0, NULL, 0) == 0);
                 else
@@ -1650,8 +1901,8 @@ static void glob_recursive(struct agent_context *ctx, int parent_fd,
         }
 
         if (S_ISDIR(st.st_mode)) {
-            glob_recursive(ctx, entry_fd, rel_path, pattern, depth + 1,
-                           use_regex,
+            glob_recursive(ctx, entry_fd, rel_path, match_prefix, pattern,
+                           depth + 1, use_regex,
                            result, total, cap, first, count, budget, gi);
             if (budget->truncated) {
                 close(entry_fd);
@@ -1677,6 +1928,8 @@ char *exec_glob(struct agent_context *ctx, const char *workspace, const char *pa
     int root_fd;
     struct scan_budget budget = {0};
     const char *rel_dir = "";
+    const char *match_prefix = "";
+    char npath[4096];
 
     if (!pattern)
         return ccode_strdup("{\"error\":\"Missing pattern argument\"}");
@@ -1684,12 +1937,30 @@ char *exec_glob(struct agent_context *ctx, const char *workspace, const char *pa
     if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
 
+    if (use_regex && pattern[0] != '\0') {
+        regex_t re;
+        if (regcomp(&re, pattern, REG_EXTENDED | REG_NOSUB) != 0)
+            return format_tool_error_reason("Invalid regular expression",
+                                            pattern);
+        regfree(&re);
+    }
+
     if (path && path[0] != '\0') {
+        int nrc = normalize_workspace_path(ctx, path, npath, sizeof(npath));
+        if (nrc != PATH_NORM_OK)
+            return path_reject_error(nrc, path);
+        path = npath;
         root_fd = open_directory_at_workspace(ctx, path);
         if (root_fd < 0)
-            return format_tool_error_reason("Path outside workspace or not a directory",
-                                       path);
-        rel_dir = path;
+            return format_tool_error_reason(
+                    errno == ENOTDIR ? "Not a directory" :
+                    errno == ENOENT ? "Search path not found" :
+                    errno == ELOOP ? "Search path contains a symlink" :
+                    "Search path is unavailable", path);
+        /* "." is the workspace root: keep the emitted paths clean (no
+         * "./" prefix) and the match prefix empty. */
+        rel_dir = (strcmp(path, ".") == 0) ? "" : path;
+        match_prefix = rel_dir;
     } else {
         root_fd = dup(ctx->workspace_dir_fd);
         if (root_fd < 0)
@@ -1713,7 +1984,8 @@ char *exec_glob(struct agent_context *ctx, const char *workspace, const char *pa
     {
         struct ccode_vec gi;
         ccode_vec_init(&gi, sizeof(struct gitignore_rule));
-        glob_recursive(ctx, root_fd, rel_dir, pattern, 0, use_regex,
+        glob_recursive(ctx, root_fd, rel_dir, match_prefix, pattern, 0,
+                       use_regex,
                        &result, &total, &cap, &first, &count, &budget, &gi);
         ccode_vec_free(&gi);
     }
@@ -1838,7 +2110,7 @@ static void search_file_for_pattern(int file_fd,
     {   /* Skip binary files in grep. */
         unsigned char probe[8192];
         size_t probe_len = fread(probe, 1, sizeof(probe), f);
-        if (is_binary_content(probe, probe_len)) { goto done; }
+        if (is_probably_binary_file(probe, probe_len)) { goto done; }
         rewind(f);
     }
 
@@ -2028,6 +2300,7 @@ char *exec_grep(struct agent_context *ctx, const char *workspace, const char *pa
     int root_fd;
     struct scan_budget budget = {0};
     const char *rel_dir = "";
+    char npath[4096];
 
     if (!pattern)
         return ccode_strdup("{\"error\":\"Missing pattern argument\"}");
@@ -2035,11 +2308,26 @@ char *exec_grep(struct agent_context *ctx, const char *workspace, const char *pa
     if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
 
+    if (use_regex && pattern[0] != '\0') {
+        regex_t re;
+        if (regcomp(&re, pattern, REG_EXTENDED | REG_NOSUB) != 0)
+            return format_tool_error_reason("Invalid regular expression",
+                                            pattern);
+        regfree(&re);
+    }
+
     if (path && path[0] != '\0') {
+        int nrc = normalize_workspace_path(ctx, path, npath, sizeof(npath));
+        if (nrc != PATH_NORM_OK)
+            return path_reject_error(nrc, path);
+        path = npath;
         root_fd = open_directory_at_workspace(ctx, path);
         if (root_fd < 0)
-            return format_tool_error_reason("Path outside workspace or not a directory",
-                                       path);
+            return format_tool_error_reason(
+                    errno == ENOTDIR ? "Not a directory" :
+                    errno == ENOENT ? "Search path not found" :
+                    errno == ELOOP ? "Search path contains a symlink" :
+                    "Search path is unavailable", path);
         rel_dir = path;
     } else {
         root_fd = dup(ctx->workspace_dir_fd);
@@ -2094,18 +2382,28 @@ char *exec_grep(struct agent_context *ctx, const char *workspace, const char *pa
 char *exec_delete_file(struct agent_context *ctx, const char *workspace, const char *file_path) {
     char leaf[256];
     int parent_fd;
+    char npath[4096];
+    int nrc;
 
     if (!file_path)
         return ccode_strdup("{\"error\":\"Missing file_path argument\"}");
     if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
+    nrc = normalize_workspace_path(ctx, file_path, npath, sizeof(npath));
+    if (nrc != PATH_NORM_OK)
+        return path_reject_error(nrc, file_path);
+    file_path = npath;
     parent_fd = open_parent_at_workspace(ctx, file_path, leaf, sizeof(leaf));
     if (parent_fd < 0)
-        return format_tool_error_reason("Path outside workspace or parent not found",
-                                       file_path);
+        return format_tool_error_reason("File not found", file_path);
     if (unlinkat(parent_fd, leaf, 0) != 0) {
+        int e = errno;
         close(parent_fd);
-        return ccode_strdup("{\"error\":\"Could not delete file\"}");
+        if (e == ENOENT)
+            return format_tool_error_reason("File not found", file_path);
+        if (e == EISDIR || e == EPERM)
+            return format_tool_error_reason("Is a directory", file_path);
+        return format_tool_error_reason("Could not delete file", file_path);
     }
     close(parent_fd);
     change_log_add(ctx, "delete", file_path, 0, 0);
@@ -2118,25 +2416,40 @@ char *exec_move_file(struct agent_context *ctx, const char *workspace, const cha
     char dst_leaf[256];
     int src_parent_fd;
     int dst_parent_fd;
+    char nsrc[4096];
+    char ndst[4096];
+    int nrc;
 
     if (!source || !destination)
         return ccode_strdup("{\"error\":\"Missing source or destination argument\"}");
     if (init_workspace(ctx, workspace) != 0)
         return ccode_strdup("{\"error\":\"Could not initialize workspace\"}");
+    nrc = normalize_workspace_path(ctx, source, nsrc, sizeof(nsrc));
+    if (nrc != PATH_NORM_OK)
+        return path_reject_error(nrc, source);
+    source = nsrc;
+    nrc = normalize_workspace_path(ctx, destination, ndst, sizeof(ndst));
+    if (nrc != PATH_NORM_OK)
+        return path_reject_error(nrc, destination);
+    destination = ndst;
     src_parent_fd = open_parent_at_workspace(ctx, source, src_leaf, sizeof(src_leaf));
     if (src_parent_fd < 0)
         return format_tool_error_reason(
-                "Source path outside workspace or parent not found", source);
-    if (!is_workspace_relative_path(destination, 0)) {
-        close(src_parent_fd);
-        return ccode_strdup("{\"error\":\"Invalid destination path\"}");
-    }
+                errno == ENOENT ? "Source parent not found" :
+                errno == ENOTDIR ? "Source parent is not a directory" :
+                errno == ELOOP ? "Source path contains a symlink" :
+                (errno == EACCES || errno == EPERM) ? "Permission denied accessing source" :
+                "Could not access source", source);
     dst_parent_fd = open_parent_at_workspace(ctx, destination, dst_leaf, sizeof(dst_leaf));
     if (dst_parent_fd < 0) {
+        int e = errno;
         close(src_parent_fd);
         return format_tool_error_reason(
-                "Destination path outside workspace or parent not found",
-                destination);
+                e == ENOENT ? "Destination parent not found" :
+                e == ENOTDIR ? "Destination parent is not a directory" :
+                e == ELOOP ? "Destination path contains a symlink" :
+                (e == EACCES || e == EPERM) ? "Permission denied accessing destination" :
+                "Could not access destination parent", destination);
     }
     /* rename(2) would silently replace an existing destination; every other
      * mutating tool here refuses on existing targets, so move must too.
@@ -2148,13 +2461,33 @@ char *exec_move_file(struct agent_context *ctx, const char *workspace, const cha
                     AT_SYMLINK_NOFOLLOW) == 0) {
             close(src_parent_fd);
             close(dst_parent_fd);
-            return ccode_strdup("{\"error\":\"Destination already exists\"}");
+            return format_tool_error_reason("Destination already exists",
+                                            destination);
+        } else if (errno != ENOENT) {
+            int e = errno;
+            close(src_parent_fd);
+            close(dst_parent_fd);
+            return format_tool_error_reason(
+                    (e == EACCES || e == EPERM) ? "Permission denied checking destination" :
+                    "Could not check destination", destination);
         }
     }
     if (renameat(src_parent_fd, src_leaf, dst_parent_fd, dst_leaf) != 0) {
+        int e = errno;
         close(src_parent_fd);
         close(dst_parent_fd);
-        return ccode_strdup("{\"error\":\"Could not move file\"}");
+        if (e == ENOENT)
+            return format_tool_error_reason("Source not found", source);
+        if (e == EEXIST)
+            return format_tool_error_reason("Destination already exists",
+                                            destination);
+        if (e == EACCES || e == EPERM || e == EROFS)
+            return format_tool_error_reason("Permission denied while moving file",
+                                            destination);
+        if (e == ENOTDIR)
+            return format_tool_error_reason("Source or destination parent is not a directory",
+                                            destination);
+        return format_tool_error_reason("Could not move file", destination);
     }
     close(src_parent_fd);
     close(dst_parent_fd);

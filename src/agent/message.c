@@ -229,8 +229,7 @@ int ccode_conversation_add_tool_result(struct ccode_conversation *conv,
              * tools, and it is stored and replayed verbatim: a raw cut would
              * leave malformed JSON in the conversation and the session file
              * and drop the trailing truncation flags. Store a valid bounded
-             * envelope instead; archived blobs stay reachable through
-             * read_tool_output by tool_call_id. */
+             * envelope instead. New tool results are bounded at the source. */
             struct ccode_buf envelope;
             ccode_buf_init(&envelope);
             if (ccode_buf_printf(&envelope,

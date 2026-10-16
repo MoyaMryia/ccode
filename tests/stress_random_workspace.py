@@ -4,8 +4,8 @@
 Generates a workspace tree from seeded random data (unicode names, empty/
 binary/CRLF/control-char files, huge lines, oversized logs, symlinks, empty
 dirs), then scripts 250+ tool calls over it through the real mock provider:
-search, read (with truncation and blob pagination), edit (create/replace/
-collision), move/delete, bash pipelines (with >64KiB output archiving),
+search, read (with truncation and source-backed offset views), edit (create/replace/
+collision), move/delete, bash pipelines (with bounded output previews),
 tasks, and deliberately malformed calls. Pass = plan completes, every call
 produces exactly one rendered result, exit 0, no leaked temp files.
 
@@ -62,18 +62,14 @@ def build_plan(rng, files, n_steps):
                 args["context"] = rng.randint(0, 3)
             plan.append(step(cid, "grep", args))
         elif kind < 0.5 and big:
-            # Oversized read -> inline preview truncated, full text archived.
-            # The pagination follow-up is emitted right after its producer so
-            # a chunk boundary never splits the pair (tool_call_id lives only
-            # inside one ccode run).
+            # Large file: view a bounded prefix, then a later source range.
             target = rng.choice(big)
             plan.append(step(cid, "str_replace_editor",
                              {"command": "view", "file_path": rel(target)}))
             if len(plan) < n_steps:
-                plan.append(step("call_%05d" % len(plan), "read_tool_output",
-                                 {"tool_call_id": cid,
-                                  "offset": rng.randint(0, 40000),
-                                  "limit": rng.choice([1024, 16384, 65536])}))
+                plan.append(step("call_%05d" % len(plan), "str_replace_editor",
+                                 {"command": "view", "file_path": rel(target),
+                                  "byte_offset": rng.randint(0, 40000)}))
         elif kind < 0.62:
             plan.append(step(cid, "str_replace_editor",
                              {"command": "view",
@@ -112,15 +108,9 @@ def build_plan(rng, files, n_steps):
                 plan.append(step(cid, "bash",
                                  {"command": "wc -c < %s" % rel(rng.choice(readable))}))
             elif r < 0.7:
-                # Oversized stdout (> 64 KiB) -> truncated + archived, with
-                # the pagination follow-up kept adjacent (same reasoning as
-                # the oversized read pair above).
+                # Large stdout is drained and returned as a bounded preview.
                 plan.append(step(cid, "bash",
                                  {"command": "yes 'stress-line' | head -c 200000"}))
-                if len(plan) < n_steps:
-                    plan.append(step("call_%05d" % len(plan), "read_tool_output",
-                                     {"tool_call_id": cid,
-                                      "offset": 0, "limit": 65536}))
             else:
                 plan.append(step(cid, "bash",
                                  {"command": rng.choice([
@@ -156,7 +146,6 @@ def build_plan(rng, files, n_steps):
                 ("str_replace_editor", {}),
                 ("bash", {"command": "cat ~/.ssh/id_rsa"}),
                 ("task", {"action": "frobnicate"}),
-                ("read_tool_output", {"tool_call_id": "bogus-id"}),
                 ("move_file", {"source": "a.txt", "destination": "created_"}),
             ])
             plan.append(step(cid, bad[0], bad[1]))

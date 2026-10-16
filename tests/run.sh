@@ -312,7 +312,7 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-echo "--- Oversized tool output is archived and retrievable ---"
+echo "--- Oversized tool output stays bounded ---"
 spill_dir="/tmp/ccode_spill_$$"
 rm -rf "$spill_dir"
 mkdir -p "$spill_dir"
@@ -321,35 +321,34 @@ output=$(CCODE_WRITE_TOOLS=1 timeout "$TIMEOUT" "$CCODE" \
     --save-session "$spill_dir/spill.json" \
     -p "__ccode_test_result-spill-fixture" 2>&1) || true
 if echo "$output" | grep -q "spill ENDMARK9999"; then
-    echo "  PASS: truncated tool result retrieved from archive"
+    echo "  PASS: truncated stdout preview includes the final marker"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL: archived tool result not retrievable"
+    echo "  FAIL: truncated stdout preview lost the final marker"
     [ -z "$output" ] || printf '    %s\n' "$output" | head -20 || true
     FAIL=$((FAIL + 1))
 fi
-if [ -d "$spill_dir/spill.json.results" ] && \
-   [ -n "$(ls -A "$spill_dir/spill.json.results" 2>/dev/null)" ]; then
-    echo "  PASS: archive directory created next to the session"
+if [ ! -e "$spill_dir/spill.json.results" ]; then
+    echo "  PASS: no output archive created"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL: archive directory missing next to the session"
+    echo "  FAIL: an output archive was created"
     FAIL=$((FAIL + 1))
 fi
 output=$(CCODE_WRITE_TOOLS=1 timeout "$TIMEOUT" "$CCODE" \
     --write --auto-approve --resume "$spill_dir/spill.json" \
     -p "__ccode_test_result-spill-fixture resume" 2>&1) || true
 if echo "$output" | grep -q "spill ENDMARK9999"; then
-    echo "  PASS: archived result retrieved after --resume"
+    echo "  PASS: bounded preview survived --resume"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL: archived result lost on --resume"
+    echo "  FAIL: bounded preview lost on --resume"
     [ -z "$output" ] || printf '    %s\n' "$output" | head -20 || true
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$spill_dir"
 
-echo "--- Oversized stderr is archived and retrievable ---"
+echo "--- Oversized stderr stays bounded ---"
 spill_dir="/tmp/ccode_spill_err_$$"
 rm -rf "$spill_dir"
 mkdir -p "$spill_dir"
@@ -357,10 +356,10 @@ output=$(CCODE_WRITE_TOOLS=1 timeout "$TIMEOUT" "$CCODE" \
     --write --auto-approve --save-session "$spill_dir/err.json" \
     -p "__ccode_test_result-spill-stderr" 2>&1) || true
 if echo "$output" | grep -q "stderr-spill ENDERR2"; then
-    echo "  PASS: truncated stderr retrieved via stream=stderr"
+    echo "  PASS: truncated stderr preview includes the final marker"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL: archived stderr not retrievable"
+    echo "  FAIL: truncated stderr preview lost the final marker"
     [ -z "$output" ] || printf '    %s\n' "$output" | head -20 || true
     FAIL=$((FAIL + 1))
 fi

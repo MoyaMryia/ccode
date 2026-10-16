@@ -20,7 +20,9 @@
 #define CCODE_MAX_ARGUMENT_LEN   4095
 #define CCODE_MAX_ARGS           16
 #define CCODE_RUN_COMMAND_TIMEOUT 120000
-#define CCODE_COMMAND_OUTPUT_LIMIT (64 * 1024)
+#define CCODE_COMMAND_OUTPUT_LIMIT (4 * 1024)
+#define CCODE_COMMAND_TAIL_BYTES (1 * 1024)
+#define CCODE_COMMAND_PREVIEW_CAP (CCODE_COMMAND_OUTPUT_LIMIT + CCODE_COMMAND_TAIL_BYTES + 96)
 
 /* ── File identity for stale-approval protection ── */
 
@@ -48,9 +50,8 @@ struct ccode_change {
 #define CCODE_MAX_TASKS 16
 #define CCODE_MAX_TASK_LEN 256
 
-/* Tool results larger than the inline preview are archived whole under the
- * session's results directory; the model sees the preview and can pull more
- * with read_tool_output. */
+/* Legacy session result storage constants. New tool calls do not archive
+ * their output; these remain for loading and direct testing of old sessions. */
 #define CCODE_RESULT_PREVIEW_BYTES (64 * 1024)
 #define CCODE_RESULT_BLOB_MAX (4 * 1024 * 1024)
 
@@ -97,8 +98,7 @@ struct agent_context {
     int task_list_dirty;
     char *last_change_summary;
     char *last_task_summary;
-    /* Per-session archive for oversized tool results (<session>.results).
-     * Empty when the session is not being saved: nothing is spilled. */
+    /* Legacy result archive state; normal tool execution leaves this empty. */
     char results_dir[4096];
     char *last_result_blob;
     size_t last_result_total;
@@ -170,7 +170,6 @@ enum prepared_tool_kind {
     PREPARED_WEB_FETCH,
     PREPARED_AGENT_TOOL,
     PREPARED_WEB_SEARCH,
-    PREPARED_READ_TOOL_OUTPUT,
 
 };
 
@@ -197,9 +196,10 @@ struct prepared_tool {
     int web_timeout_sec;
     size_t web_max_size;
     int read_only_subagent;
-    /* read_tool_output window: value holds the tool_call_id. */
-    size_t result_offset;
-    size_t result_limit;
+    /* Editor view range, 1-based; end 0 means through EOF. */
+    long view_start_line;
+    long view_end_line;
+    long view_byte_offset;
 };
 
 /* Free the heap-owned fields of `prepared` and zero them. Safe on a zeroed
@@ -244,6 +244,9 @@ int open_regular_at_workspace(struct agent_context *ctx,
                               const char *file_path);
 int is_workspace_relative_path(const char *path, int allow_dot);
 int is_home_relative_path(const char *path);
+/* Prepare-layer path check: refuses traversal but permits absolute paths
+ * and leading "./" so the exec layer can normalize them. */
+int is_workspace_path_syntax(const char *path, int allow_dot);
 char *exec_edit_file(struct agent_context *ctx, const char *workspace,
                            const char *file_path, const char *old_string,
                            const char *new_string);
@@ -253,8 +256,14 @@ int append_json_string_budget(char **buf, size_t *pos, size_t *cap,
                               const char *s, size_t n, size_t budget,
                               size_t *used_out);
 int is_binary_content(const unsigned char *buf, size_t len);
+/* Stricter check for file content: also flags a meaningful fraction of
+ * invalid UTF-8 sequences as binary (view/edit/grep use this). */
+int is_probably_binary_file(const unsigned char *buf, size_t len);
 char *exec_read_file(struct agent_context *ctx, const char *workspace,
                      const char *file_path);
+char *exec_read_file_range(struct agent_context *ctx, const char *workspace,
+                           const char *file_path, long start_line,
+                           long end_line, long byte_offset);
 const char *normalize_glob(const char *pattern);
 char *exec_glob(struct agent_context *ctx, const char *workspace,
                      const char *pattern, const char *path, int use_regex);

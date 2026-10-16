@@ -1,13 +1,8 @@
-/* Per-session archive for oversized tool results.
- *
- * A tool result larger than CCODE_RESULT_PREVIEW_BYTES keeps its bounded
- * preview inline (what the model sees) while the full output is written to
- * <session>.results/<id>. read_tool_output resolves a tool_call_id back to
- * its archived blob so the model can pull more on demand.
- *
- * Blob names are 16 lowercase hex digits (FNV-1a 64 of the content), so a
- * reference can never escape the results directory. Files are created 0600
- * with O_NOFOLLOW and must be regular files with a single link to be read. */
+/* Legacy per-session result archive support, retained for old session data
+ * and direct compatibility tests. New tool calls do not use this store.
+ * Blob names are 16 lowercase hex digits (FNV-1a 64 of the content).
+ * Files are created 0600 with O_NOFOLLOW and must be regular files with a
+ * single link to be read. */
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE

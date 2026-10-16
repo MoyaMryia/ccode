@@ -17,10 +17,12 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
     {"str_replace_editor",
      "View or edit a UTF-8 text file in the workspace. With `command` set to "
      "`view`, returns the file contents: binary files are rejected, a read is "
-     "capped at 50 KiB, and a longer file is truncated and the result carries "
-     "`truncated: true` with the full contents archived for "
-     "`read_tool_output`. Do not read a large file whole: locate the region "
-     "with `grep` first and read only what you need, or - when the bash tool "
+     "capped at 50 KiB per view, with explicit truncation. Use `start_line` "
+     "and `end_line` to view a range, or `byte_offset` for a long line. A "
+     "truncated view gives `next_byte_offset` for exact continuation "
+     "(`truncated` is true whenever more content remains beyond the returned "
+     "range, not only when content was cut); locate "
+     "the region with `grep` first and read only what you need, or - when the bash tool "
      "is available - read a line range (for example `sed -n '10,25p' FILE`). "
      "With `command` set to `str_replace`, replaces the literal `old_string` "
      "with `new_string`: `old_string` must occur exactly once, so include more "
@@ -31,7 +33,10 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "files.",
      "{\"type\":\"object\",\"properties\":{"
      "\"command\":{\"type\":\"string\",\"enum\":[\"view\",\"str_replace\"],\"description\":\"`view` reads the file; `str_replace` edits it.\"},"
-     "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file, relative to the workspace root.\"},"
+     "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file: relative to the workspace root; a leading ./ and absolute paths inside the workspace are also accepted.\"},"
+     "\"start_line\":{\"type\":\"number\",\"description\":\"view only: first line to show, 1-based. Defaults to 1.\"},"
+     "\"end_line\":{\"type\":\"number\",\"description\":\"view only: last line to show, inclusive. Defaults to the end of the file.\"},"
+     "\"byte_offset\":{\"type\":\"number\",\"description\":\"view only: zero-based byte offset for long lines; cannot combine with line range.\"},"
      "\"old_string\":{\"type\":\"string\",\"description\":\"str_replace only: literal text to replace. Must match exactly and occur exactly once; an empty string creates a new file.\"},"
      "\"new_string\":{\"type\":\"string\",\"description\":\"str_replace only: replacement text. With an empty `old_string`, this is the complete content of the new file.\"}"
      "},\"required\":[\"command\",\"file_path\"]}"},
@@ -58,7 +63,7 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "`context` adds surrounding lines (context lines are marked with `~`). "
      "`.gitignore`d files and VCS metadata directories are skipped. At most 200 "
      "matches are returned; a capped result reports `count`, `max`, and "
-     "`truncated`. Use `read_file` when you need full surrounding context.",
+     "`truncated`. Use the editor's `view` with a line range for more context.",
      "{\"type\":\"object\",\"properties\":{"
      "\"pattern\":{\"type\":\"string\",\"description\":\"Literal text, or a POSIX extended regex when `regex` is true.\"},"
      "\"include\":{\"type\":\"string\",\"description\":\"Glob that filters which file names to search (e.g. `*.c`). Matched against the basename.\"},"
@@ -90,8 +95,8 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "`exit_code`; a timeout sets `timed_out`. Keep output bounded - filter "
      "with `head`/`tail`/`sed`/`grep` instead of dumping whole files or logs. "
      "Long output is truncated (flagged by `stdout_truncated`/"
-     "`stderr_truncated`) and the full stream is archived for "
-     "`read_tool_output`. Prefer the editor's `view` command, `glob`, and "
+     "`stderr_truncated`); redirect to a workspace log before running when "
+     "you need the full output. Prefer the editor's `view` command, `glob`, and "
      "`grep` for file inspection.",
      "{\"type\":\"object\",\"properties\":{"
      "\"command\":{\"type\":\"string\",\"description\":\"The shell command to execute.\"},"
@@ -102,7 +107,7 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "Delete a file from the workspace. Fails if the path is outside the "
      "workspace or is not a regular file. This cannot be undone.",
      "{\"type\":\"object\",\"properties\":{"
-     "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file to delete, relative to the workspace root.\"}"
+     "\"file_path\":{\"type\":\"string\",\"description\":\"Path of the file to delete: relative to the workspace root; a leading ./ and absolute paths inside the workspace are also accepted.\"}"
      "},\"required\":[\"file_path\"]}"},
 
     {"move_file",
@@ -110,7 +115,7 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "against the workspace root; the destination's parent directory must exist "
      "and the destination must not already exist.",
      "{\"type\":\"object\",\"properties\":{"
-     "\"source\":{\"type\":\"string\",\"description\":\"Current path of the file, relative to the workspace root.\"},"
+     "\"source\":{\"type\":\"string\",\"description\":\"Current path of the file: relative to the workspace root; ./ and absolute paths inside the workspace are accepted.\"},"
      "\"destination\":{\"type\":\"string\",\"description\":\"New path for the file, relative to the workspace root. Must not already exist.\"}"
      "},\"required\":[\"source\",\"destination\"]}"},
 
@@ -149,38 +154,22 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "\"query\":{\"type\":\"string\",\"description\":\"The search query.\"}"
      "},\"required\":[\"query\"]}"},
 
-    {"read_tool_output",
-     "Read a window from an oversized tool result that was archived because "
-     "its inline preview was truncated. Pass the `tool_call_id` of the "
-     "truncated result (the id on the preceding `tool` message). For a command, "
-     "`stream` selects the `stdout` (default) or `stderr` archive; when no "
-     "stdout archive exists, the stderr one is used. `offset` and `limit` page "
-     "through the archived bytes, with one read returning at most 65536 bytes. "
-     "Use this whenever a result reports `truncated`.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"tool_call_id\":{\"type\":\"string\",\"description\":\"Id of the tool call whose result was truncated.\"},"
-     "\"stream\":{\"type\":\"string\",\"description\":\"For commands: `stdout` or `stderr` (default `stdout`; falls back to stderr when no stdout archive exists).\"},"
-     "\"offset\":{\"type\":\"number\",\"description\":\"Byte offset into the archived stream to start at. Defaults to 0.\"},"
-     "\"limit\":{\"type\":\"number\",\"description\":\"Maximum bytes to return, at most 65536. Defaults to 65536.\"}"
-     "},\"required\":[\"tool_call_id\"]}"},
+
 };
 
 const size_t ccode_tool_definitions_count =
     sizeof(ccode_tool_definitions) / sizeof(ccode_tool_definitions[0]);
 
-/* Minimal runs without read_tool_output, so the two tools it ships must not
- * promise archive retrieval - that would point the model at a tool the
- * composition refuses ("Tool is unavailable") and waste a turn. These variants
- * drop the promise and tell the model to narrow at the source instead. bash is
- * always present in this composition, so naming shell grep/sed is safe (there
- * is no separate grep tool here). */
+/* Minimal ships only the editor and shell. Its descriptions can name shell
+ * commands directly; the read-only composition qualifies those suggestions. */
 static const char ccode_editor_minimal_description[] =
     "View or edit a UTF-8 text file in the workspace. With `command` set to "
     "`view`, returns the file contents: binary files are rejected, a read is "
-    "capped at 50 KiB, and a longer file is truncated (`truncated: true`); the "
-    "rest is not retrievable, so do not read a large file whole - use bash to "
-    "locate the region (`grep -n`) and read a line range (for example "
-    "`sed -n '10,25p' FILE`). With `command` set to `str_replace`, replaces the "
+    "capped at 50 KiB, and a longer file is truncated (`truncated: true`). "
+    "Use `start_line`/`end_line` to read a line range or `byte_offset` to "
+    "continue through a long line; a truncated result gives `next_byte_offset`. "
+    "Use bash `grep -n` to locate a region. "
+    "With `command` set to `str_replace`, replaces the "
     "literal `old_string` with `new_string`: `old_string` must occur exactly "
     "once, so include more surrounding context when it is not unique; an empty "
     "`old_string` creates a new file whose content is `new_string` and refuses "
@@ -197,12 +186,12 @@ static const char ccode_bash_minimal_description[] =
     "`exit_code`; a signal-killed command reports `signal` and a null "
     "`exit_code`; a timeout sets `timed_out`. Keep output bounded - filter with "
     "`head`/`tail`/`sed`/`grep` instead of dumping whole files or logs. Long "
-    "output is truncated (flagged by `stdout_truncated`/`stderr_truncated`) and "
-    "the rest is not retrievable, so narrow the command and rerun. Use the "
+    "output is truncated (flagged by `stdout_truncated`/`stderr_truncated`); "
+    "redirect to a workspace log when full output matters. Use the "
     "editor's `view` for small files and `sed -n`/`grep` for large ones.";
 
-/* Description to emit for `def`; `minimal` selects the no-retrieval variants
- * above so the emitted tool list never names a tool the composition lacks. */
+/* Description to emit for `def`; `minimal` selects descriptions tailored
+ * to its two-tool composition. */
 static const char *description_for(const struct ccode_tool_def *def,
                                    int minimal) {
     if (!minimal) return def->description;
@@ -259,7 +248,7 @@ fail:
 
 char *ccode_build_readonly_tools_json(void) {
     static const char *const names[] = {"str_replace_editor", "glob", "grep",
-                                        "read_tool_output"};
+                                        };
     return build_tools_json_named(names, sizeof(names) / sizeof(names[0]), 0);
 }
 
@@ -268,15 +257,14 @@ char *ccode_build_write_tools_json(void) {
                                         "delete_file", "move_file", "glob",
                                         "grep", "task", "web_fetch",
                                         "web_search", "agent_tool",
-                                        "read_tool_output"};
+                                        };
     return build_tools_json_named(names, sizeof(names) / sizeof(names[0]), 0);
 }
 
 /* deepseek-harness `minimal` preset style: exactly two tools, the editor and
  * the shell. The model reads through the editor's `view` command instead of a
  * separate read tool, mirroring dsh-tool-str-replace-editor +
- * dsh-tool-bash-persistent. No read_tool_output here, so the two descriptions
- * are the narrowing-only variants (see description_for). */
+ * dsh-tool-bash-persistent. Its descriptions favor targeted reads. */
 char *ccode_build_minimal_tools_json(void) {
     static const char *const names[] = {"str_replace_editor", "bash"};
     return build_tools_json_named(names, sizeof(names) / sizeof(names[0]), 1);

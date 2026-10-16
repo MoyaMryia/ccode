@@ -926,126 +926,38 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                                  "finish_reason": "stop"}]})},
             ]
 
-        elif test_mode == "result-spill-fixture":
-            # Turn 1: run a command whose stdout far exceeds the 64 KiB inline
-            # preview. Turn 2: the model must notice stdout_truncated and pull
-            # the archived tail with read_tool_output. Turn 3: verify the tail
-            # marker survived the archive/read round-trip.
+        elif test_mode in ("result-spill-fixture", "result-spill-stderr"):
+            # A large command result must carry its final marker in the bounded
+            # head/tail preview. No archive or follow-up retrieval is needed.
+            stderr_case = test_mode == "result-spill-stderr"
             msgs = req.get("messages", [])
             tool_msgs = [m for m in msgs if m.get("role") == "tool"]
-            read_results = [m for m in tool_msgs
-                            if "returned_bytes" in str(m.get("content", ""))]
             if not tool_msgs:
+                command = ("printf OUT; yes E | head -c 200000 1>&2; "
+                           "printf ENDERR2 1>&2") if stderr_case else (
+                           "printf START; yes A | head -c 200000; "
+                           "printf ENDMARK9999")
                 events = [
                     {"data": json.dumps({"choices": [{"index": 0, "delta": {
-                        "content": "Generating a huge output..."},
-                        "finish_reason": None}]})},
-                    {"data": json.dumps({"choices": [{"index": 0, "delta": {
                         "tool_calls": [{
-                            "index": 0, "id": "call_spill1", "type": "function",
-                            "function": {
-                                "name": "bash",
-                                "arguments": json.dumps({"command":
-                                    "printf START; yes A | head -c 200000; "
-                                    "printf ENDMARK9999"})}}]},
+                            "index": 0,
+                            "id": "call_spillerr" if stderr_case else "call_spill1",
+                            "type": "function",
+                            "function": {"name": "bash",
+                                         "arguments": json.dumps(
+                                             {"command": command})}}]},
                         "finish_reason": None}]})},
                     {"data": json.dumps({"choices": [{"index": 0, "delta": {},
                         "finish_reason": "tool_calls"}]})},
                 ]
-            elif not read_results:
-                tcid = None
-                for m in tool_msgs:
-                    if "stdout_truncated" in str(m.get("content", "")):
-                        tcid = m.get("tool_call_id")
-                if tcid is None:
-                    events = [{"data": json.dumps({"choices": [{
-                        "index": 0, "delta": {"content": "RESULT_NOT_TRUNCATED"},
-                        "finish_reason": "stop"}]})}]
-                else:
-                    events = [
-                        {"data": json.dumps({"choices": [{"index": 0, "delta": {
-                            "content": "Pulling the archived tail..."},
-                            "finish_reason": None}]})},
-                        {"data": json.dumps({"choices": [{"index": 0, "delta": {
-                            "tool_calls": [{
-                                "index": 0, "id": "call_read1",
-                                "type": "function",
-                                "function": {
-                                    "name": "read_tool_output",
-                                    "arguments": json.dumps({
-                                        "tool_call_id": tcid,
-                                        "offset": 199000,
-                                        "limit": 65536})}}]},
-                            "finish_reason": None}]})},
-                        {"data": json.dumps({"choices": [{"index": 0, "delta": {},
-                            "finish_reason": "tool_calls"}]})},
-                    ]
             else:
-                got = str(read_results[-1].get("content", ""))
-                marker = "ENDMARK9999" if "ENDMARK9999" in got else "TAIL_MISSING"
-                events = [{"data": json.dumps({"choices": [{"index": 0, "delta": {
-                    "content": "spill " + marker},
-                    "finish_reason": "stop"}]})}]
-
-        elif test_mode == "result-spill-stderr":
-            # Same as result-spill-fixture but the huge stream is stderr, so
-            # only the stderr archive should exist and stream=stderr must
-            # select it.
-            msgs = req.get("messages", [])
-            tool_msgs = [m for m in msgs if m.get("role") == "tool"]
-            read_results = [m for m in tool_msgs
-                            if "returned_bytes" in str(m.get("content", ""))]
-            if not tool_msgs:
-                events = [
-                    {"data": json.dumps({"choices": [{"index": 0, "delta": {
-                        "content": "Generating a huge stderr..."},
-                        "finish_reason": None}]})},
-                    {"data": json.dumps({"choices": [{"index": 0, "delta": {
-                        "tool_calls": [{
-                            "index": 0, "id": "call_spillerr", "type": "function",
-                            "function": {
-                                "name": "bash",
-                                "arguments": json.dumps({"command":
-                                    "printf OUT; yes E | head -c 200000 1>&2; "
-                                    "printf ENDERR2 1>&2"})}}]},
-                        "finish_reason": None}]})},
-                    {"data": json.dumps({"choices": [{"index": 0, "delta": {},
-                        "finish_reason": "tool_calls"}]})},
-                ]
-            elif not read_results:
-                tcid = None
-                for m in tool_msgs:
-                    if "stderr_truncated" in str(m.get("content", "")):
-                        tcid = m.get("tool_call_id")
-                if tcid is None:
-                    events = [{"data": json.dumps({"choices": [{
-                        "index": 0, "delta": {"content": "STDERR_NOT_TRUNCATED"},
-                        "finish_reason": "stop"}]})}]
-                else:
-                    events = [
-                        {"data": json.dumps({"choices": [{"index": 0, "delta": {
-                            "content": "Pulling archived stderr..."},
-                            "finish_reason": None}]})},
-                        {"data": json.dumps({"choices": [{"index": 0, "delta": {
-                            "tool_calls": [{
-                                "index": 0, "id": "call_readerr",
-                                "type": "function",
-                                "function": {
-                                    "name": "read_tool_output",
-                                    "arguments": json.dumps({
-                                        "tool_call_id": tcid,
-                                        "stream": "stderr",
-                                        "offset": 199000,
-                                        "limit": 65536})}}]},
-                            "finish_reason": None}]})},
-                        {"data": json.dumps({"choices": [{"index": 0, "delta": {},
-                            "finish_reason": "tool_calls"}]})},
-                    ]
-            else:
-                got = str(read_results[-1].get("content", ""))
-                marker = "ENDERR2" if "ENDERR2" in got else "STDERR_TAIL_MISSING"
-                events = [{"data": json.dumps({"choices": [{"index": 0, "delta": {
-                    "content": "stderr-spill " + marker},
+                result = str(tool_msgs[-1].get("content", ""))
+                flag = "stderr_truncated" if stderr_case else "stdout_truncated"
+                marker = "ENDERR2" if stderr_case else "ENDMARK9999"
+                prefix = "stderr-spill " if stderr_case else "spill "
+                outcome = marker if flag in result and marker in result else "PREVIEW_MISSING"
+                events = [{"data": json.dumps({"choices": [{"index": 0,
+                    "delta": {"content": prefix + outcome},
                     "finish_reason": "stop"}]})}]
 
         elif test_mode == "incomplete":

@@ -36,6 +36,15 @@
 
 #include "agent_internal.h"
 
+/* grep `context` range, matching the tool schema in src/tools/tools.c
+ * ("context": "0-100"). Named so the validation check and every message
+ * that states the range read the same bound instead of each carrying its
+ * own copy of the number. */
+#define CCODE_GREP_CONTEXT_MIN 0
+#define CCODE_GREP_CONTEXT_MAX 100
+#define CCODE_STRINGIFY_(x) #x
+#define CCODE_STRINGIFY(x) CCODE_STRINGIFY_(x)
+
 
 /* Models sometimes mirror the OpenAI wire format they see in the
  * conversation history and wrap tool arguments one level deeper, e.g.
@@ -237,40 +246,65 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
      * prepared kinds and executors the former read_file/edit_file used. */
     if (strcmp(name, "str_replace_editor") == 0) {
         int have_command = 0, have_path = 0, have_old = 0, have_new = 0;
+        int have_start = 0, have_end = 0, have_offset = 0;
         int i;
-        if (num_tokens < 5 || num_tokens > 9 || (num_tokens % 2) == 0)
+        if (num_tokens < 5 || num_tokens > 15 || (num_tokens % 2) == 0)
             return "{\"error\":\"Invalid str_replace_editor arguments\"}";
         for (i = 1; i < num_tokens; i += 2) {
-            if (tokens[i].type != CCODE_JSMN_STRING ||
-                tokens[i + 1].type != CCODE_JSMN_STRING)
+            if (tokens[i].type != CCODE_JSMN_STRING)
                 return "{\"error\":\"Invalid str_replace_editor arguments\"}";
             if (ccode_jsmn_token_streq(arguments, &tokens[i], "command")) {
-                if (have_command ||
+                if (have_command || tokens[i + 1].type != CCODE_JSMN_STRING ||
                     copy_string_token_dyn(arguments, &tokens[i + 1],
                                           &prepared->action) != 0)
                     return "{\"error\":\"Invalid str_replace_editor arguments\"}";
                 have_command = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
                                               "file_path")) {
-                if (have_path ||
+                if (have_path || tokens[i + 1].type != CCODE_JSMN_STRING ||
                     copy_string_token_dyn(arguments, &tokens[i + 1],
                                           &prepared->value) != 0)
                     return "{\"error\":\"Invalid str_replace_editor arguments\"}";
                 have_path = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
                                               "old_string")) {
-                if (have_old ||
+                if (have_old || tokens[i + 1].type != CCODE_JSMN_STRING ||
                     copy_string_token_dyn(arguments, &tokens[i + 1],
                                           &prepared->old_string) != 0)
                     return "{\"error\":\"Invalid str_replace_editor arguments\"}";
                 have_old = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
                                               "new_string")) {
-                if (have_new ||
+                if (have_new || tokens[i + 1].type != CCODE_JSMN_STRING ||
                     copy_string_token_dyn(arguments, &tokens[i + 1],
                                           &prepared->new_string) != 0)
                     return "{\"error\":\"Invalid str_replace_editor arguments\"}";
                 have_new = 1;
+            } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
+                                              "byte_offset")) {
+                long v;
+                if (have_offset || tokens[i + 1].type != CCODE_JSMN_PRIMITIVE)
+                    return "{\"error\":\"byte_offset must be a nonnegative integer JSON number\"}";
+                if (strict_nonnegative_integer_token(arguments, &tokens[i + 1],
+                                                     &v) != 0)
+                    return "{\"error\":\"byte_offset must be a nonnegative integer JSON number (negative values are not allowed)\"}";
+                prepared->view_byte_offset = v;
+                have_offset = 1;
+            } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
+                                              "start_line") ||
+                       ccode_jsmn_token_streq(arguments, &tokens[i],
+                                              "end_line")) {
+                long v;
+                int start = ccode_jsmn_token_streq(arguments, &tokens[i],
+                                                    "start_line");
+                if ((start ? have_start : have_end) ||
+                    strict_nonnegative_integer_token(arguments, &tokens[i + 1],
+                                                     &v) != 0 || v <= 0)
+                    return start
+                        ? "{\"error\":\"Invalid start_line (must be a positive integer)\"}"
+                        : "{\"error\":\"Invalid end_line (must be a positive integer)\"}";
+                if (start) { prepared->view_start_line = v; have_start = 1; }
+                else { prepared->view_end_line = v; have_end = 1; }
             } else {
                 return "{\"error\":\"Invalid str_replace_editor arguments\"}";
             }
@@ -284,13 +318,18 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
             if (have_old || have_new)
                 return "{\"error\":\"str_replace_editor command=view takes "
                        "no old_string/new_string\"}";
+            if (prepared->view_start_line == 0) prepared->view_start_line = 1;
+            if (have_offset && (have_start || have_end))
+                return "{\"error\":\"byte_offset cannot be combined with line range\"}";
+            if (have_end && prepared->view_end_line < prepared->view_start_line)
+                return "{\"error\":\"end_line is before start_line\"}";
             prepared->kind = PREPARED_READ_FILE;
             snprintf(prepared->display, sizeof(prepared->display),
                      "file_path=%s", prepared->value);
             return NULL;
         }
         if (strcmp(prepared->action, "str_replace") == 0) {
-            if (!have_old || !have_new)
+            if (!have_old || !have_new || have_start || have_end || have_offset)
                 return "{\"error\":\"str_replace_editor command=str_replace "
                        "requires old_string and new_string\"}";
             prepared->kind = PREPARED_EDIT_FILE;
@@ -308,76 +347,10 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                "str_replace)\"}";
     }
 
-    if (strcmp(name, "read_tool_output") == 0) {
-        int have_id = 0;
-        int have_offset = 0;
-        int have_limit = 0;
-        int have_stream = 0;
-        int i;
-        prepared->kind = PREPARED_READ_TOOL_OUTPUT;
-        prepared->result_offset = 0;
-        prepared->result_limit = CCODE_RESULT_PREVIEW_BYTES;
-        if (num_tokens < 1 || tokens[0].type != CCODE_JSMN_OBJECT ||
-            tokens[0].size > 8)
-            return "{\"error\":\"Invalid read_tool_output arguments\"}";
-        for (i = 1; i + 1 < num_tokens; i += 2) {
-            if (tokens[i].type != CCODE_JSMN_STRING)
-                return "{\"error\":\"Invalid read_tool_output arguments\"}";
-            if (ccode_jsmn_token_streq(arguments, &tokens[i], "tool_call_id")) {
-                if (have_id || tokens[i + 1].type != CCODE_JSMN_STRING ||
-                    copy_string_token_dyn(arguments, &tokens[i + 1],
-                                          &prepared->value) != 0)
-                    return "{\"error\":\"Invalid read_tool_output arguments\"}";
-                have_id = 1;
-            } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
-                                              "offset")) {
-                long v;
-                if (have_offset ||
-                    strict_nonnegative_integer_token(arguments, &tokens[i + 1],
-                                                     &v) != 0)
-                    return "{\"error\":\"Invalid read_tool_output offset\"}";
-                prepared->result_offset = (size_t)v;
-                have_offset = 1;
-            } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
-                                              "limit")) {
-                long v;
-                if (have_limit ||
-                    strict_nonnegative_integer_token(arguments, &tokens[i + 1],
-                                                     &v) != 0 || v <= 0)
-                    return "{\"error\":\"Invalid read_tool_output limit\"}";
-                prepared->result_limit = (size_t)v;
-                have_limit = 1;
-            } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
-                                              "stream")) {
-                if (have_stream || tokens[i + 1].type != CCODE_JSMN_STRING ||
-                    copy_string_token_dyn(arguments, &tokens[i + 1],
-                                          &prepared->content) != 0 ||
-                    (strcmp(prepared->content, "stdout") != 0 &&
-                     strcmp(prepared->content, "stderr") != 0))
-                    return "{\"error\":\"Invalid read_tool_output stream\"}";
-                have_stream = 1;
-            } else {
-                return "{\"error\":\"Invalid read_tool_output arguments\"}";
-            }
-        }
-        if (!have_id || prepared->value[0] == '\0')
-            return "{\"error\":\"Missing tool_call_id\"}";
-        /* Keep one read comfortably below the message-content cap so the
-         * result is never silently chopped before the model sees it. */
-        if (prepared->result_limit > CCODE_RESULT_PREVIEW_BYTES)
-            prepared->result_limit = CCODE_RESULT_PREVIEW_BYTES;
-        snprintf(prepared->display, sizeof(prepared->display),
-                 "read_tool_output id=%s offset=%lu limit=%lu%s%s",
-                 prepared->value, (unsigned long)prepared->result_offset,
-                 (unsigned long)prepared->result_limit,
-                 have_stream ? " stream=" : "",
-                 have_stream ? prepared->content : "");
-        return NULL;
-    }
-
     if (strcmp(name, "glob") == 0) {
         int have_path = 0;
         int have_regex = 0;
+        int have_pattern = 0;
         int i;
         if (num_tokens < 3 || num_tokens > 7 || (num_tokens % 2) == 0)
             return "{\"error\":\"Invalid glob arguments\"}";
@@ -385,9 +358,10 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
             if (tokens[i].type != CCODE_JSMN_STRING)
                 return "{\"error\":\"Invalid glob arguments\"}";
             if (ccode_jsmn_token_streq(arguments, &tokens[i], "pattern")) {
-                if (prepared->value[0] != '\0' ||
+                if (have_pattern ||
                     copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->value) != 0)
                     return "{\"error\":\"Invalid glob arguments\"}";
+                have_pattern = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "path")) {
                 if (have_path ||
                     copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->tool_path) != 0)
@@ -405,13 +379,15 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                 return "{\"error\":\"Invalid glob arguments\"}";
             }
         }
-        if (prepared->value[0] == '\0')
+        if (!have_pattern)
             return "{\"error\":\"Invalid glob arguments\"}";
+        if (prepared->value[0] == '\0')
+            return "{\"error\":\"glob pattern must not be empty\"}";
         if (is_home_relative_path(prepared->value))
             return refuse_path("Home-relative paths are not allowed",
                                prepared->value, REFUSE_RULE_HOME);
         if (have_path) {
-            if (!is_workspace_relative_path(prepared->tool_path, 0))
+            if (!is_workspace_path_syntax(prepared->tool_path, 0))
                 return refuse_path("Invalid glob path", prepared->tool_path,
                                    REFUSE_RULE_WS);
             snprintf(prepared->display, sizeof(prepared->display),
@@ -451,16 +427,18 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                     return "{\"error\":\"Invalid grep arguments\"}";
                 prepared->have_include = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "context")) {
+                long val;
                 if (have_context || i + 1 >= num_tokens ||
                     tokens[i + 1].type != CCODE_JSMN_PRIMITIVE)
                     return "{\"error\":\"Invalid grep arguments\"}";
-                {
-                    long val;
-                    if (strict_nonnegative_integer_token(arguments,
-                            &tokens[i + 1], &val) != 0 || val > 100)
-                        return "{\"error\":\"Invalid grep arguments\"}";
-                    prepared->context_lines = (int)val;
-                }
+                if (strict_nonnegative_integer_token(arguments,
+                        &tokens[i + 1], &val) != 0 ||
+                    val > CCODE_GREP_CONTEXT_MAX)
+                    return "{\"error\":\"grep context must be an integer "
+                           "between " CCODE_STRINGIFY(CCODE_GREP_CONTEXT_MIN)
+                           " and " CCODE_STRINGIFY(CCODE_GREP_CONTEXT_MAX)
+                           "\"}";
+                prepared->context_lines = (int)val;
                 have_context = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i], "path")) {
                 if (have_path ||
@@ -481,7 +459,7 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         }
         if (!have_pattern)
             return "{\"error\":\"Invalid grep arguments\"}";
-        if (have_path && !is_workspace_relative_path(prepared->tool_path, 0))
+        if (have_path && !is_workspace_path_syntax(prepared->tool_path, 0))
             return refuse_path("Invalid grep path", prepared->tool_path,
                                REFUSE_RULE_WS);
         prepared->kind = PREPARED_GREP;
@@ -656,7 +634,7 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
             !ccode_jsmn_token_streq(arguments, &tokens[1], "file_path") ||
             copy_string_token_dyn(arguments, &tokens[2], &prepared->value) != 0)
             return "{\"error\":\"Invalid delete_file arguments\"}";
-        if (!is_workspace_relative_path(prepared->value, 0))
+        if (!is_workspace_path_syntax(prepared->value, 0))
             return refuse_path("Invalid delete_file path", prepared->value,
                                REFUSE_RULE_WS);
         prepared->kind = PREPARED_DELETE_FILE;
@@ -687,10 +665,10 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
         }
         if (!have_source || !have_dest)
             return "{\"error\":\"Invalid move_file arguments\"}";
-        if (!is_workspace_relative_path(prepared->value, 0))
+        if (!is_workspace_path_syntax(prepared->value, 0))
             return refuse_path("Invalid move_file source path",
                                prepared->value, REFUSE_RULE_WS);
-        if (!is_workspace_relative_path(prepared->destination, 0))
+        if (!is_workspace_path_syntax(prepared->destination, 0))
             return refuse_path("Invalid move_file destination path",
                                prepared->destination, REFUSE_RULE_WS);
         prepared->kind = PREPARED_MOVE_FILE;
@@ -834,49 +812,67 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
     return "{\"error\":\"Unknown tool\"}";
 }
 
+/* A compact, hand-written parameter hint per tool. Appended to argument
+ * errors instead of the full JSON schema: the schema costs ~300 tokens per
+ * error and buries the actual cause; the hint names the expected shape in
+ * one line. */
+static const char *tool_param_hint(const char *name) {
+    if (strcmp(name, "str_replace_editor") == 0)
+        return "command (view|str_replace), file_path; view also takes "
+               "start_line/end_line or byte_offset; str_replace takes "
+               "old_string and new_string";
+    if (strcmp(name, "bash") == 0)
+        return "command, optional timeout_ms";
+    if (strcmp(name, "delete_file") == 0)
+        return "file_path";
+    if (strcmp(name, "move_file") == 0)
+        return "source, destination";
+    if (strcmp(name, "glob") == 0)
+        return "pattern, optional path, optional regex";
+    if (strcmp(name, "grep") == 0)
+        return "pattern, optional include, path, context (0-"
+               CCODE_STRINGIFY(CCODE_GREP_CONTEXT_MAX) "), regex";
+    if (strcmp(name, "task") == 0)
+        return "action (create|update|list), optional content, id, status";
+    if (strcmp(name, "web_fetch") == 0)
+        return "url, optional method, timeout, max_size";
+    if (strcmp(name, "web_search") == 0)
+        return "query";
+    if (strcmp(name, "agent_tool") == 0)
+        return "task, optional read_only";
+    return NULL;
+}
+
 /* Rewrite a tool-argument error so the model is told what the tool expects,
  * not only that the arguments were invalid. Returns a pointer to a static
  * buffer valid until the next call, or the original error when there is no
- * schema to add. */
+ * hint to add. */
 static const char *explain_tool_error(const char *name, const char *error) {
     static struct ccode_buf buf;
-    const char *schema = NULL;
+    const char *hint;
     const char *body;
     const char *close;
-    char *esc_schema;
-    size_t i;
     int ok;
 
     if (!error || !name) return error;
     if (strncmp(error, "{\"error\":\"", 10) != 0) return error;
     /* A message that already states the expected shape (read_file) does not
-     * need the full schema repeated. */
+     * need the hint repeated. */
     if (strstr(error, "expected") != NULL) return error;
-    /* Security refusals already carry a "reason"; do not bolt the schema on. */
+    /* Security refusals already carry a "reason"; do not bolt the hint on. */
     if (strstr(error, "\"reason\"") != NULL) return error;
+    hint = tool_param_hint(name);
+    if (!hint) return error;
     body = error + 10;
     close = strrchr(error, '"');
     if (!close || close <= body) return error;
 
-    for (i = 0; i < ccode_tool_definitions_count; i++) {
-        if (strcmp(ccode_tool_definitions[i].name, name) == 0) {
-            schema = ccode_tool_definitions[i].param_schema;
-            break;
-        }
-    }
-    if (!schema) return error;
-
-    esc_schema = ccode_json_escape(schema);
-    if (!esc_schema) return error;
-    /* body is already the escaped content of the original error string, and
-     * esc_schema is escaped, so both are appended verbatim. */
     ccode_buf_clear(&buf);
     ok = ccode_buf_append(&buf, "{\"error\":\"") == 0 &&
          ccode_buf_append_n(&buf, body, (size_t)(close - body)) == 0 &&
          ccode_buf_append(&buf, "; expected parameters: ") == 0 &&
-         ccode_buf_append(&buf, esc_schema) == 0 &&
+         ccode_buf_append(&buf, hint) == 0 &&
          ccode_buf_append(&buf, "\"}") == 0;
-    free(esc_schema);
     if (!ok) return error;
     return buf.data;
 }

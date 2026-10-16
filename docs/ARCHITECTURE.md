@@ -140,8 +140,8 @@ SSE 按行解析 `data:` 事件，支持重定向、超时控制。
 
 | 类别 | 工具 |
 |------|------|
-| 只读 | `read_file`（带大小上限和截断标记）、`glob`、`grep`、`read_tool_output`（按 `tool_call_id` 取回被存档的超长工具输出窗口） |
-| 读写 | `edit_file`（原子写入；空 `old_string` 创建新文件，拒绝覆盖）、`bash`（支持 `timeout_ms`）、`delete_file` / `move_file`、`web_fetch` / `web_search`、`agent_tool`（子代理）、`task`（action=create/update/list） |
+| 只读 | `str_replace_editor` 的 `view`（50 KiB 上限，支持行范围/字节偏移）、`glob`、`grep` |
+| 读写 | `str_replace_editor` 的 `str_replace`（原子写入；空 `old_string` 创建新文件，拒绝覆盖）、`bash`（支持 `timeout_ms`）、`delete_file` / `move_file`、`web_fetch` / `web_search`、`agent_tool`（子代理）、`task`（action=create/update/list） |
 
 ### security/permissions.c — 审批
 
@@ -214,7 +214,7 @@ export CCODE_WORKSPACE="/path/to/project"   # 工作区，默认当前目录
 存在 `$CCODE_SESSION_DIR`（默认 `~/.ccode/sessions/`），JSON v5 格式，带元数据。自动保存、可限制单会话大小和保留数量。
 
 - assistant 消息可带 `reasoning_content`（thinking 模型的思维链）。带 `tools` 的请求里 DeepSeek thinking 模式要求逐轮回传，否则上游 400；ccode 原样保存并在请求里回放（无 tools 时上游会忽略）。assistant 的空正文与 `content:null` 严格区分，保证 live 与 resume 的请求前缀字节一致，利于上游 prefix cache。
-- 超长工具结果（命令 stdout/stderr，或 `read_file` 读到的大文件）完整存进 `<session>.results/<id>`（内容哈希命名，0600，每流最多 4 MiB），消息里只留预览加本地 `result_ref`；`result_ref` 不回传上游。模型用 `read_tool_output(tool_call_id, stream, offset, limit)` 按 `tool_call_id` 分页取回（stdout/stderr 各自归档）。结果目录首次使用 `mkdir -p`；删除/重命名/剪枝会话时会一并清理该目录。
+- 超长命令输出只返回每流前 4 KiB 与后 1 KiB（显式截断标记和省略字节数），多余内容排空并丢弃。要保留完整日志，命令需主动重定向到工作区文件。编辑器 `view` 直接从源文件按行范围或字节偏移读取。新会话不创建 `.results`；旧会话的 `result_ref` 元数据仍可加载。
 
 ### 测试
 

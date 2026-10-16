@@ -564,99 +564,17 @@ static int run_pending_subagents(struct agent_context *ctx,
 }
 #endif /* _WIN32 */
 
-static char *exec_read_tool_output(struct agent_context *ctx,
-                                   const struct ccode_conversation *conv,
-                                   const char *tool_call_id,
-                                   const char *stream,
-                                   size_t offset, size_t limit) {
-    size_t i;
-    const struct ccode_message *found = NULL;
-    const char *blob_id = NULL;
-    const char *stream_name = "stdout";
-    char *data;
-    char *result;
-    size_t returned = 0, total = 0, cap, pos;
-    int truncated = 0;
-    char num[32];
-
-    if (!tool_call_id || tool_call_id[0] == '\0')
-        return ccode_strdup("{\"error\":\"Missing tool_call_id\"}");
-    if (!conv)
-        return ccode_strdup("{\"error\":\"No conversation context\"}");
-    for (i = 0; i < conv->count; i++) {
-        if (conv->messages[i].role == CCODE_ROLE_TOOL &&
-            conv->messages[i].tool_call_id &&
-            strcmp(conv->messages[i].tool_call_id, tool_call_id) == 0) {
-            found = &conv->messages[i];
-            break;
-        }
-    }
-    if (!found)
-        return ccode_strdup("{\"error\":\"Unknown tool_call_id\"}");
-    if (stream && strcmp(stream, "stderr") == 0) {
-        blob_id = found->result_blob_err;
-        stream_name = "stderr";
-    } else if (stream && strcmp(stream, "stdout") == 0) {
-        blob_id = found->result_blob;
-        stream_name = "stdout";
-    } else if (found->result_blob) {
-        blob_id = found->result_blob;
-        stream_name = "stdout";
-    } else if (found->result_blob_err) {
-        blob_id = found->result_blob_err;
-        stream_name = "stderr";
-    }
-    if (!blob_id)
-        return ccode_strdup(
-            "{\"error\":\"No archived output for that tool call/stream\"}");
-
-    data = ccode_results_read(ctx, blob_id, offset, limit,
-                              &returned, &total, &truncated);
-    if (!data)
-        return ccode_strdup("{\"error\":\"Could not read archived output\"}");
-
-    cap = returned * 6 + 256;
-    result = malloc(cap);
-    if (!result) { free(data); return NULL; }
-    pos = 0;
-    result[0] = '\0';
-    if (ccode_append_cstr(&result, &pos, &cap, "{\"stream\":\"") != 0) goto fail;
-    if (ccode_append_cstr(&result, &pos, &cap, stream_name) != 0) goto fail;
-    if (ccode_append_cstr(&result, &pos, &cap, "\",\"offset\":") != 0) goto fail;
-    snprintf(num, sizeof(num), "%lu", (unsigned long)offset);
-    if (ccode_append_cstr(&result, &pos, &cap, num) != 0) goto fail;
-    if (ccode_append_cstr(&result, &pos, &cap, ",\"total_bytes\":") != 0)
-        goto fail;
-    snprintf(num, sizeof(num), "%lu", (unsigned long)total);
-    if (ccode_append_cstr(&result, &pos, &cap, num) != 0) goto fail;
-    if (ccode_append_cstr(&result, &pos, &cap, ",\"returned_bytes\":") != 0)
-        goto fail;
-    snprintf(num, sizeof(num), "%lu", (unsigned long)returned);
-    if (ccode_append_cstr(&result, &pos, &cap, num) != 0) goto fail;
-    if (ccode_append_cstr(&result, &pos, &cap,
-            truncated ? ",\"truncated\":true" : ",\"truncated\":false") != 0)
-        goto fail;
-    if (ccode_append_cstr(&result, &pos, &cap, ",\"content\":\"") != 0)
-        goto fail;
-    if (append_json_string_n(&result, &pos, &cap, data, returned) != 0)
-        goto fail;
-    if (ccode_append_cstr(&result, &pos, &cap, "\"}") != 0) goto fail;
-    free(data);
-    return result;
-
-fail:
-    free(data);
-    free(result);
-    return ccode_strdup("{\"error\":\"Out of memory\"}");
-}
-
 static char *execute_prepared_tool(struct agent_context *ctx,
                                    const struct ccode_agent_config *cfg,
                                    const char *workspace,
                                    const struct ccode_conversation *conv,
                                    const struct prepared_tool *prepared) {
+    (void)conv;
     if (prepared->kind == PREPARED_READ_FILE)
-        return exec_read_file(ctx, workspace, prepared->value);
+        return exec_read_file_range(ctx, workspace, prepared->value,
+                                    prepared->view_start_line,
+                                    prepared->view_end_line,
+                                    prepared->view_byte_offset);
     if (prepared->kind == PREPARED_EDIT_FILE)
         return exec_edit_file(ctx, workspace, prepared->value,
                               prepared->old_string, prepared->new_string);
@@ -694,12 +612,6 @@ static char *execute_prepared_tool(struct agent_context *ctx,
     }
     if (prepared->kind == PREPARED_WEB_SEARCH)
         return ccode_web_search(prepared->value, ctx->allow_danger);
-    if (prepared->kind == PREPARED_READ_TOOL_OUTPUT)
-        return exec_read_tool_output(ctx, conv, prepared->value,
-                                     prepared->content[0] ? prepared->content
-                                                          : NULL,
-                                     prepared->result_offset,
-                                     prepared->result_limit);
     return ccode_strdup("{\"error\":\"Unknown tool type\"}");
 }
 
@@ -724,7 +636,7 @@ static int is_readonly_tool(const char *name) {
     return name && (strcmp(name, "str_replace_editor") == 0 ||
                     strcmp(name, "glob") == 0 ||
                     strcmp(name, "grep") == 0 ||
-                    strcmp(name, "read_tool_output") == 0);
+                    0);
 }
 
 static int is_enabled_tool(const char *name, int write_enabled) {
@@ -739,8 +651,7 @@ static int is_enabled_tool(const char *name, int write_enabled) {
               strcmp(name, "web_fetch") == 0 ||
               strcmp(name, "web_search") == 0 ||
               strcmp(name, "agent_tool") == 0 ||
-              strcmp(name, "task") == 0 ||
-              strcmp(name, "read_tool_output") == 0));
+              strcmp(name, "task") == 0));
 }
 
 /* deepseek-harness `minimal` composition: exactly the editor and the shell,
@@ -768,7 +679,6 @@ static int tool_auto_approved(const struct agent_context *ctx,
     if (!prepared) return 0;
     switch (prepared->kind) {
     case PREPARED_READ_FILE:
-    case PREPARED_READ_TOOL_OUTPUT:
     case PREPARED_GLOB:
     case PREPARED_GREP:
     case PREPARED_WEB_FETCH:
@@ -1405,41 +1315,6 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                             result = -1;
                             break;
                         }
-                        if (ctx->last_result_blob &&
-                            (prepared.kind == PREPARED_BASH ||
-                             prepared.kind == PREPARED_READ_FILE)) {
-                            if (ccode_conversation_set_result_blob(conv,
-                                    ctx->last_result_blob,
-                                    ctx->last_result_total) != 0) {
-                                free(tool_result);
-                                ccode_sse_accumulator_destroy(&acc);
-                                fprintf(stderr, "Out of memory.\n");
-                                result = -1;
-                                break;
-                            }
-                        }
-                        if (ctx->last_result_blob_err &&
-                            (prepared.kind == PREPARED_BASH)) {
-                            if (ccode_conversation_set_result_blob_err(conv,
-                                    ctx->last_result_blob_err,
-                                    ctx->last_result_total_err) != 0) {
-                                free(tool_result);
-                                ccode_sse_accumulator_destroy(&acc);
-                                fprintf(stderr, "Out of memory.\n");
-                                result = -1;
-                                break;
-                            }
-                        }
-                        if (ctx->last_result_blob) {
-                            free(ctx->last_result_blob);
-                            ctx->last_result_blob = NULL;
-                            ctx->last_result_total = 0;
-                        }
-                        if (ctx->last_result_blob_err) {
-                            free(ctx->last_result_blob_err);
-                            ctx->last_result_blob_err = NULL;
-                            ctx->last_result_total_err = 0;
-                        }
                         free(tool_result);
                     } else {
                         /* Never leave the model without a tool response: a
@@ -1605,15 +1480,6 @@ static int ensure_system_prompt(struct ccode_conversation *conv,
                                       : ccode_minimal_system_prompt());
 }
 
-/* Keep the oversized-result archive aligned with the active session file.
- * Called once per prompt after any session switch/new/resume. */
-static void sync_results_dir(struct agent_context *ctx, const char *session_path) {
-    if (session_path && session_path[0] != '\0')
-        (void)ccode_results_configure(ctx, session_path);
-    else
-        ctx->results_dir[0] = '\0';
-}
-
 /* Optional startup model verification: with CCODE_MODEL_VERIFY=1 the
  * configured model is checked against the API list before the first request;
  * if it is missing and CCODE_MODEL_FALLBACK names an alternative, cfg->model
@@ -1668,12 +1534,6 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
         return 1;
     }
 
-    ctx->last_result_blob = NULL;
-    ctx->last_result_total = 0;
-    if (cfg->save_session)
-        (void)ccode_results_configure(ctx, cfg->save_session);
-    else if (cfg->resume_session)
-        (void)ccode_results_configure(ctx, cfg->resume_session);
 
     if (ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) != 0) {
         fprintf(stderr, "Out of memory.\n");
@@ -2297,10 +2157,6 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
         return 1;
     }
 
-    ctx->last_result_blob = NULL;
-    ctx->last_result_total = 0;
-    if (cfg->save_session)
-        (void)ccode_results_configure(ctx, cfg->save_session);
 
     if (ccode_conversation_init(&conv, CCODE_MAX_MESSAGES) != 0) {
         fprintf(stderr, "Out of memory.\n");
@@ -2395,9 +2251,6 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
             else
                 current_session_path[0] = '\0';
         }
-
-        sync_results_dir(ctx, have_session_path ? current_session_path
-                                                : cfg->save_session);
 
         if (ccode_conversation_add(&conv, CCODE_ROLE_USER, line) != 0) {
             fprintf(stderr, "Out of memory.\n");

@@ -150,7 +150,7 @@ ifneq ($(RETRO),1)
 # test-permissions/test-markdown) does not list it either.
 TEST_TARGETS += test-config
 ifneq ($(WIN32),1)
-TEST_TARGETS += test-session-persistence test-http-chunk test-subagent-reason
+TEST_TARGETS += test-subagent-reason test-fs-clarity test-session-persistence test-http-chunk
 endif
 endif
 ifneq ($(TTY_TEST),)
@@ -416,34 +416,38 @@ tests/test_agent: $(TEST_AGENT_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(TEST_AGENT_SRC)
 endif
 
-# Session metadata round-trip and configured save/load limits.
+# Clarity regressions: failed/empty delegates, exact paging, actionable
+# filesystem errors, session persistence, and legal large HTTP chunks.
+# Native POSIX tests use HTTP-only transport and harmless loopback mocks.
+TEST_SUBAGENT_SRC = tests/test_subagent_reason.c $(filter-out tests/test_agent.c,$(TEST_AGENT_SRC))
 ifneq ($(RETRO),1)
+test-subagent-reason: tests/test_subagent_reason
+	./tests/test_subagent_reason
+
+tests/test_subagent_reason: override CPPFLAGS += -DCCODE_UNIT_TEST=1 -DCCODE_HTTP_ONLY=1
+tests/test_subagent_reason: $(TEST_SUBAGENT_SRC)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(TEST_SUBAGENT_SRC)
+
+TEST_FS_CLARITY_SRC = tests/test_fs_isolated.c $(filter-out tests/test_agent.c,$(TEST_AGENT_SRC))
+tests/test_fs_isolated: override CPPFLAGS += -DCCODE_UNIT_TEST=1 -DCCODE_HTTP_ONLY=1
+tests/test_fs_isolated: $(TEST_FS_CLARITY_SRC)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(TEST_FS_CLARITY_SRC)
+
+test-fs-clarity: tests/test_fs_isolated
+	./tests/test_fs_isolated
+
 tests/test_session_persistence: tests/test_session_persistence.c src/agent/message.c vendor/json/json.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 
 test-session-persistence: tests/test_session_persistence
 	./tests/test_session_persistence
-endif
 
-# Real loopback HTTP chunk streaming regression.
-ifneq ($(RETRO),1)
 tests/test_http_chunk: override CPPFLAGS += -DCCODE_HTTP_ONLY=1
 tests/test_http_chunk: tests/test_http_chunk.c src/net/http.c vendor/json/json.c src/security/permissions.c vendor/lineedit/input.c vendor/lineedit/lineedit.c $(PLATFORM_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 
 test-http-chunk: tests/test_http_chunk
 	./tests/test_http_chunk
-endif
-
-# Delegates must distinguish failed, incomplete, and empty answers.
-TEST_SUBAGENT_SRC = tests/test_subagent_reason.c $(filter-out tests/test_agent.c,$(TEST_AGENT_SRC))
-ifneq ($(RETRO),1)
-tests/test_subagent_reason: override CPPFLAGS += -DCCODE_UNIT_TEST=1 -DCCODE_HTTP_ONLY=1
-tests/test_subagent_reason: $(TEST_SUBAGENT_SRC)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(TEST_SUBAGENT_SRC)
-
-test-subagent-reason: tests/test_subagent_reason
-	./tests/test_subagent_reason
 endif
 
 # Randomized tool-argument fuzzer (needs Python 3). Kept out of the default
@@ -545,7 +549,7 @@ test-e2e: ccode-cli
 
 # Battle test: a scripted mock-provider plan drives the real ccode-cli over
 # a throwaway copy of this repo to finish one coding task (fix -> real
-# rebuild -> run the built binary), exercising all 12 tools.
+# rebuild -> run the built binary), exercising the available tools.
 test-e2e-real: ccode-cli
 	python3 ./tests/test_e2e_real_project.py
 
@@ -593,7 +597,7 @@ uninstall:
 
 clean:
 	rm -rf .build
-	rm -f ccode ccode-tui ccode-cli tests/test_json tests/test_agent tests/test_agent_asan tests/test_permissions tests/test_tui tests/test_markdown tests/test_config tests/test_session_persistence tests/test_http_chunk tests/test_subagent_reason
+	rm -f ccode ccode-tui ccode-cli tests/test_json tests/test_agent tests/test_agent_asan tests/test_permissions tests/test_tui tests/test_markdown tests/test_config tests/test_subagent_reason tests/test_fs_isolated tests/test_session_persistence tests/test_http_chunk
 	rm -rf test-sandbox
 
 # ASan + UBSan build (for debugging/fuzzing). Override CFLAGS to remove
@@ -607,10 +611,5 @@ asan: clean
 repro: clean
 	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 SIZE_CFLAGS= SIZE_LDFLAGS= CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic -Werror $(X86_GNU_FLAGS) -ffile-prefix-map=$(PWD)=."
 
+.PHONY: test-subagent-reason test-fs-clarity test-session-persistence test-http-chunk
 .PHONY: ccode ccode-tui ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-lineedit test-markdown test-dead-code test-tui-commands test-tui-real test-tty test-e2e test-streaming retro-test asan repro test-sandbox fuzz-tool-args fuzz-tool-args-asan fuzz-command-paths fuzz-paths mutate
-
-.PHONY: test-session-persistence
-
-.PHONY: test-http-chunk
-
-.PHONY: test-subagent-reason

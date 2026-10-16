@@ -234,7 +234,7 @@ def rand_binary(rng, size):
 def generate_workspace(root, rng, n_files=600, n_big=6, max_depth=5):
     """Random tree: mixed names (unicode/spaces), mixed contents (empty,
     text, CRLF, control chars, binary, huge lines), deep nesting, symlinks,
-    empty dirs, plus a few oversized files to force truncation+archiving."""
+    empty dirs, plus a few oversized files to exercise bounded previews and ranged reads."""
     made = []
     os.makedirs(root, exist_ok=True)
     for i in range(n_files):

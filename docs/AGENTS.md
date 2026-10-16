@@ -55,7 +55,7 @@ vendor/markdown/*     行式 markdown→ANSI（含控制字符/双向覆盖符�
 vendor/html/*         HTML→文本（web_fetch / web_search 共用）
 vendor/lineedit/*     最小 raw-mode 行编辑器 + tui_input 编辑内核
 agent/message.c/h      对话所有权、请求序列化
-agent/agent_results.c  超长工具结果存档（<session>.results/，内容寻址）与 read_tool_output 取回
+agent/agent_results.c  旧会话结果存档兼容代码；新工具结果不再存档
 agent/agent.c/h        agent 循环、工具校验、本地执行、工作区、渲染开关
 tools/tools.c/h        按启用模式决定上游函数
 security/*             安全终端渲染、用户审批和命令/路径沙箱

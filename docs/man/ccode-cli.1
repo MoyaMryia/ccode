@@ -110,7 +110,7 @@ Enable the editor's str_replace command, bash, and the remaining
 write-capable tools.
 .TP
 .B \-\-read-only
-Read-only tools (editor view, glob, grep, read_tool_output). The default.
+Read-only tools (editor view, glob, grep). The default.
 .TP
 .B \-\-minimal
 Minimal mode in the spirit of deepseek-harness's \fBminimal\fR agent
@@ -302,13 +302,11 @@ Switch to a saved session.
 .SH TOOLS
 .PP
 Read-only (always available):
-read_file, glob, grep, read_tool_output.
+str_replace_editor view, glob, grep.
 .PP
-read_tool_output returns a window of an oversized tool result that was
-archived under the session's results directory (the inline result was
-truncated). Pass the tool_call_id of the truncated result; stream selects
-stdout (default) or stderr for commands; offset and limit are optional
-(limit capped at 64 KiB per call).
+The editor view accepts start_line and end_line (inclusive), or a
+zero-based byte_offset for a long line. Each view returns at most 50 KiB.
+A truncated view provides next_byte_offset for exact continuation.
 .PP
 Read-write (with
 .BR \-\-write ):
@@ -435,8 +433,9 @@ Each tool-spawned command is killed with its process group after 120
 seconds of wall-clock time.
 .TP
 .B Command output
-Stdout and stderr are each captured up to 64 KiB; excess is drained
-(so the child never blocks) and reported as truncated.
+Stdout and stderr each retain a 4 KiB prefix and 1 KiB tail. Omitted
+middle bytes are counted; excess is drained so the child never blocks.
+Redirect output to a workspace file when the full log is needed.
 .SH FILES
 .TP
 .I ~/.ccode/sessions/
