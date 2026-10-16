@@ -156,6 +156,7 @@ endif
 ifneq ($(TTY_TEST),)
 TEST_TARGETS += test-tty
 TEST_TARGETS += test-e2e
+TEST_TARGETS += test-clarity
 TEST_TARGETS += test-e2e-real
 TEST_TARGETS += test-streaming
 endif
@@ -547,6 +548,12 @@ stress: stress-random stress-json stress-real
 test-e2e: ccode-cli
 	python3 ./tests/test_e2e_fixture.py
 
+# Tool-result clarity regression (docs/TOOL-CLARITY-AUDIT.md): scripted
+# adversarial tool calls, asserting on the serialized results as the model
+# receives them.
+test-clarity: ccode-cli
+	python3 ./tests/test_tool_clarity.py
+
 # Battle test: a scripted mock-provider plan drives the real ccode-cli over
 # a throwaway copy of this repo to finish one coding task (fix -> real
 # rebuild -> run the built binary), exercising the available tools.
@@ -611,5 +618,5 @@ asan: clean
 repro: clean
 	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 SIZE_CFLAGS= SIZE_LDFLAGS= CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic -Werror $(X86_GNU_FLAGS) -ffile-prefix-map=$(PWD)=."
 
-.PHONY: test-subagent-reason test-fs-clarity test-session-persistence test-http-chunk
+.PHONY: test-clarity test-subagent-reason test-fs-clarity test-session-persistence test-http-chunk
 .PHONY: ccode ccode-tui ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-lineedit test-markdown test-dead-code test-tui-commands test-tui-real test-tty test-e2e test-streaming retro-test asan repro test-sandbox fuzz-tool-args fuzz-tool-args-asan fuzz-command-paths fuzz-paths mutate
