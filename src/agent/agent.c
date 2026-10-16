@@ -81,14 +81,18 @@ static void subagent_discard(const char *content, void *context) {
     (void)context;
 }
 
-/* Extract the last non-empty assistant message from the sub-agent's
- * conversation. That message is the delegate's report to its caller. */
+/* Extract the latest assistant message from the sub-agent's conversation.
+ * If that latest message is whitespace-only, it is not a report; do not fall
+ * back to older narration, which could make an incomplete run look complete. */
 static char *subagent_final_answer(const struct ccode_conversation *conv) {
     size_t i;
     for (i = conv->count; i > 0; i--) {
         const struct ccode_message *m = &conv->messages[i - 1];
-        if (m->role == CCODE_ROLE_ASSISTANT && m->content && m->content[0])
-            return ccode_strdup(m->content);
+        const unsigned char *p;
+        if (m->role != CCODE_ROLE_ASSISTANT || !m->content) continue;
+        for (p = (const unsigned char *)m->content; *p == ' ' || *p == '\t' ||
+             *p == '\n' || *p == '\r' || *p == '\f' || *p == '\v'; p++) {}
+        return *p ? ccode_strdup(m->content) : NULL;
     }
     return NULL;
 }
@@ -113,7 +117,49 @@ static char *subagent_truncate(char *answer) {
 
 static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                                           struct ccode_agent_config *cfg,
-                                          struct ccode_conversation *conv);
+                                          struct ccode_conversation *conv,
+                                          char **error_out);
+
+/* Cap the partial answer embedded in a failed delegate's result. The whole
+ * result must stay under CCODE_MAX_CONTENT_LEN (100 KiB) after JSON escaping,
+ * which can inflate a control-heavy string up to 6x, so 8 KiB of partial text
+ * leaves ample room for the reason and the fixed scaffolding. */
+#define SUBAGENT_PARTIAL_MAX (8 * 1024)
+
+/* Build the structured failure result handed back to the parent agent.
+ * `reason` (may be NULL) is the provider/stream error that aborted the
+ * delegate; `partial` (may be NULL) is any assistant text captured before
+ * the abort. `partial` is truncated in place to SUBAGENT_PARTIAL_MAX at a
+ * UTF-8 boundary. The text is preserved but explicitly marked partial so a
+ * failed delegate can never be mistaken for a completed one. */
+static char *subagent_failure_result(const char *reason, char *partial) {
+    struct ccode_buf out;
+    const char *why = (reason && reason[0]) ? reason : "provider request failed";
+    int have_partial = partial && partial[0] != '\0';
+
+    ccode_buf_init(&out);
+    if (ccode_buf_append(&out,
+            "{\"error\":\"Sub-agent failed\",\"reason\":") != 0 ||
+        ccode_json_append_quoted(&out, why) != 0)
+        goto fail;
+    if (have_partial) {
+        size_t len = strlen(partial);
+        if (len > SUBAGENT_PARTIAL_MAX) {
+            size_t cut = SUBAGENT_PARTIAL_MAX;
+            while (cut > 0 && ((unsigned char)partial[cut] & 0xC0) == 0x80)
+                cut--;
+            partial[cut] = '\0';
+        }
+        if (ccode_buf_append(&out, ",\"partial\":true,\"content\":") != 0 ||
+            ccode_json_append_quoted(&out, partial) != 0)
+            goto fail;
+    }
+    if (ccode_buf_append(&out, "}") != 0) goto fail;
+    return ccode_buf_detach(&out);
+fail:
+    ccode_buf_free(&out);
+    return ccode_strdup("{\"error\":\"Sub-agent failed\"}");
+}
 
 static char *run_subagent(struct agent_context *ctx,
                            const struct ccode_agent_config *cfg,
@@ -122,6 +168,7 @@ static char *run_subagent(struct agent_context *ctx,
     struct ccode_conversation sub;
     struct ccode_agent_config sub_cfg;
     char *answer;
+    char *stream_error = NULL;
     int rc;
 
     if (ctx->subagent_depth >= MAX_SUBAGENT_DEPTH)
@@ -187,7 +234,7 @@ static char *run_subagent(struct agent_context *ctx,
             sub_ctx.subagent_depth,
             read_only ? "read-only" : "read-write");
 
-    rc = ccode_agent_process_turn_loop(&sub_ctx, &sub_cfg, &sub);
+    rc = ccode_agent_process_turn_loop(&sub_ctx, &sub_cfg, &sub, &stream_error);
     answer = subagent_final_answer(&sub);
     ccode_conversation_destroy(&sub);
 
@@ -197,11 +244,20 @@ static char *run_subagent(struct agent_context *ctx,
 
     if (rc == 130) {
         free(answer);
+        free(stream_error);
         return ccode_strdup("{\"error\":\"Sub-agent cancelled\"}");
     }
-    if (rc != 0 && !answer) {
-        return ccode_strdup("{\"error\":\"Sub-agent failed\"}");
+    if (rc != 0 || stream_error) {
+        /* A failed or capped delegate must never hand the parent its partial
+         * assistant text as if the run had completed: that made aborted
+         * sub-agents look successful. Preserve the text, but mark it partial
+         * and carry the provider/stream reason that caused the abort. */
+        char *result = subagent_failure_result(stream_error, answer);
+        free(answer);
+        free(stream_error);
+        return result;
     }
+    free(stream_error);
     if (!answer) {
         return ccode_strdup("{\"error\":\"Sub-agent returned no answer\"}");
     }
@@ -264,7 +320,8 @@ static int run_pending_subagents(struct agent_context *ctx,
     for (i = 0; i < count; i++) {
         char *result = run_subagent(ctx, cfg, jobs[i].task, jobs[i].read_only);
         if (!result)
-            result = ccode_strdup("{\"error\":\"Sub-agent failed\"}");
+            result = ccode_strdup(
+                "{\"error\":\"Sub-agent failed\",\"reason\":\"out of memory\"}");
         if (!result) return -1;
         if (!cfg->quiet) ccode_render_tool_result(stdout, result);
         if (ccode_conversation_add_tool_result(conv, jobs[i].id,
@@ -339,7 +396,8 @@ static int run_pending_subagents(struct agent_context *ctx,
                 if (jobs[j].pipe_fd >= 0) close(jobs[j].pipe_fd);
             }
             answer = run_subagent(ctx, cfg, jobs[i].task, jobs[i].read_only);
-            if (!answer) answer = ccode_strdup("{\"error\":\"Sub-agent failed\"}");
+            if (!answer) answer = ccode_strdup(
+                "{\"error\":\"Sub-agent failed\",\"reason\":\"out of memory\"}");
             len = (uint32_t)strlen(answer);
             if (len > SUBAGENT_RESULT_MAX + 64) len = (uint32_t)(SUBAGENT_RESULT_MAX + 64);
             {
@@ -481,8 +539,11 @@ static int run_pending_subagents(struct agent_context *ctx,
         }
         result = pending_subagent_answer(&jobs[i]);
         if (!result)
-            result = ccode_strdup(
-                "{\"error\":\"Sub-agent failed\"}");
+            result = ccode_strdup(jobs[i].error
+                ? "{\"error\":\"Sub-agent failed\",\"reason\":\"delegate "
+                  "pipe read failed\"}"
+                : "{\"error\":\"Sub-agent failed\",\"reason\":\"delegate "
+                  "returned a truncated or malformed result\"}");
         if (!result) {
             free(jobs[i].buf);
             return -1;
@@ -875,10 +936,16 @@ static void debug_print_tool_calls(const struct ccode_sse_accumulator *acc) {
 
 /* Run the turn-processing loop on an initialized conversation.
  * Returns 0 on success, 130 on cancellation, 1 on other error.
+ * When `error_out` is non-NULL, it receives a newly allocated reason for
+ * provider/stream failures and turn-limit exhaustion (which returns success
+ * for top-level exit-contract compatibility); the caller owns and frees it.
+ * It is left untouched when the loop completes normally, so callers may pass
+ * a pointer to a NULL-initialized variable.
  * The conversation is preserved and may be reused by the caller. */
 static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                                           struct ccode_agent_config *cfg,
-                                          struct ccode_conversation *conv) {
+                                          struct ccode_conversation *conv,
+                                          char **error_out) {
     int turn = 0;
     int result = 0;
     int rc = 0;
@@ -1008,6 +1075,10 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
 
         if (result < 0) {
             ccode_print_reasoning_end();
+            if (error_out && !*error_out)
+                *error_out = ccode_strdup(
+                    acc.error_message ? acc.error_message
+                                      : "provider request failed");
             ccode_sse_accumulator_destroy(&acc);
             break;
         }
@@ -1416,7 +1487,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
                         ctx, cfg, serial_subagents[i].task,
                         serial_subagents[i].read_only);
                     if (!sub_result) sub_result =
-                        ccode_strdup("{\"error\":\"Sub-agent failed\"}");
+                        ccode_strdup("{\"error\":\"Sub-agent failed\","
+                                     "\"reason\":\"out of memory\"}");
                     if (sub_result) {
                         if (!cfg->quiet)
                             ccode_render_tool_result(stdout, sub_result);
@@ -1482,6 +1554,10 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
         turn++;
     }
     if (result >= 0 && turn_limit > 0 && turn >= turn_limit) {
+        /* For delegates, distinguish a tool-call turn cut off by the cap from
+         * a completed answer. Keep the top-level exit contract unchanged. */
+        if (error_out && !*error_out)
+            *error_out = ccode_strdup("turn limit reached before completion");
         /* Make the cap discoverable instead of ending the run silently. */
         fprintf(stderr,
                 "\n  " CCODE_ANSI("33") "[turn limit]" CCODE_ANSI("0")
@@ -1491,6 +1567,8 @@ static int ccode_agent_process_turn_loop(struct agent_context *ctx,
     rc = result < 0 ? 1 : 0;
 
 done:
+    if (rc != 0 && rc != 130 && error_out && !*error_out)
+        *error_out = ccode_strdup("agent run failed before completing");
     free(tools_json);
     return rc;
 }
@@ -1634,7 +1712,7 @@ int ccode_agent_run(struct ccode_agent_config *cfg) {
         }
     }
 
-    result = ccode_agent_process_turn_loop(&agent_ctx, cfg, &conv);
+    result = ccode_agent_process_turn_loop(&agent_ctx, cfg, &conv, NULL);
 
     {
         int i;
@@ -2326,7 +2404,7 @@ int ccode_agent_run_interactive(struct ccode_agent_config *cfg) {
             goto cleanup;
         }
 
-        turn_result = ccode_agent_process_turn_loop(&agent_ctx, cfg, &conv);
+        turn_result = ccode_agent_process_turn_loop(&agent_ctx, cfg, &conv, NULL);
         if (turn_result == 130) {
             exit_code = 130;
             break;
@@ -2572,6 +2650,20 @@ int test_run_pending_subagents(struct ccode_agent_config *cfg,
         free(jobs[i].task);
     }
     return rc;
+}
+/* Exercise the structured delegate-failure builder directly, so a regression
+ * test can assert its JSON shape (reason + explicit partial marker) without a
+ * reachable provider. `partial` is copied because the builder truncates it. */
+char *test_subagent_failure_result(const char *reason, const char *partial) {
+    char *copy = ccode_strdup(partial ? partial : "");
+    char *out;
+    if (partial && !copy) return NULL;
+    out = subagent_failure_result(reason, copy);
+    free(copy);
+    return out;
+}
+char *test_subagent_final_answer(const struct ccode_conversation *conv) {
+    return subagent_final_answer(conv);
 }
 int test_conversation_has_tool_result(const struct ccode_conversation *conv,
                                       const char *tool_call_id) {

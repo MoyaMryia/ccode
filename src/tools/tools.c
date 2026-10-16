@@ -131,14 +131,14 @@ const struct ccode_tool_def ccode_tool_definitions[] = {
      "Delegate a task to a sub-agent that runs its own agent loop in the same "
      "workspace and returns only its final answer, not its intermediate steps. "
      "Give it a complete, self-contained task: the sub-agent does not see this "
-     "conversation. It is read-only by default; pass the string `false` for "
+     "conversation. It is read-only by default; pass `false` for "
      "`read_only` to let it use write tools (each write still requires "
      "approval). Several `agent_tool` calls in one turn run in parallel: give "
      "each sub-agent a non-overlapping file or directory scope, and never let "
      "two sub-agents write the same file.",
      "{\"type\":\"object\",\"properties\":{"
      "\"task\":{\"type\":\"string\",\"description\":\"The complete, standalone task for the sub-agent. It does not see this conversation, so include everything it needs.\"},"
-     "\"read_only\":{\"type\":\"string\",\"description\":\"The string `true` or `false`; set to `false` to allow the sub-agent's write tools (each write still requires approval). Defaults to `true`.\"}"
+     "\"read_only\":{\"type\":[\"boolean\",\"string\"],\"description\":\"Boolean `true` or `false` (preferred); legacy strings `true`/`false` are also accepted. Set to false to allow the sub-agent's write tools (each write still requires approval). Defaults to true.\"}"
      "},\"required\":[\"task\"]}"},
 
     {"web_search",

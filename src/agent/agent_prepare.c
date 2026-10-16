@@ -773,18 +773,26 @@ static const char *prepare_tool_inner(const char *name, const char *arguments,
                 have_task = 1;
             } else if (ccode_jsmn_token_streq(arguments, &tokens[i],
                                               "read_only")) {
-                if (have_read_only ||
-                    copy_string_token_dyn(arguments, &tokens[i + 1], &prepared->content) != 0)
-                    return "{\"error\":\"Invalid agent_tool read_only\"}";
+                if (have_read_only)
+                    return "{\"error\":\"agent_tool read_only must be a boolean or the string \\\"true\\\"/\\\"false\\\"\"}";
                 have_read_only = 1;
-                if (strcmp(prepared->content, "false") == 0 ||
-                    strcmp(prepared->content, "0") == 0) {
-                    prepared->read_only_subagent = 0;
-                } else if (strcmp(prepared->content, "true") == 0 ||
-                           strcmp(prepared->content, "1") == 0) {
-                    prepared->read_only_subagent = 1;
+                if (tokens[i + 1].type == CCODE_JSMN_PRIMITIVE &&
+                    (ccode_jsmn_token_streq(arguments, &tokens[i + 1], "true") ||
+                     ccode_jsmn_token_streq(arguments, &tokens[i + 1], "false"))) {
+                    prepared->read_only_subagent =
+                        ccode_jsmn_token_streq(arguments, &tokens[i + 1], "true");
+                } else if (tokens[i + 1].type == CCODE_JSMN_STRING &&
+                           copy_string_token_dyn(arguments, &tokens[i + 1],
+                                                 &prepared->content) == 0 &&
+                           (strcmp(prepared->content, "false") == 0 ||
+                            strcmp(prepared->content, "0") == 0 ||
+                            strcmp(prepared->content, "true") == 0 ||
+                            strcmp(prepared->content, "1") == 0)) {
+                    prepared->read_only_subagent =
+                        strcmp(prepared->content, "false") != 0 &&
+                        strcmp(prepared->content, "0") != 0;
                 } else {
-                    return "{\"error\":\"Invalid agent_tool read_only\"}";
+                    return "{\"error\":\"agent_tool read_only must be a boolean or the string \\\"true\\\"/\\\"false\\\"\"}";
                 }
             } else {
                 return "{\"error\":\"Invalid agent_tool arguments\"}";
