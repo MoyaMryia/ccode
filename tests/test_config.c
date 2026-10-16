@@ -57,6 +57,25 @@ static int test_default_is_50(void) {
     return 1;
 }
 
+static int test_context_tokens_default_and_overrides(void) {
+    struct ccode_config config;
+    char *bare[] = {(char *)"ccode-cli", NULL};
+    char *flag[] = {(char *)"ccode-cli", (char *)"--context-tokens",
+                    (char *)"128000", NULL};
+    base_env();
+    ASSERT(ccode_parse_args(1, bare, &config) == 0);
+    ASSERT(config.context_tokens == 256000);
+    set_env("CCODE_CONTEXT_TOKENS", "512000");
+    ASSERT(ccode_parse_args(1, bare, &config) == 0);
+    ASSERT(config.context_tokens == 512000);
+    ASSERT(ccode_parse_args(3, flag, &config) == 0);
+    ASSERT(config.context_tokens == 128000);
+    set_env("CCODE_CONTEXT_TOKENS", "-1");
+    ASSERT(ccode_parse_args(1, bare, &config) == 0);
+    ASSERT(config.context_tokens == 256000);
+    return 1;
+}
+
 static int test_flag_sets_value(void) {
     struct ccode_config config;
     char *argv[] = {(char *)"ccode-cli", (char *)"--max-turns", (char *)"100", NULL};
@@ -315,6 +334,7 @@ static int test_request_timeout_bad_flag_rejected(void) {
 int main(void) {
     fprintf(stderr, "config tests:\n");
     TEST(default_is_50);
+    TEST(context_tokens_default_and_overrides);
     TEST(flag_sets_value);
     TEST(flag_zero_means_unlimited);
     TEST(env_sets_value);

@@ -193,7 +193,7 @@ Disable markdown rendering in human-facing output.
 .TP
 .BI \-\-context-tokens " N"
 Approximate context window in tokens; the conversation is compacted when the
-estimated request reaches 90% of it. Default 1000000 (DeepSeek family);
+estimated request reaches 90% of it. Default 256000;
 0 disables the token trigger. The estimate is char-based (no tokenizer).
 .TP
 .BI \-\-max-turns " N"
@@ -420,7 +420,7 @@ Thinking effort: low, medium, high, xhigh, max (default high).
 Set to off, none or empty to omit the reasoning_effort field.
 .TP
 .B CCODE_CONTEXT_TOKENS
-Approximate context window in tokens (default 1000000). Auto-compaction
+Approximate context window in tokens (default 256000). Auto-compaction
 triggers near 90% of it; 0 disables the token trigger.
 .TP
 .B CCODE_MAX_TURNS

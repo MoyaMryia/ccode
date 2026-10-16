@@ -52,7 +52,7 @@ void ccode_print_usage(const char *program) {
         "      --allow-http       Allow http:// API endpoints beyond loopback\n"
         "                         (plaintext, known risk; loopback http always allowed)\n"
         "      --no-markdown      Disable markdown rendering (raw output)\n"
-        "      --context-tokens N Approximate context window; auto-compact near it (default 1000000, 0=off)\n"
+        "      --context-tokens N Approximate context window; auto-compact near it (default 256000, 0=off)\n"
         "      --max-turns N      Max assistant turns for one prompt (default 50, 0=no limit)\n"
         "      --request-timeout N  Per-request HTTP deadline in seconds (default 900)\n"
         "      --full-prompt      Long coding-agent prompt + runtime snapshots\n"
@@ -73,7 +73,7 @@ void ccode_print_usage(const char *program) {
         "  CCODE_THINKING             Send the thinking field (default: 1, set 0 to disable)\n"
         "  CCODE_THINKING_EFFORT      Reasoning effort: low, medium, high, xhigh, or max (default: high);\n"
         "                             off/none/empty disables the reasoning_effort field\n"
-        "  CCODE_CONTEXT_TOKENS       Approximate context window in tokens (default: 1000000)\n"
+        "  CCODE_CONTEXT_TOKENS       Approximate context window in tokens (default: 256000)\n"
         "  CCODE_MAX_TURNS            Max assistant turns for one prompt (default: 50; 0 = no limit)\n"
         "  CCODE_REQUEST_TIMEOUT      Per-request HTTP deadline in seconds (default: 900)\n"
         "\n"
@@ -362,11 +362,11 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
         config->markdown = (!md || md[0] != '0') ? 1 : 0;
     }
     {
-        /* Approximate context window in tokens. DeepSeek's family is 1M;
-         * other models differ, so allow an explicit override. */
+        /* Approximate context window in tokens. Models differ, so allow
+         * an explicit override. */
         const char *ct = getenv("CCODE_CONTEXT_TOKENS");
-        config->context_tokens = ct ? atol(ct) : 1000000;
-        if (config->context_tokens < 0) config->context_tokens = 1000000;
+        config->context_tokens = ct ? atol(ct) : 256000;
+        if (config->context_tokens < 0) config->context_tokens = 256000;
     }
     {
         /* Assistant-turn cap for one prompt. 50 is the historical built-in
