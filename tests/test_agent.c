@@ -5057,10 +5057,10 @@ static int test_html_to_text(void) {
     ASSERT(strstr(out, "bad()") != NULL);
     ASSERT(strstr(out, "z{}") != NULL);
 
-    /* Numeric refs above ASCII stay literal (single-byte output). */
+    /* Numeric refs above ASCII are UTF-8 encoded, not leaked raw. */
     in = "&#233;";
     ccode_html_to_text(in, strlen(in), out, sizeof(out), 0);
-    ASSERT(strcmp(out, "&#233;") == 0);
+    ASSERT(strcmp(out, "\xc3\xa9") == 0);
 
     /* Bounded output never overflows and stays NUL-terminated. */
     {
@@ -5072,6 +5072,37 @@ static int test_html_to_text(void) {
         ASSERT(strlen(small) == 7);
     }
 
+    return 1;
+}
+
+static int test_html_block_tags_are_word_boundaries(void) {
+    char out[128];
+    const char *in =
+        "<title>Mock Page</title><h1>Head</h1><p>first</p><p>second</p>";
+    /* Text from adjacent block elements must never glue together. */
+    ccode_html_to_text(in, strlen(in), out, sizeof(out),
+                       CCODE_HTML_COLLAPSE_WS);
+    ASSERT(strstr(out, "Mock Page Head") != NULL);
+    ASSERT(strstr(out, "first second") != NULL);
+    /* A boundary space at the very end of the span is trimmed away. */
+    ccode_html_to_text("<p>text</p>", 11, out, sizeof(out),
+                       CCODE_HTML_COLLAPSE_WS);
+    ASSERT(strcmp(out, "text") == 0);
+    /* Hex numeric entities decode as UTF-8. */
+    ccode_html_to_text("&#xE9;", 6, out, sizeof(out), 0);
+    ASSERT(strcmp(out, "\xc3\xa9") == 0);
+    return 1;
+}
+
+static int test_web_search_bad_template_errors(void) {
+    char *r;
+    /* A configured endpoint without {query} must fail loudly instead of
+     * silently falling back to the live web (sandbox determinism). */
+    setenv("CCODE_WEB_SEARCH_URL", "http://127.0.0.1:9/search?q=%s", 1);
+    r = ccode_web_search("anything", 1);
+    unsetenv("CCODE_WEB_SEARCH_URL");
+    ASSERT(r != NULL && strstr(r, "{query}") != NULL);
+    free(r);
     return 1;
 }
 
@@ -6268,7 +6299,9 @@ int main(int argc, char **argv) {
     TEST(web_fetch_crlf_rejected);
     TEST(agent_tool_prepare);
     TEST(html_to_text);
+    TEST(html_block_tags_are_word_boundaries);
     TEST(web_search_parse_html);
+    TEST(web_search_bad_template_errors);
     TEST(web_search_prepare);
 
     /* Phase 7: Model management tests */

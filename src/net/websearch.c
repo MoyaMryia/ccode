@@ -167,9 +167,15 @@ char *ccode_web_search(const char *query, int allow_danger) {
         return ccode_json_error("Invalid search query");
 
     ws_url_encode(query, encoded, sizeof(encoded));
-    if (!tmpl || (marker = strstr(tmpl, "{query}")) == NULL) {
+    if (!tmpl) {
         tmpl = "https://www.bing.com/search?q={query}";
         marker = strstr(tmpl, "{query}");
+    } else if ((marker = strstr(tmpl, "{query}")) == NULL) {
+        /* A configured endpoint without {query} would silently search Bing
+         * instead: fail loudly so a sandbox/eval never leaks to the live
+         * web by accident. */
+        return ccode_json_error(
+                "CCODE_WEB_SEARCH_URL must contain {query}");
     }
 
     ccode_buf_init(&url);
