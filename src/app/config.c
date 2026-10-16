@@ -4,6 +4,10 @@
 
 #include "config.h"
 #include "../net/http.h"
+/* For the session-size safe bounds shared with message.c's save/load; this is
+ * a header-only include (config.c must not call into message.c, which is not
+ * linked into the TUI-only binary or tests/test_config). */
+#include "../agent/message.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -346,10 +350,24 @@ int ccode_parse_args(int argc, char **argv, struct ccode_config *config) {
         config->session_auto_save = (!sa || sa[0] == '1') ? 1 : 0;
     }
     {
+        /* Session file size limit. Clamp to the same safe bounds message.c
+         * enforces so an unparsable, 0, negative or absurd value cannot turn
+         * into an unbounded save/load. CCODE_SESSION_MAX_SIZE_DEFAULT is the
+         * documented 10 MiB; the effective value is applied by the agent run
+         * loop via ccode_session_set_max_size(). */
         const char *sm = getenv("CCODE_SESSION_MAX_SIZE");
-        config->session_max_size = sm ? atol(sm) : 10 * 1024 * 1024;
-        if (config->session_max_size <= 0)
-            config->session_max_size = 10 * 1024 * 1024;
+        long limit = CCODE_SESSION_MAX_SIZE_DEFAULT;
+        if (sm && sm[0]) {
+            char *end = NULL;
+            long parsed = strtol(sm, &end, 10);
+            if (end != sm && end && *end == '\0' && parsed > 0)
+                limit = parsed;
+        }
+        if (limit < CCODE_SESSION_MAX_SIZE_MIN)
+            limit = CCODE_SESSION_MAX_SIZE_MIN;
+        if (limit > CCODE_SESSION_MAX_SIZE_MAX)
+            limit = CCODE_SESSION_MAX_SIZE_MAX;
+        config->session_max_size = limit;
     }
     {
         const char *sk = getenv("CCODE_SESSION_KEEP_COUNT");

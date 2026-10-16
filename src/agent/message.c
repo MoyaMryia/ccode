@@ -843,6 +843,32 @@ static int str_to_role(const char *s, enum ccode_role *out) {
     return -1;
 }
 
+/* Session size override (bytes); 0 means "unset, consult env/default". */
+static long g_session_max_size;
+
+static long session_max_size_clamp(long bytes) {
+    if (bytes < CCODE_SESSION_MAX_SIZE_MIN) return CCODE_SESSION_MAX_SIZE_MIN;
+    if (bytes > CCODE_SESSION_MAX_SIZE_MAX) return CCODE_SESSION_MAX_SIZE_MAX;
+    return bytes;
+}
+
+void ccode_session_set_max_size(long bytes) {
+    g_session_max_size = bytes > 0 ? session_max_size_clamp(bytes) : 0;
+}
+
+long ccode_session_max_size(void) {
+    const char *env;
+    if (g_session_max_size > 0) return g_session_max_size;
+    env = getenv("CCODE_SESSION_MAX_SIZE");
+    if (env && env[0]) {
+        char *end = NULL;
+        long v = strtol(env, &end, 10);
+        if (end != env && end && *end == '\0' && v > 0)
+            return session_max_size_clamp(v);
+    }
+    return CCODE_SESSION_MAX_SIZE_DEFAULT;
+}
+
 int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
                             const char *tasks_json, const char *changes_json,
                             const struct ccode_session_metadata *meta) {
@@ -1015,24 +1041,22 @@ int ccode_conversation_save(struct ccode_conversation *conv, const char *path,
             strftime(timebuf, sizeof(timebuf),
                      "%Y-%m-%dT%H:%M:%S", tm_info);
         fputs(",\"metadata\":{", f);
-        if (meta->model[0])
-            fprintf(f, "\"model\":\"%s\"", meta->model);
-        else
-            fputs("\"model\":\"\"", f);
-        if (meta->workspace[0])
-            fprintf(f, ",\"workspace\":\"%s\"", meta->workspace);
-        else
-            fputs(",\"workspace\":\"\"", f);
-        if (timebuf[0])
-            fprintf(f, ",\"created_at\":\"%s\"", timebuf);
-        else
-            fputs(",\"created_at\":\"\"", f);
+        /* Escape model/workspace: both come from user-controlled CLI/env
+         * values, so a raw %s with a quote or backslash produced malformed
+         * JSON and broke the whole session file. ccode_json_fprint_string
+         * also sanitizes invalid UTF-8, and every call is checked. */
+        fputs("\"model\":", f);
+        if (ccode_json_fprint_string(f, meta->model) != 0) goto done;
+        fputs(",\"workspace\":", f);
+        if (ccode_json_fprint_string(f, meta->workspace) != 0) goto done;
+        fputs(",\"created_at\":", f);
+        if (ccode_json_fprint_string(f, timebuf) != 0) goto done;
         fputc('}', f);
     }
     fputc('}', f);
     if (ferror(f)) goto done;
     if (fflush(f) != 0) goto done;
-    if (ftell(f) < 2 || ftell(f) > 4 * 1024 * 1024) goto done;
+    if (ftell(f) < 2 || ftell(f) > ccode_session_max_size()) goto done;
     if (fsync(fd) != 0) goto done;
     if (fclose(f) != 0) { f = NULL; goto done; }
     f = NULL;
@@ -1065,19 +1089,23 @@ done:
     return save_ok ? 0 : -1;
 }
 
+/* Number of tokens in the subtree rooted at idx. Tokens are in preorder and
+ * every descendant starts before the root's exclusive `end` offset, so the
+ * count is the run of tokens up to the first one at/after that offset. This
+ * replaces the old recursive form, which stack-overflowed on a hostile
+ * session with deeply nested but valid JSON (`[[[[...`): a ~400 KB file at
+ * the documented limit nests ~200k arrays before the token cap, far past any
+ * thread stack. O(subtree) time, O(1) extra memory. */
 static int token_subtree(ccode_jsmntok_t *toks, int num_tokens, int idx) {
-    int size = 1;
+    int end;
     int i;
-    int child = idx + 1;
-    for (i = 0; i < toks[idx].size; i++) {
-        int sub;
-        if (child >= num_tokens) return -1;
-        sub = token_subtree(toks, num_tokens, child);
-        if (sub < 0) return -1;
-        size += sub;
-        child += sub;
+    if (!toks || idx < 0 || idx >= num_tokens) return -1;
+    end = toks[idx].end;
+    if (end <= 0) return -1;
+    for (i = idx + 1; i < num_tokens; i++) {
+        if (toks[i].start >= end) break;
     }
-    return size;
+    return i - idx;
 }
 
 /* Find a value token by key name within an object. Returns the value token
@@ -1221,7 +1249,7 @@ int ccode_conversation_load(struct ccode_conversation *conv, const char *path,
     if (!f) { close(fd); return -1; }
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
     fsize = ftell(f);
-    if (fsize < 2 || fsize > 4 * 1024 * 1024) { fclose(f); return -1; }
+    if (fsize < 2 || fsize > ccode_session_max_size()) { fclose(f); return -1; }
     if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return -1; }
     buf = malloc((size_t)fsize + 1);
     if (!buf) { fclose(f); return -1; }
@@ -1754,7 +1782,7 @@ static int count_messages_in_file(const char *path) {
     if (!f) { close(fd); return -1; }
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
     fsize = ftell(f);
-    if (fsize < 2 || fsize > 4 * 1024 * 1024) { fclose(f); return -1; }
+    if (fsize < 2 || fsize > ccode_session_max_size()) { fclose(f); return -1; }
     if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return -1; }
     buf = malloc((size_t)fsize + 1);
     if (!buf) { fclose(f); return -1; }
@@ -1803,7 +1831,7 @@ static int read_session_model(const char *path, char *model, size_t model_size) 
     if (!f) { close(fd); return -1; }
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
     fsize = ftell(f);
-    if (fsize < 2 || fsize > 4 * 1024 * 1024) { fclose(f); return -1; }
+    if (fsize < 2 || fsize > ccode_session_max_size()) { fclose(f); return -1; }
     if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return -1; }
     buf = malloc((size_t)fsize + 1);
     if (!buf) { fclose(f); return -1; }
@@ -1836,11 +1864,12 @@ static int read_session_model(const char *path, char *model, size_t model_size) 
                 ccode_jsmn_token_streq(buf, &toks[j], "model") &&
                 j + 1 < num_tokens &&
                 toks[j + 1].type == CCODE_JSMN_STRING) {
-                int slen = toks[j + 1].end - toks[j + 1].start;
-                if ((size_t)slen < model_size) {
-                    memcpy(model, buf + toks[j + 1].start, (size_t)slen);
-                    model[slen] = '\0';
-                }
+                /* The saved model is JSON-escaped; unescape so callers see
+                 * the real name rather than its backslash escapes. */
+                if (ccode_json_unescape(buf + toks[j + 1].start,
+                                        buf + toks[j + 1].end,
+                                        model, model_size) != 0)
+                    model[0] = '\0';
                 break;
             }
             j += 2;
@@ -2334,7 +2363,7 @@ char *ccode_session_export(const char *name, const char *format) {
         if (!f) goto export_done;
         if (fseek(f, 0, SEEK_END) != 0) { fclose(f); goto export_done; }
         fsize = ftell(f);
-        if (fsize < 0 || fsize > 4 * 1024 * 1024) { fclose(f); goto export_done; }
+        if (fsize < 0 || fsize > ccode_session_max_size()) { fclose(f); goto export_done; }
         if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); goto export_done; }
         result = malloc((size_t)fsize + 1);
         if (!result) { fclose(f); goto export_done; }

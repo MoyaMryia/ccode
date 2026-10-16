@@ -149,6 +149,9 @@ ifneq ($(RETRO),1)
 # there. The documented retro host smoke (test-json/test-agent/
 # test-permissions/test-markdown) does not list it either.
 TEST_TARGETS += test-config
+ifneq ($(WIN32),1)
+TEST_TARGETS += test-session-persistence
+endif
 endif
 ifneq ($(TTY_TEST),)
 TEST_TARGETS += test-tty
@@ -413,6 +416,15 @@ tests/test_agent: $(TEST_AGENT_SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(TEST_AGENT_SRC)
 endif
 
+# Session metadata round-trip and configured save/load limits.
+ifneq ($(RETRO),1)
+tests/test_session_persistence: tests/test_session_persistence.c src/agent/message.c vendor/json/json.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
+
+test-session-persistence: tests/test_session_persistence
+	./tests/test_session_persistence
+endif
+
 # Randomized tool-argument fuzzer (needs Python 3). Kept out of the default
 # `test` target because it runs thousands of cases; invoke explicitly.
 fuzz-tool-args: tests/test_agent
@@ -560,7 +572,7 @@ uninstall:
 
 clean:
 	rm -rf .build
-	rm -f ccode ccode-tui ccode-cli tests/test_json tests/test_agent tests/test_agent_asan tests/test_permissions tests/test_tui tests/test_markdown tests/test_config
+	rm -f ccode ccode-tui ccode-cli tests/test_json tests/test_agent tests/test_agent_asan tests/test_permissions tests/test_tui tests/test_markdown tests/test_config tests/test_session_persistence
 	rm -rf test-sandbox
 
 # ASan + UBSan build (for debugging/fuzzing). Override CFLAGS to remove
@@ -575,3 +587,5 @@ repro: clean
 	SOURCE_DATE_EPOCH=0 $(MAKE) HTTP_ONLY=1 SIZE_CFLAGS= SIZE_LDFLAGS= CFLAGS="-O2 -std=c99 -Wall -Wextra -Wpedantic -Werror $(X86_GNU_FLAGS) -ffile-prefix-map=$(PWD)=."
 
 .PHONY: ccode ccode-tui ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-lineedit test-markdown test-dead-code test-tui-commands test-tui-real test-tty test-e2e test-streaming retro-test asan repro test-sandbox fuzz-tool-args fuzz-tool-args-asan fuzz-command-paths fuzz-paths mutate
+
+.PHONY: test-session-persistence

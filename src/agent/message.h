@@ -146,10 +146,33 @@ void ccode_conversation_compact(struct ccode_conversation *conv,
 void ccode_session_meta_init(struct ccode_session_metadata *meta,
                              const char *model, const char *workspace);
 
+/* Session file size bounds in bytes. The documented default is 10 MiB and
+ * the CCODE_SESSION_MAX_SIZE env var / ccode_session_set_max_size() may move
+ * it within [MIN, MAX]; values outside that range are clamped so a hostile or
+ * mistaken setting cannot make save/load allocate unbounded memory. Keep the
+ * three constants in sync with the CLI's documented default. */
+#define CCODE_SESSION_MAX_SIZE_DEFAULT (10 * 1024 * 1024)
+#define CCODE_SESSION_MAX_SIZE_MIN     (16 * 1024)
+#define CCODE_SESSION_MAX_SIZE_MAX     (64 * 1024 * 1024)
+
+/* Override the session file size limit for this process (bytes). The value is
+ * clamped to the safe bounds above. Passing a non-positive value clears the
+ * override so CCODE_SESSION_MAX_SIZE / the default applies again. Callers
+ * such as the agent run loop should pass their parsed config value once at
+ * startup; save/load themselves also honor the env var directly. */
+void ccode_session_set_max_size(long bytes);
+
+/* Effective session file size limit in bytes: the explicit override when set,
+ * otherwise the clamped CCODE_SESSION_MAX_SIZE env value, otherwise the
+ * documented default of 10 MiB. */
+long ccode_session_max_size(void);
+
 /* Session persistence: save/load conversation to a local JSON file.
  * The file is created with mode 0600. API keys are never stored because
  * they are not part of the conversation. On load, any malformed JSON,
  * missing fields, or unexpected types cause a fail-closed return of -1.
+ * A file larger than ccode_session_max_size() is rejected on both save and
+ * load via the same limit.
  *
  * Version 2 format persists tool-call/result pairs, task state, and
  * change-log state alongside ordinary user/assistant text.

@@ -775,6 +775,7 @@ int ccode_cli_main(int argc, char **argv) {
     struct ccode_agent_config agent;
     int result = ccode_parse_args(argc, argv, &config);
     if (result != 0) return result < 0 ? 2 : 0;
+    ccode_session_set_max_size(config.session_max_size);
     if (!config.prompt && !config.interactive) {
         fprintf(stderr, "Either -p PROMPT or --interactive is required.\n");
         return 2;
