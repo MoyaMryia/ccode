@@ -231,6 +231,14 @@ struct ccode_sse_accumulator {
     char *finish_reason;
     int stream_done;
     int has_error;
+    /* Request-local provider/transport error captured when the stream fails
+     * before completing: an HTTP non-200, a malformed SSE body, or a
+     * truncated/timed-out response. Human-readable, and NULL on a clean
+     * stream. Owned by the accumulator and freed by
+     * ccode_sse_accumulator_destroy; keeping it request-local (rather than a
+     * global or the persistent agent context) guarantees a later request can
+     * never observe a stale error from an earlier one. */
+    char *error_message;
     void (*on_content)(const char *content, void *context);
     void *on_content_context;
     void (*on_reasoning)(const char *content, void *context);

@@ -150,7 +150,7 @@ ifneq ($(RETRO),1)
 # test-permissions/test-markdown) does not list it either.
 TEST_TARGETS += test-config
 ifneq ($(WIN32),1)
-TEST_TARGETS += test-session-persistence
+TEST_TARGETS += test-session-persistence test-http-chunk
 endif
 endif
 ifneq ($(TTY_TEST),)
@@ -425,6 +425,16 @@ test-session-persistence: tests/test_session_persistence
 	./tests/test_session_persistence
 endif
 
+# Real loopback HTTP chunk streaming regression.
+ifneq ($(RETRO),1)
+tests/test_http_chunk: override CPPFLAGS += -DCCODE_HTTP_ONLY=1
+tests/test_http_chunk: tests/test_http_chunk.c src/net/http.c vendor/json/json.c src/security/permissions.c vendor/lineedit/input.c vendor/lineedit/lineedit.c $(PLATFORM_SRC)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
+
+test-http-chunk: tests/test_http_chunk
+	./tests/test_http_chunk
+endif
+
 # Randomized tool-argument fuzzer (needs Python 3). Kept out of the default
 # `test` target because it runs thousands of cases; invoke explicitly.
 fuzz-tool-args: tests/test_agent
@@ -572,7 +582,7 @@ uninstall:
 
 clean:
 	rm -rf .build
-	rm -f ccode ccode-tui ccode-cli tests/test_json tests/test_agent tests/test_agent_asan tests/test_permissions tests/test_tui tests/test_markdown tests/test_config tests/test_session_persistence
+	rm -f ccode ccode-tui ccode-cli tests/test_json tests/test_agent tests/test_agent_asan tests/test_permissions tests/test_tui tests/test_markdown tests/test_config tests/test_session_persistence tests/test_http_chunk
 	rm -rf test-sandbox
 
 # ASan + UBSan build (for debugging/fuzzing). Override CFLAGS to remove
@@ -589,3 +599,5 @@ repro: clean
 .PHONY: ccode ccode-tui ccode-cli clean test test-json test-agent test-http test-permissions test-tui test-lineedit test-markdown test-dead-code test-tui-commands test-tui-real test-tty test-e2e test-streaming retro-test asan repro test-sandbox fuzz-tool-args fuzz-tool-args-asan fuzz-command-paths fuzz-paths mutate
 
 .PHONY: test-session-persistence
+
+.PHONY: test-http-chunk

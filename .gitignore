@@ -17,6 +17,7 @@ tests/test_lineedit
 tests/test_markdown
 tests/test_config
 tests/test_session_persistence
+tests/test_http_chunk
 test-sandbox/
 tests/fixtures/
 

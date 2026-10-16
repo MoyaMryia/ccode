@@ -1386,6 +1386,7 @@ void ccode_sse_accumulator_destroy(struct ccode_sse_accumulator *acc) {
     ccode_buf_free(&acc->content);
     ccode_buf_free(&acc->reasoning_content);
     free(acc->finish_reason);
+    free(acc->error_message);
     for (i = 0; i < acc->tool_call_count; i++) {
         free(acc->tool_calls[i].id);
         free(acc->tool_calls[i].name);
@@ -1476,6 +1477,9 @@ int ccode_sse_accumulator_process(struct ccode_sse_accumulator *acc,
     result = ccode_parse_sse_delta(data, length, &delta);
     if (result < 0) {
         acc->has_error = 1;
+        if (!acc->error_message)
+            acc->error_message = ccode_strdup(
+                "provider sent a malformed SSE response");
         return result;
     }
 

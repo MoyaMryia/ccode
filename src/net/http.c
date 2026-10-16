@@ -71,6 +71,9 @@ struct sse_parser {
     size_t input_used;
     char event[SSE_EVENT_BUF_SIZE];
     size_t event_used;
+    size_t chunk_remaining;
+    int chunk_data_active;
+    int chunk_crlf_progress;
 };
 
 static long long now_ms(void) {
@@ -632,6 +635,25 @@ static int process_chunked_buffer(char *buffer, size_t *used,
     size_t offset = 0;
     while (offset < *used && *chunks_complete != 1) {
         size_t line_end;
+        if (parser->chunk_data_active) {
+            size_t available = *used - offset;
+            size_t take = available < parser->chunk_remaining ? available : parser->chunk_remaining;
+            if (take && feed_sse(parser, buffer + offset, take, acc) != 0) return -1;
+            offset += take;
+            parser->chunk_remaining -= take;
+            if (parser->chunk_remaining != 0) break;
+            parser->chunk_data_active = 0;
+            parser->chunk_crlf_progress = 0;
+        }
+        if (parser->chunk_crlf_progress < 2) {
+            while (offset < *used && parser->chunk_crlf_progress < 2) {
+                char expected = parser->chunk_crlf_progress == 0 ? '\r' : '\n';
+                if (buffer[offset++] != expected) return -1;
+                parser->chunk_crlf_progress++;
+            }
+            if (parser->chunk_crlf_progress < 2) break;
+            parser->chunk_crlf_progress = 2;
+        }
         if (*chunks_complete == -1) {
             for (line_end = offset; line_end + 1 < *used; line_end++) {
                 if (buffer[line_end] == '\r' && buffer[line_end + 1] == '\n') break;
@@ -656,16 +678,14 @@ static int process_chunked_buffer(char *buffer, size_t *used,
             if (parse_chunk_size(buffer + offset, line_end - offset, &chunk_size) != 0)
                 return -1;
             data_start = line_end + 2;
+            offset = data_start;
+            parser->chunk_crlf_progress = 2;
             if (chunk_size == 0) {
-                offset = data_start;
                 *chunks_complete = -1;
                 continue;
             }
-            if (*used - data_start < chunk_size + 2) break;
-            if (buffer[data_start + chunk_size] != '\r' ||
-                buffer[data_start + chunk_size + 1] != '\n') return -1;
-            if (feed_sse(parser, buffer + data_start, chunk_size, acc) != 0) return -1;
-            offset = data_start + chunk_size + 2;
+            parser->chunk_remaining = chunk_size;
+            parser->chunk_data_active = 1;
         }
     }
     if (offset > 0) {
@@ -675,25 +695,50 @@ static int process_chunked_buffer(char *buffer, size_t *used,
     return 0;
 }
 
+/* Record a request-local failure reason on the accumulator exactly once, so
+ * the root-cause error survives later incidental ones. The string is freed
+ * by ccode_sse_accumulator_destroy. */
+static void sse_record_error(struct ccode_sse_accumulator *acc,
+                             const char *message) {
+    if (acc && !acc->error_message && message)
+        acc->error_message = ccode_strdup(message);
+}
+
 static int report_error_response(const char *error_body, size_t error_body_len,
-                                 int status_code) {
-    if (error_body_len > 0) {
-        char *message = ccode_parse_error_message(error_body, error_body_len);
-        if (message) {
-            if (status_code > 0)
-                fprintf(stderr, "Upstream returned HTTP %d: ", status_code);
-            else
-                fputs("Upstream returned a non-200 response: ", stderr);
-            ccode_fprint_safe(stderr, message, "");
-            fputc('\n', stderr);
-            free(message);
-            return -1;
-        }
-    }
-    if (status_code > 0)
+                                 int status_code,
+                                 struct ccode_sse_accumulator *acc) {
+    char *message = NULL;
+    struct ccode_buf reason;
+
+    if (error_body_len > 0)
+        message = ccode_parse_error_message(error_body, error_body_len);
+
+    if (message) {
+        if (status_code > 0)
+            fprintf(stderr, "Upstream returned HTTP %d: ", status_code);
+        else
+            fputs("Upstream returned a non-200 response: ", stderr);
+        ccode_fprint_safe(stderr, message, "");
+        fputc('\n', stderr);
+    } else if (status_code > 0) {
         fprintf(stderr, "Upstream returned HTTP %d.\n", status_code);
-    else
+    } else {
         fprintf(stderr, "Upstream returned a non-200 response.\n");
+    }
+
+    if (acc && !acc->error_message) {
+        ccode_buf_init(&reason);
+        if (status_code > 0)
+            (void)ccode_buf_printf(&reason,
+                "provider returned HTTP %d", status_code);
+        else
+            (void)ccode_buf_append(&reason,
+                "provider returned a non-200 response");
+        if (message && ccode_buf_append(&reason, ": ") == 0)
+            (void)ccode_buf_append(&reason, message);
+        acc->error_message = ccode_buf_detach(&reason);
+    }
+    free(message);
     return -1;
 }
 
@@ -844,11 +889,17 @@ static int stream_chat_loop(struct stream_reader *reader,
     int status_code = 0;
 
     memset(&parser, 0, sizeof(parser));
+    /* No data terminator is pending before the first chunk. */
+    parser.chunk_crlf_progress = 2;
     while (now_ms() < total_deadline) {
         ssize_t received =
             reader->read(reader->ctx, response + used, sizeof(response) - used,
                          total_deadline);
-        if (received == -2) return -1;
+        if (received == -2) {
+            sse_record_error(acc,
+                "transport error while reading the provider response");
+            return -1;
+        }
         if (received <= 0) break;   /* EOF or timeout */
         {
             int result;
@@ -861,21 +912,34 @@ static int stream_chat_loop(struct stream_reader *reader,
                                       error_body, &error_body_len);
             if (result > 0)
                 return report_error_response(error_body, error_body_len,
-                                             status_code);
-            if (result < 0) return -1;
+                                             status_code, acc);
+            if (result < 0) {
+                sse_record_error(acc,
+                    "provider sent a malformed HTTP response");
+                return -1;
+            }
             if (acc->stream_done && chunked && chunks_complete == 1) break;
             if (used == sizeof(response)) {
                 fprintf(stderr, "Response buffer full.\n");
+                sse_record_error(acc,
+                    "provider response exceeded the internal buffer");
                 return -1;
             }
         }
     }
     if (error_response)
-        return report_error_response(error_body, error_body_len, status_code);
+        return report_error_response(error_body, error_body_len, status_code,
+                                     acc);
     if (!headers_complete || (chunked && chunks_complete != 1) ||
         (!chunked && has_content_length && body_received != content_length) ||
         !acc->stream_done) {
-        if (now_ms() >= total_deadline) fprintf(stderr, "Request timed out.\n");
+        if (now_ms() >= total_deadline) {
+            fprintf(stderr, "Request timed out.\n");
+            sse_record_error(acc, "provider request timed out");
+        } else {
+            sse_record_error(acc,
+                "provider closed the connection before the stream completed");
+        }
         return -1;
     }
     return 0;
@@ -909,15 +973,20 @@ static int stream_chat_plain(const struct parsed_url *url, const char *api_key,
                             phase_deadline(total_deadline, CONNECT_TIMEOUT_MS),
                             loopback_only);
     if (socket_fd < 0) {
-        if (loopback_only)
+        if (loopback_only) {
             fprintf(stderr, "http:// endpoints are restricted to loopback. "
                             "Use --allow-http or CCODE_ALLOW_HTTP=1 to allow "
                             "remote http (unencrypted, known risk).\n");
-        else
+            sse_record_error(acc,
+                "http:// endpoints are restricted to loopback");
+        } else {
             fprintf(stderr, "Could not connect to the http endpoint.\n");
+            sse_record_error(acc, "could not connect to the provider endpoint");
+        }
         return -1;
     }
     if (send_http_request(socket_fd, url, api_key, body, total_deadline) != 0) {
+        sse_record_error(acc, "could not send the request to the provider");
         close(socket_fd);
         return -1;
     }
@@ -939,6 +1008,7 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     total_deadline = now_ms() + (long long)total_timeout * 1000;
     if (has_crlf(api_key) || parse_url(api_base, &url) != 0 || url.secure) {
         fprintf(stderr, "HTTP_ONLY builds require a valid local http:// URL and key.\n");
+        sse_record_error(acc, "invalid API base URL or API key");
         return -1;
     }
     if (http_allow_all(allow_remote_http)) warn_plain_http_once();
@@ -1031,6 +1101,7 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     total_deadline = now_ms() + (long long)total_timeout * 1000;
     if (has_crlf(api_key) || parse_url(api_base, &url) != 0) {
         fprintf(stderr, "Invalid CCODE_API_BASE URL or API key.\n");
+        sse_record_error(acc, "invalid API base URL or API key");
         return -1;
     }
     if (!url.secure) {
@@ -1241,6 +1312,7 @@ int ccode_stream_chat(const char *api_base, const char *api_key,
     total_deadline = now_ms() + (long long)total_timeout * 1000;
     if (has_crlf(api_key) || parse_url(api_base, &url) != 0) {
         fprintf(stderr, "Invalid CCODE_API_BASE URL or API key.\n");
+        sse_record_error(acc, "invalid API base URL or API key");
         return -1;
     }
     if (!url.secure) {
