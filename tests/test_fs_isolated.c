@@ -417,15 +417,28 @@ static void test_integer_decoder_representable_range(void) {
     CHECK(n > 0 && strict_nonnegative_integer_token("1048576", &toks[0], &v) == 0 && v == 1048576,
           "decoder represents 1048576 (web_fetch max_size)");
 
-    v = -1;
-    n = ccode_json_parse("9223372036854775807", 19, toks, 8);
-    CHECK(n > 0 && strict_nonnegative_integer_token("9223372036854775807", &toks[0], &v) == 0 && v == LONG_MAX,
-          "decoder represents LONG_MAX without overflow");
+    /* Build LONG_MAX / LONG_MAX+1 from the actual `long` width: on 32-bit
+     * targets (i386, armv7) a hardcoded 19-digit literal is not LONG_MAX, so
+     * the "represents LONG_MAX" case used to fail on those platforms even
+     * though the decoder was correct. */
+    {
+        char long_max_str[32], long_max_plus_str[32];
+        int long_max_len, long_max_plus_len;
+        long_max_len = snprintf(long_max_str, sizeof long_max_str, "%ld", LONG_MAX);
+        long_max_plus_len = snprintf(long_max_plus_str, sizeof long_max_plus_str,
+                                     "%lu", (unsigned long)LONG_MAX + 1UL);
+        CHECK(long_max_len > 0 && long_max_plus_len > 0, "LONG_MAX literals built");
 
-    v = -1;
-    n = ccode_json_parse("9223372036854775808", 19, toks, 8);
-    CHECK(n > 0 && strict_nonnegative_integer_token("9223372036854775808", &toks[0], &v) != 0,
-          "decoder rejects LONG_MAX+1 instead of overflowing");
+        v = -1;
+        n = ccode_json_parse(long_max_str, (size_t)long_max_len, toks, 8);
+        CHECK(n > 0 && strict_nonnegative_integer_token(long_max_str, &toks[0], &v) == 0 && v == LONG_MAX,
+              "decoder represents LONG_MAX without overflow");
+
+        v = -1;
+        n = ccode_json_parse(long_max_plus_str, (size_t)long_max_plus_len, toks, 8);
+        CHECK(n > 0 && strict_nonnegative_integer_token(long_max_plus_str, &toks[0], &v) != 0,
+              "decoder rejects LONG_MAX+1 instead of overflowing");
+    }
 
     v = 123;
     n = ccode_json_parse("99999999999999999999999999", 26, toks, 8);
