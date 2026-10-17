@@ -1749,7 +1749,10 @@ static int check_arg_shape(const struct arg_shape *c) {
 
 /* dst = {"arguments":<inner>} */
 static void wrap_object_envelope(char *dst, size_t cap, const char *inner) {
-    snprintf(dst, cap, "{\"arguments\":%s}", inner);
+    /* Bound the copy explicitly: `cap` and `inner` are both ~16 KiB, so a plain
+     * "%s" makes gcc warn about truncation on 32-bit targets (-Wformat-truncation),
+     * where the warning is word-size dependent and breaks -Werror. */
+    snprintf(dst, cap, "{\"arguments\":%.*s}", (int)(cap > 16 ? cap - 16 : 0), inner);
 }
 
 /* dst = {"arguments":"<json-escaped inner>"} */
