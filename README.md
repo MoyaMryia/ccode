@@ -77,6 +77,7 @@ make HTTP_ONLY=1    # 不要 TLS，纯 HTTP（内网/开发用）
 
 - Linux x86_64（v1/v2/v3/v4）：gcc / clang 14
 - Linux i386/i586（retro 真机已验）、arm64、riscv64：gcc
+- Linux armv7（Kindle Paperwhite 3 真机 + armv7 测试套件）：gcc，静态 musl —— 见 [Kindle 适配记录](docs/KINDLE.md)
 - macOS arm64：clang（能用）
 
 理论支持（`src/platform/` 代码已就位，按目标三元组自动挑选，未做真机矩阵）：
@@ -121,6 +122,7 @@ make test-tui-commands                               # 进程内 TUI slash 命�
 - [功能现状与路线图](docs/FEATURES.md) — 已经做了什么、接下来做什么
 - [开发原则](docs/AGENTS.md) — 给改代码的人看的契约
 - [BasicLinux 3.5.1 适配](docs/BASICLINUX.md) — 老系统移植的记录和踩坑
+- [Kindle Paperwhite 3 适配](docs/KINDLE.md) — 往电子书阅读器上塞：ARM 静态构建、1.5 MB 内存上限、墨水屏 TUI
 - [代码审计与技术债](docs/AUDIT.md) — 可维护性结论、并发现状、技术债清单和收敛方向
 
 ## 许可证
